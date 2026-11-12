@@ -59,7 +59,7 @@ def portfolio_adjudication(api_key: str, model: str, candidates: list[dict[str, 
         + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     )
     with _client(api_key) as client:
-        response = _client(api_key).models.generate_content(
+        response = _client.models.generate_content(
             model=model or DEFAULT_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -111,7 +111,7 @@ def write_investment_memo(api_key: str, model: str, snapshot: dict[str, Any]) ->
         + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     )
     with _client(api_key) as client:
-        response = _client(api_key).models.generate_content(
+        response = _client.models.generate_content(
             model=model or DEFAULT_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=900),
@@ -183,7 +183,7 @@ Aturan tambahan:
 """
     part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
     with _client(api_key) as client:
-        response = _client(api_key).models.generate_content(
+        response = _client.models.generate_content(
             model=model or DEFAULT_MODEL,
             contents=[prompt, part],
             config=types.GenerateContentConfig(
