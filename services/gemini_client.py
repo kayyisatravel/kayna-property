@@ -5,6 +5,8 @@ import time
 from typing import Any
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
+FALLBACK_MODELS = "gemini-3.1-flash-lite"
+
 
 
 def _client(api_key: str):
