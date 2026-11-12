@@ -11,9 +11,14 @@ FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flas
 def _client(api_key: str):
     try:
         from google import genai
+        from google.genai import types
     except ImportError as exc:
         raise RuntimeError("Paket google-genai belum terpasang. Jalankan pip install -r requirements.txt.") from exc
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(api_version="v1beta"),
+    )
+
 
 
 def _generate_resilient(api_key: str, primary_model: str, contents: Any, config: Any):
