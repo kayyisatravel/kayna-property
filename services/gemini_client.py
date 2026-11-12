@@ -107,11 +107,12 @@ def write_investment_memo(api_key: str, model: str, snapshot: dict[str, Any]) ->
         "dan checklist sebelum bidding. Jangan mengarang fakta. Jika HOLD/NO-GO, jangan merekomendasikan bidding.\n"
         + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     )
-    response = _client(api_key).models.generate_content(
-        model=model or DEFAULT_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=900),
-    )
+    with _client(api_key) as client:
+        response = client.models.generate_content(
+            model=model or DEFAULT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=900),
+        )
     return str(getattr(response, "text", "") or "Gemini tidak mengembalikan teks.")
 
 
@@ -125,9 +126,10 @@ def extract_document_with_gemini(api_key: str, model: str, file_bytes: bytes, mi
         "Semua data wajib diverifikasi user terhadap pengumuman asli."
     )
     part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
-    response = _client(api_key).models.generate_content(
-        model=model or DEFAULT_MODEL,
-        contents=[prompt, part],
-        config=types.GenerateContentConfig(temperature=0, max_output_tokens=900, response_mime_type="application/json"),
-    )
+    with _client(api_key) as client:
+        response = client.models.generate_content(
+            model=model or DEFAULT_MODEL,
+            contents=[prompt, part],
+            config=types.GenerateContentConfig(temperature=0, max_output_tokens=900, response_mime_type="application/json"),
+        )
     return str(getattr(response, "text", "") or "{}")
