@@ -1,9 +1,11 @@
-"""Gemini wrapper: explicit opt-in calls, compact prompts, cache-friendly and 429-safe."""
+"""Gemini wrapper: explicit opt-in calls, compact prompts, cache-friendly, 429-safe and 503-resilient."""
 from __future__ import annotations
 import json
+import time
 from typing import Any
 
-DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_MODEL = "gemini-2.5-flash"
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
 
 
 def _client(api_key: str):
@@ -14,15 +16,44 @@ def _client(api_key: str):
     return genai.Client(api_key=api_key)
 
 
+def _generate_resilient(api_key: str, primary_model: str, contents: Any, config: Any):
+    """Membuat client segar per panggilan dan otomatis pindah model jika server 503/sibuk."""
+    models_to_try = []
+    for m in [primary_model or DEFAULT_MODEL] + FALLBACK_MODELS:
+        if m and m not in models_to_try:
+            models_to_try.append(m)
+
+    last_exc = None
+    for idx, candidate_model in enumerate(models_to_try):
+        try:
+            client = _client(api_key)
+            return client.models.generate_content(
+                model=candidate_model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            last_exc = exc
+            err_str = str(exc).lower()
+            if "503" in err_str or "unavailable" in err_str or "high demand" in err_str:
+                if idx < len(models_to_try) - 1:
+                    time.sleep(1.5)
+                    continue
+            raise
+    raise last_exc
+
+
 def classify_gemini_error(exc: Exception) -> tuple[str, str]:
     message = str(exc)
     lower = message.lower()
+    if "503" in lower or "unavailable" in lower or "high demand" in lower:
+        return "SERVER_BUSY", "Server AI Google sedang sibuk sementara (503). Tunggu beberapa detik lalu coba klik ulang."
     if "429" in lower or "resource_exhausted" in lower or "too_many_requests" in lower or "quota" in lower:
         if "requests per day" in lower or "rpd" in lower or "per day" in lower or "quota_exceeded" in lower:
             return "QUOTA_DAILY", "Kuota harian Gemini tercapai. Analisis Python tetap tersedia; periksa AI Studio dan coba lagi setelah kuota reset."
         if "tokens per minute" in lower or "tpm" in lower:
             return "QUOTA_TPM", "Batas token per menit tercapai. Kurangi ukuran dokumen/konteks dan jangan kirim ulang berulang kali."
-        return "QUOTA_429", "Gemini menolak permintaan (429). Penyebabnya dapat berupa batas request per menit, token per menit, kuota harian, atau batas project/billing. Periksa AI Studio → Rate limits; jangan tekan ulang berkali-kali. Seluruh kalkulasi dan ranking Python tetap tersedia."
+        return "QUOTA_429", "Gemini menolak permintaan (429). Penyebabnya dapat berupa batas request per menit, token per menit, kuota harian, atau batas project/billing. Periksa AI Studio -> Rate limits; jangan tekan ulang berkali-kali. Seluruh kalkulasi dan ranking Python tetap tersedia."
     if "403" in lower or "permission_denied" in lower or "api key" in lower:
         return "AUTH", "API key/proyek Gemini tidak memiliki izin untuk model ini atau belum aktif."
     if "404" in lower or "not_found" in lower:
@@ -36,14 +67,19 @@ def portfolio_adjudication(api_key: str, model: str, candidates: list[dict[str, 
     compact = []
     for c in candidates[:8]:
         compact.append({
-            "object_id": c.get("object_id"), "name": c.get("name"), "status_python": c.get("status"),
-            "eligibility_index_pct": c.get("score_pct"), "base_roi_pct": c.get("base_roi_pct"),
-            "base_profit_idr": c.get("base_profit"), "required_cash_idr": c.get("required_cash"),
+            "object_id": c.get("object_id"),
+            "name": c.get("name"),
+            "status_python": c.get("status"),
+            "eligibility_index_pct": c.get("score_pct"),
+            "base_roi_pct": c.get("base_roi_pct"),
+            "base_profit_idr": c.get("base_profit"),
+            "required_cash_idr": c.get("required_cash"),
             "available_cash_idr": c.get("available_cash"),
             "attractive_bid_idr": c.get("attractive_bid"),
             "recommended_bid_idr": c.get("recommended_bid"),
             "mandatory_stop_from_bid_idr": c.get("stop_from_bid"),
-            "market_confidence_pct": c.get("market_confidence"), "holding_months": c.get("holding_months"),
+            "market_confidence_pct": c.get("market_confidence"),
+            "holding_months": c.get("holding_months"),
             "hard_blockers": (c.get("blockers") or [])[:5],
         })
     prompt = (
@@ -58,8 +94,9 @@ def portfolio_adjudication(api_key: str, model: str, candidates: list[dict[str, 
         '"top_risks":["..."],"conditions_before_bid":["..."],"ranking_comment":"..."}.\nDATA:\n'
         + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     )
-    response = _client(api_key).models.generate_content(
-        model=model or DEFAULT_MODEL,
+    response = _generate_resilient(
+        api_key=api_key,
+        primary_model=model,
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=0.1,
@@ -71,7 +108,6 @@ def portfolio_adjudication(api_key: str, model: str, candidates: list[dict[str, 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        # Some model versions may wrap valid JSON in markdown; strip a single fence.
         cleaned = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         data = json.loads(cleaned)
     valid_ids = {str(c.get("object_id")) for c in candidates}
@@ -93,7 +129,6 @@ def portfolio_adjudication(api_key: str, model: str, candidates: list[dict[str, 
 
 def write_investment_memo(api_key: str, model: str, snapshot: dict[str, Any]) -> str:
     from google.genai import types
-    # Send a compact, controlled payload rather than all raw records/documents.
     compact = {
         "property": snapshot.get("inputs", {}).get("property", {}),
         "survey": snapshot.get("inputs", {}).get("survey", {}),
@@ -109,8 +144,9 @@ def write_investment_memo(api_key: str, model: str, snapshot: dict[str, Any]) ->
         "dan checklist sebelum bidding. Jangan mengarang fakta. Jika HOLD/NO-GO, jangan merekomendasikan bidding.\n"
         + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     )
-    response = _client(api_key).models.generate_content(
-        model=model or DEFAULT_MODEL,
+    response = _generate_resilient(
+        api_key=api_key,
+        primary_model=model,
         contents=prompt,
         config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=900),
     )
