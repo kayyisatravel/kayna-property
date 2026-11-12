@@ -179,14 +179,15 @@ def extract_document_with_gemini(api_key: str, model: str, file_bytes: bytes, mi
         - Kelipatan/increment bid hanya diisi bila tertulis eksplisit di pengumuman; jangan menebak berdasarkan nilai limit.
         - Jangan mengisi nilai form dengan nol sebagai pengganti data yang tidak ada.
         """
-            part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
-            response = _client(api_key).models.generate_content(
-                model=model or DEFAULT_MODEL,
-                contents=[prompt, part],
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    max_output_tokens=1500,
-                    response_mime_type="application/json",
-                ),
-            )
-            return str(getattr(response, "text", "") or "{}")
+    part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+    response = _generate_resilient(
+        api_key=api_key,
+        primary_model=model,
+        contents=[prompt, part],
+        config=types.GenerateContentConfig(
+            temperature=0,
+            max_output_tokens=1500,
+            response_mime_type="application/json",
+        ),
+    )
+    return str(getattr(response, "text", "") or "{}")
