@@ -55,15 +55,16 @@ def portfolio_adjudication(api_key: str, model: str, candidates: list[dict[str, 
         '"top_risks":["..."],"conditions_before_bid":["..."],"ranking_comment":"..."}.\nDATA:\n'
         + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     )
-    response = _client(api_key).models.generate_content(
-        model=model or DEFAULT_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=650,
-            response_mime_type="application/json",
-        ),
-    )
+    with _client(api_key) as client:
+        response = client.models.generate_content(
+            model=model or DEFAULT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=650,
+                response_mime_type="application/json",
+            ),
+        )
     raw = str(getattr(response, "text", "") or "{}").strip()
     try:
         data = json.loads(raw)
