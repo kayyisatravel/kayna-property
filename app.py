@@ -717,7 +717,7 @@ elif page == "Investor Cashflow":
     profile, events, liquidity = get_cash_data()
     st.caption("User menginput real cash dan kemungkinan pengeluaran. Sistem menghitung kapasitas investasi; sistem tidak membuat asumsi pengeluaran sendiri.")
     with st.form("cash_profile_form"):
-        real_cash = st.number_input("Real cash saat ini (Rp)", min_value=0, step=1_000_000, value=to_float(profile.get("real_cash")))
+        real_cash = st.number_input("Real cash saat ini (Rp)", min_value=0, step=1_000_000, value=safe_int(profile.get("real_cash")))
         reserve_pct = st.slider("Cadangan likuiditas minimum (%)", min_value=10, max_value=20, value=int(to_float(profile.get("reserve_pct", 20))))
         note = st.text_input("Catatan saldo / tanggal pembaruan", value=str(profile.get("note", "")))
         confirm = st.checkbox("Saya mengonfirmasi bahwa angka real cash di atas adalah kondisi terkini.", value=bool(profile.get("cash_confirmed", False)))
