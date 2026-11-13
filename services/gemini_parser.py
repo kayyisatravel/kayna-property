@@ -7,6 +7,26 @@ from pydantic import BaseModel, Field
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
+class FieldEvidence(BaseModel):
+    """Explicit evidence fields; avoid dynamic dict/additionalProperties in Gemini schema."""
+    lot_code: Optional[str] = None
+    name: Optional[str] = None
+    auction_office: Optional[str] = None
+    seller: Optional[str] = None
+    auction_date: Optional[str] = None
+    auction_limit: Optional[str] = None
+    deposit_amount: Optional[str] = None
+    bid_increment: Optional[str] = None
+    address: Optional[str] = None
+    district: Optional[str] = None
+    province: Optional[str] = None
+    land_area: Optional[str] = None
+    building_area: Optional[str] = None
+    certificate_type: Optional[str] = None
+    certificate_no: Optional[str] = None
+    njop: Optional[str] = None
+
+
 class AuctionExtraction(BaseModel):
     lot_code: Optional[str] = None
     name: Optional[str] = None
@@ -38,7 +58,7 @@ class AuctionExtraction(BaseModel):
     facade_visible_findings: list[str] = Field(default_factory=list)
     facade_unknowns: list[str] = Field(default_factory=list)
     conflicts: list[str] = Field(default_factory=list)
-    field_evidence: dict[str, Optional[str]] = Field(default_factory=dict)
+    field_evidence: FieldEvidence = Field(default_factory=FieldEvidence)
     verification_notes: Optional[str] = None
 
 
@@ -98,7 +118,7 @@ def _client_call(api_key: str, model: str, prompt: str, file_bytes: bytes | None
 
 def extract_auction_document(api_key: str, file_bytes: bytes, mime_type: str, filename: str, model: str = DEFAULT_MODEL) -> dict[str, Any]:
     prepared, prepared_mime = prepare_upload(file_bytes, mime_type)
-    prompt = f"""Anda adalah petugas ekstraksi dokumen lelang properti Indonesia. Baca file {filename}. Ekstrak data lelang dan nilai kondisi fasad YANG TERLIHAT dalam satu respons JSON sesuai skema. DILARANG menebak. Field yang tidak terbaca/tidak tercantum wajib null. Nominal rupiah integer. LT dan LB jangan tertukar. Jangan simpulkan status penghuni, interior, struktur tersembunyi, legalitas terverifikasi, atau status sengketa dari foto. Bedakan fakta terlihat, indikasi, dan hal yang tidak dapat dipastikan. Sertakan kutipan sumber singkat untuk field utama pada field_evidence. Jika informasi bertentangan, masukkan dalam conflicts. Kelipatan bid hanya diisi bila tertulis eksplisit."""
+    prompt = f"""Anda adalah petugas ekstraksi dokumen lelang properti Indonesia. Baca file {filename}. Ekstrak data lelang dan nilai kondisi fasad YANG TERLIHAT dalam satu respons JSON sesuai skema. DILARANG menebak. Field yang tidak terbaca/tidak tercantum wajib null. Nominal rupiah integer. LT dan LB jangan tertukar. Jangan simpulkan status penghuni, interior, struktur tersembunyi, legalitas terverifikasi, atau status sengketa dari foto. Bedakan fakta terlihat, indikasi, dan hal yang tidak dapat dipastikan. Sertakan kutipan sumber singkat untuk field utama pada field_evidence dengan nama field yang sudah ditentukan skema. Jika informasi bertentangan, masukkan dalam conflicts. Kelipatan bid hanya diisi bila tertulis eksplisit."""
     raw = _client_call(api_key, model, prompt, prepared, prepared_mime, AuctionExtraction, 1700)
     try:
         data = AuctionExtraction.model_validate_json(raw).model_dump()
