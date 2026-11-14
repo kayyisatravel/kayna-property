@@ -31,3 +31,14 @@
 - Simplified risk register entry with selectable common-risk presets and editable suggested probability, impact, cash reserve, mitigation, and status.
 - Risk and cost review confirmations are invalidated automatically when their respective input rows/values change.
 - Added regression tests for Sheets JSON sanitation, direct gspread row serialization, Gemini RAB schema, conservative unit-cost mapping and partial RAB totals. Current test suite: 49 passed; Python compile check passed.
+
+
+## V1.0.4 — Comparable parser hardening
+- Support Markdown bold/link numbered headings such as `**1. [Title](URL)**`.
+- Compact aliased Pydantic schema reduces JSON output size for multi-listing extraction.
+- Increase comparable parser output allowance and batch larger input sets.
+- Capture exact URLs deterministically from each original listing block; ignore Google kgmid links.
+- Inspect Gemini finish reason and report MAX_TOKENS/truncated JSON explicitly; never load partial rows.
+- Add regression tests for seven-listing Markdown input, URL mapping and MAX_TOKENS handling.
+
+- Track `source_url_scope`; portal/category/venue URLs no longer count as individual listing URLs for GO-grade market evidence.

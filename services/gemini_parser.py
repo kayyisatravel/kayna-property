@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib, io, json, random, time, re
 from typing import Optional, Any
 from PIL import Image, ImageOps
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
@@ -63,30 +63,34 @@ class AuctionExtraction(BaseModel):
 
 
 class ComparableItem(BaseModel):
-    """One real-world listing. Fixed fields keep the schema Gemini Developer API compatible."""
-    source_index: Optional[int] = None
-    name: Optional[str] = None
-    address: Optional[str] = None
-    complex_name: Optional[str] = None
-    price: Optional[int] = None
-    land_area: Optional[float] = None
-    building_area: Optional[float] = None
-    bedrooms: Optional[int] = None
-    bathrooms: Optional[int] = None
-    condition: Optional[str] = None
-    condition_detail: Optional[str] = None
-    access: Optional[str] = None
-    access_detail: Optional[str] = None
-    certificate: Optional[str] = None
-    orientation: Optional[str] = None
-    electricity_watt: Optional[int] = None
-    water_source: Optional[str] = None
-    source_platforms: list[str] = Field(default_factory=list)
-    source_evidence: Optional[str] = None
-    source_url: Optional[str] = None
-    listing_date: Optional[str] = None
-    price_type: Optional[str] = None
-    notes: Optional[str] = None
+    """Compact, aliased schema to reduce Gemini output tokens for multi-listing parsing.
+
+    Short JSON keys are expanded to application field names after validation. URLs
+    are extracted deterministically from the user's original text, never generated.
+    """
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    source_index: Optional[int] = Field(default=None, alias="i")
+    name: Optional[str] = Field(default=None, alias="n")
+    address: Optional[str] = Field(default=None, alias="a")
+    complex_name: Optional[str] = Field(default=None, alias="cx")
+    price: Optional[int] = Field(default=None, alias="p")
+    land_area: Optional[float] = Field(default=None, alias="lt")
+    building_area: Optional[float] = Field(default=None, alias="lb")
+    bedrooms: Optional[int] = Field(default=None, alias="kt")
+    bathrooms: Optional[int] = Field(default=None, alias="km")
+    condition: Optional[str] = Field(default=None, alias="c")
+    condition_detail: Optional[str] = Field(default=None, alias="cd")
+    access: Optional[str] = Field(default=None, alias="ac")
+    access_detail: Optional[str] = Field(default=None, alias="ad")
+    certificate: Optional[str] = Field(default=None, alias="cert")
+    orientation: Optional[str] = Field(default=None, alias="ori")
+    electricity_watt: Optional[int] = Field(default=None, alias="w")
+    water_source: Optional[str] = Field(default=None, alias="water")
+    source_platforms: list[str] = Field(default_factory=list, alias="src")
+    listing_date: Optional[str] = Field(default=None, alias="dt")
+    price_type: Optional[str] = Field(default=None, alias="pt")
+    notes: Optional[str] = Field(default=None, alias="nt")
 
 
 class ComparableExtraction(BaseModel):
@@ -134,7 +138,7 @@ def prepare_upload(file_bytes: bytes, mime_type: str, max_width: int = 1280, jpe
         raise ValueError(f"Gambar tidak dapat diproses: {exc}") from exc
 
 
-def _client_call(api_key: str, model: str, prompt: str, file_bytes: bytes | None = None, mime_type: str | None = None, schema: Any = None, max_output_tokens: int = 1600, extra_files: list[tuple[bytes, str]] | None = None) -> str:
+def _client_call(api_key: str, model: str, prompt: str, file_bytes: bytes | None = None, mime_type: str | None = None, schema: Any = None, max_output_tokens: int = 1600, extra_files: list[tuple[bytes, str]] | None = None, return_metadata: bool = False) -> str | dict[str, Any]: 
     if not api_key: raise RuntimeError("GEMINI_API_KEY belum dikonfigurasi di Streamlit Secrets.")
     from google import genai
     from google.genai import types
@@ -160,9 +164,27 @@ def _client_call(api_key: str, model: str, prompt: str, file_bytes: bytes | None
                         response_schema=schema,
                     ) if schema else types.GenerateContentConfig(temperature=0.2, max_output_tokens=max_output_tokens),
                 )
-                text = getattr(response, "text", None)
-            if not text: raise RuntimeError("Gemini mengembalikan respons kosong.")
-            return str(text)
+                candidate = (getattr(response, "candidates", None) or [None])[0]
+                finish_obj = getattr(candidate, "finish_reason", None) if candidate is not None else None
+                finish_reason = getattr(finish_obj, "name", None) or (str(finish_obj).split(".")[-1] if finish_obj is not None else "UNKNOWN")
+                try:
+                    text = getattr(response, "text", None)
+                except Exception:
+                    parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+                    text = "".join(str(getattr(part, "text", "") or "") for part in parts)
+                usage = getattr(response, "usage_metadata", None)
+                prompt_tokens = getattr(usage, "prompt_token_count", None)
+                output_tokens = getattr(usage, "candidates_token_count", None)
+            if not text:
+                if "MAX_TOKENS" in str(finish_reason).upper():
+                    raise RuntimeError("Gemini menghentikan output karena MAX_TOKENS. Kurangi jumlah listing per proses atau ringkas narasi.")
+                raise RuntimeError("Gemini mengembalikan respons kosong.")
+            text = str(text)
+            if return_metadata:
+                return {"text": text, "finish_reason": str(finish_reason), "prompt_tokens": prompt_tokens, "output_tokens": output_tokens}
+            if "MAX_TOKENS" in str(finish_reason).upper():
+                raise RuntimeError(f"Gemini menghentikan respons pada MAX_TOKENS ({output_tokens or 'jumlah token tidak tersedia'} token output). JSON mungkin terpotong; bagi narasi menjadi kelompok lebih kecil.")
+            return text
         except Exception as exc:
             last_exc = exc
             message = str(exc).lower()
@@ -300,7 +322,7 @@ def review_investment(api_key: str, model: str, snapshot: dict[str, Any]) -> dic
         "risks": snapshot.get("risk_register", []),
     }
     prompt = """Bertindak sebagai reviewer underwriting properti lelang Indonesia. Audit analisis Python berikut. Jangan hitung ulang atau mengubah angka. Jangan mengarang data. Pisahkan fakta, asumsi, risiko dan verifikasi yang masih diperlukan. Jika decision status HOLD/DO NOT BID, jangan menyarankan bidding. Jawab bahasa Indonesia secara ringkas dalam JSON dengan keys: overall_review, strengths (array), critical_risks (array), before_bid_checklist (array), challenge_to_assumptions (array), recommendation (BUY_ONLY_IF|HOLD|DO_NOT_BID). JSON input berikut: """ + json.dumps(compact, ensure_ascii=False, default=str)
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, ConfigDict, Field
     class Review(BaseModel):
         overall_review: str
         strengths: list[str] = Field(default_factory=list)
@@ -315,7 +337,7 @@ def review_investment(api_key: str, model: str, snapshot: dict[str, Any]) -> dic
 
 def review_portfolio(api_key: str, model: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
     prompt = "Anda reviewer portofolio. Pilih maksimal satu property_id atau HOLD_ALL. Dilarang mengubah status hard-stop Python. Utamakan perlindungan modal, kecukupan kas, kualitas bukti pasar dan risiko aktif. eligibility_index bukan probabilitas. JSON kandidat: " + json.dumps(candidates[:8], ensure_ascii=False, default=str)
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, ConfigDict, Field
     class PortfolioReview(BaseModel):
         recommendation: str
         selected_property_id: Optional[str] = None
@@ -396,9 +418,9 @@ def _standard_access(value: Optional[str]) -> Optional[str]:
 
 
 def _detect_numbered_listing_sections(text: str) -> list[str]:
-    """Split on sequential top-level numbered headings, never on bullet lines."""
+    """Split top-level numbered listing headings, including Markdown bold/link headings."""
     lines = text.splitlines()
-    heading = re.compile(r"^\s*(\d{1,2})[.)]\s+(.+?)\s*$")
+    heading = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*(\d{1,2})[.)]\s+(.+?)\s*(?:\*\*|__)?\s*$")
     starts: list[tuple[int, int]] = []
     for index, line in enumerate(lines):
         match = heading.match(line)
@@ -412,83 +434,174 @@ def _detect_numbered_listing_sections(text: str) -> list[str]:
             if block:
                 sections.append(block)
         return sections
-    # A single listing or unnumbered pasted narrative is still sent as one unit.
     return [text.strip()] if text.strip() else []
 
 
-def parse_comparable_narrative(api_key: str, narrative: str, model: str = DEFAULT_MODEL) -> dict[str, Any]:
-    """Parse multi-listing prose into exactly one structured row per listing section.
+def _classify_source_url_scope(url: str) -> str:
+    """Conservative classification; a portal/category page is not a listing detail."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    if not host:
+        return "Tidak diketahui"
+    if "/venue/" in path:
+        return "Halaman venue/kompleks"
+    if any(x in path for x in ["/iklan/", "/listing/", "/property/", "/properti/", "/rumah-dijual/"]):
+        return "Listing individual"
+    if "kgmid=" in query or path in {"", "/"} or any(x in path for x in ["/search", "/q/", "/sidoarjo_g", "/properti"]):
+        return "Portal pencarian/kategori"
+    if "trovit" in host or ("olx" in host and ("q=" in query or "/q/" in path)):
+        return "Portal pencarian/kategori"
+    return "Perlu verifikasi"
 
-    Missing facts remain null. Source platform names are preserved; URLs and listing
-    publication dates are never invented. `date_found` is stamped locally as capture date.
+
+def _extract_section_urls(section: str) -> list[str]:
+    """Extract exact URLs from user text; exclude Google knowledge-panel/search links."""
+    from urllib.parse import urlparse
+    found = re.findall(r"https?://[^\s<>\]\)]+", section, flags=re.IGNORECASE)
+    urls: list[str] = []
+    for raw in found:
+        url = raw.strip().rstrip(".,;:!?\"'")
+        if not url:
+            continue
+        host = (urlparse(url).hostname or "").lower()
+        if host in {"google.com", "www.google.com"} and "kgmid=" in url.lower():
+            continue
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _comparable_prompt(sections: list[str], start_index: int) -> str:
+    manifest = "\n".join(
+        f"{start_index + offset}: {block.splitlines()[0].strip()[:140]}"
+        for offset, block in enumerate(sections)
+    )
+    numbered_blocks = "\n\n".join(
+        f"[LISTING {start_index + offset}]\n{block}"
+        for offset, block in enumerate(sections)
+    )
+    return (
+        "Ekstrak listing properti Indonesia menjadi JSON ringkas sesuai schema. "
+        "SATU judul bernomor = SATU rumah = SATU item. Semua bullet, alamat, harga, spesifikasi, fasilitas, legalitas, agen dan portal dalam blok sama adalah satu properti. "
+        f"Jumlah item wajib {len(sections)} dengan indeks global: {', '.join(str(start_index+i) for i in range(len(sections)))}. "
+        "Gunakan indeks i persis sesuai [LISTING]. Jangan memecah bullet atau menggabungkan listing. "
+        "Ekstrak hanya fakta tertulis. Tidak ada/ambigu = null; array sumber kosong bila tidak disebut. "
+        "p=harga rupiah integer; lt/lb=m2; kt/km=jumlah kamar. LT dan LB jangan tertukar. "
+        "c hanya Siap Huni, Butuh Renovasi, Hitung Tanah jika eksplisit; frasa 'full renovasi' masuk cd/nt dan bukan otomatis siap huni. "
+        "ac hanya 2 Mobil, 1 Mobil, Gang jika eksplisit; lebar jalan tulis di ad. Hook/carport tidak membuktikan akses. "
+        "Sumber platform masuk src. Jangan membuat URL/tanggal publikasi; URL dipasangkan Python dari teks asli. "
+        "pt: Asking aktif untuk harga penawaran/nego; Marked sold / perlu verifikasi bila disebut terjual tanpa bukti; Transaksi terverifikasi hanya bila harga final eksplisit. "
+        "Simpan arah hadap, listrik, air, jumlah lantai, carport, dimensi, agen, kode listing dan fasilitas ringkas di nt (maksimal 180 karakter). "
+        "Kembalikan JSON saja, tanpa penjelasan panjang.\n\nURUTAN BLOK:\n" + manifest + "\n\nTEKS ASLI:\n" + numbered_blocks
+    )
+
+
+def _parse_comparable_response(raw_result: Any, expected_count: int, start_index: int) -> ComparableExtraction:
+    metadata = raw_result if isinstance(raw_result, dict) and "text" in raw_result else {"text": raw_result, "finish_reason": "UNKNOWN"}
+    raw = str(metadata.get("text") or "")
+    finish_reason = str(metadata.get("finish_reason") or "UNKNOWN").upper()
+    if "MAX_TOKENS" in finish_reason:
+        raise RuntimeError(
+            f"Output Gemini terpotong karena MAX_TOKENS pada kelompok listing mulai nomor {start_index}. "
+            "Tidak ada data parsial dimasukkan ke tabel. Bagi narasi menjadi kelompok lebih kecil."
+        )
+    try:
+        parsed = ComparableExtraction.model_validate_json(raw)
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if any(marker in error_text for marker in ["unexpected end", "eof", "json_invalid", "unterminated string"]):
+            raise RuntimeError(
+                f"JSON Gemini terpotong/tidak selesai pada kelompok listing mulai nomor {start_index}. "
+                "Respons tidak dimasukkan ke tabel agar data tidak bergeser. Coba parse maksimal 3–4 listing per sekali proses."
+            ) from exc
+        raise RuntimeError(f"JSON comparable Gemini tidak sesuai schema: {exc}. Respons awal: {raw[:350]}") from exc
+    if len(parsed.items) != expected_count:
+        raise RuntimeError(
+            f"Gemini mengembalikan {len(parsed.items)} baris, sedangkan kelompok ini berisi {expected_count} listing. "
+            "Tabel tidak diisi agar bullet tidak salah dianggap sebagai properti."
+        )
+    expected_indices = list(range(start_index, start_index + expected_count))
+    indexed = {item.source_index: item for item in parsed.items if item.source_index is not None}
+    if len(indexed) == expected_count and set(indexed) == set(expected_indices):
+        parsed.items = [indexed[i] for i in expected_indices]
+    else:
+        supplied = [item.source_index for item in parsed.items if item.source_index is not None]
+        if supplied and supplied != expected_indices:
+            raise RuntimeError(f"Nomor listing dari Gemini tidak cocok dengan urutan input {expected_indices}; tabel tidak diisi.")
+    return parsed
+
+
+def parse_comparable_narrative(api_key: str, narrative: str, model: str = DEFAULT_MODEL) -> dict[str, Any]:
+    """Parse numbered multi-listing prose into one row per property.
+
+    Markdown headings and URLs are detected from original text. The response schema
+    uses compact keys and a larger output allowance to avoid incomplete JSON.
     """
     text = (narrative or "").strip()
     if len(text) < 40:
         raise ValueError("Teks comparable terlalu pendek. Tempel uraian listing yang lebih lengkap.")
     sections = _detect_numbered_listing_sections(text)
     expected_count = len(sections)
-    section_manifest = "\n".join(f"BLOK LISTING {i}: {block.splitlines()[0]}" for i, block in enumerate(sections, 1))
-    prompt = (
-        "Anda adalah data-extraction specialist untuk listing rumah sekunder Indonesia. "
-        "Ubah NARASI berikut menjadi JSON terstruktur sesuai schema. Sangat penting: satu listing/rumah "
-        "harus menjadi tepat satu item. Jangan membuat satu item untuk setiap bullet atau baris. "
-        f"Python telah mendeteksi tepat {expected_count} BLOK LISTING. Anda WAJIB mengembalikan tepat {expected_count} item, "
-        "masing-masing satu untuk setiap blok, sesuai urutan. Field source_index diisi nomor blok mulai 1. "
-        "Jangan membuat item tambahan dari bullet, subjudul, sumber portal, atau spesifikasi. "
-        "Gabungkan seluruh bullet sampai blok bernomor berikutnya sebagai satu properti. "
-        "Jangan memecah alamat, harga, spesifikasi, legalitas, fasilitas, dan sumber menjadi record terpisah. "
-        "Jangan menggabungkan dua listing berbeda.\n\n"
-        "Daftar blok yang diharapkan:\n" + section_manifest + "\n\n"
-        "Aturan ekstraksi: harga rupiah sebagai integer tanpa pemisah; LT/LB dalam m2 sebagai angka; "
-        "jangan tertukar. Bila LB tidak dicantumkan isi null, bukan 0. Kamar tidur/kamar mandi angka bila jelas. "
-        "condition hanya isi 'Siap Huni', 'Butuh Renovasi', atau 'Hitung Tanah' jika benar-benar eksplisit; "
-        "bila hanya disebut 'full renovasi', tulis itu dalam condition_detail dan biarkan condition null. "
-        "access hanya isi '2 Mobil', '1 Mobil', atau 'Gang' bila ada bukti jelas; selain itu null. "
-        "Jangan menyimpulkan akses jalan dari kata hook, carport, atau lokasi perumahan. Sertifikat hanya "
-        "isi bila disebut eksplisit. Ambil platform sumber dan nama agen persis dari narasi. Jangan membuat "
-        "URL listing jika tidak diberikan. Jangan membuat tanggal publikasi jika tidak disebut. "
-        "Harga penawaran/nego yang masih dipasarkan diklasifikasikan 'Asking aktif'. Listing yang disebut "
-        "sudah terjual tetapi belum ada bukti transaksi diklasifikasikan 'Marked sold / perlu verifikasi'. "
-        "Hanya bukti transaksi final yang eksplisit menjadi 'Transaksi terverifikasi'. Simpan fasilitas, arah "
-        "hadap, kode listing, dan detail lain di notes. Data tidak ada = null atau array kosong.\n\n"
-        "NARASI LISTING:\n" + text
-    )
-    raw = _client_call(api_key, model, prompt, schema=ComparableExtraction, max_output_tokens=2400)
-    try:
-        parsed = ComparableExtraction.model_validate_json(raw)
-    except Exception as exc:
-        raise RuntimeError(f"JSON comparable dari Gemini tidak sesuai schema: {exc}. Respons: {raw[:500]}") from exc
-
-    if len(parsed.items) != expected_count:
-        raise RuntimeError(
-            f"Gemini mengembalikan {len(parsed.items)} baris, sedangkan sistem mendeteksi {expected_count} blok listing. "
-            "Tabel tidak diisi agar bullet tidak salah dianggap sebagai properti. Coba parse ulang atau pisahkan judul tiap listing dengan nomor 1., 2., 3."
+    if expected_count > 10:
+        raise ValueError("Maksimal 10 listing per satu proses pada mode Free Tier. Bagi narasi menjadi dua kelompok.")
+    rows: list[dict[str, Any]] = []
+    all_notes: list[str] = []
+    # Use 4-item chunks only for larger inputs. Typical 5–7 listing input takes
+    # one or two requests and stays within the free-tier request cadence.
+    batch_size = 4 if expected_count > 5 else 5
+    for offset in range(0, expected_count, batch_size):
+        section_batch = sections[offset:offset + batch_size]
+        start_index = offset + 1
+        prompt = _comparable_prompt(section_batch, start_index)
+        raw_result = _client_call(
+            api_key, model, prompt, schema=ComparableExtraction,
+            max_output_tokens=4096, return_metadata=True
         )
-    indexed = {item.source_index: item for item in parsed.items if item.source_index is not None}
-    if indexed and (len(indexed) != expected_count or set(indexed) != set(range(1, expected_count + 1))):
-        raise RuntimeError("Nomor blok dari Gemini tidak konsisten. Tabel tidak diisi agar data tidak tertukar.")
-    ordered_items = [indexed[i] for i in range(1, expected_count + 1)] if indexed else parsed.items
-
+        parsed = _parse_comparable_response(raw_result, len(section_batch), start_index)
+        all_notes.extend(parsed.parsing_notes or [])
+        for local_index, item in enumerate(parsed.items):
+            global_index = start_index + local_index
+            row = item.model_dump()
+            row["source_index"] = global_index
+            row["condition"] = _standard_condition(item.condition)
+            row["access"] = _standard_access(item.access)
+            row["certificate"] = _standard_certificate(item.certificate)
+            platforms = [x.strip() for x in item.source_platforms if x and x.strip()]
+            row["source_platforms"] = "; ".join(dict.fromkeys(platforms))
+            urls = _extract_section_urls(section_batch[local_index])
+            row["source_url"] = urls[0] if urls else ""
+            row["source_evidence"] = ("Platform disebut: " + "; ".join(dict.fromkeys(platforms))) if platforms else ""
+            if urls:
+                url_evidence = "URL dari teks: " + " ; ".join(urls)
+                row["source_evidence"] = (row["source_evidence"] + " | " + url_evidence).strip(" |")
+                if len(urls) > 1:
+                    row["notes"] = ((row.get("notes") or "").strip() + " | URL lain: " + " ; ".join(urls[1:])).strip(" |")
+            row["source_url_scope"] = _classify_source_url_scope(row.get("source_url")) if row.get("source_url") else "Tidak ada URL langsung"
+            row["complex_name"] = item.complex_name or ""
+            row["orientation"] = item.orientation or ""
+            row["electricity_watt"] = item.electricity_watt
+            row["water_source"] = item.water_source or ""
+            row["price_type"] = _standard_price_type(item.price_type)
+            row["listing_date"] = _standard_optional_date(item.listing_date)
+            from datetime import date
+            row["date_found"] = date.today().isoformat()
+            row["date_found_basis"] = "Tanggal diproses sistem; bukan tanggal publikasi listing"
+            row["adjustment_pct"] = 0.0
+            row["parse_source"] = "Gemini narrative parser"
+            rows.append(row)
+    if len(rows) != expected_count:
+        raise RuntimeError(f"Hasil parsing tidak lengkap: {len(rows)} dari {expected_count} listing. Tidak ada data yang dimasukkan ke tabel.")
     from datetime import date
     captured = date.today().isoformat()
-    rows: list[dict[str, Any]] = []
-    for index, item in enumerate(ordered_items, 1):
-        platforms = [x.strip() for x in item.source_platforms if x and x.strip()]
-        row = item.model_dump()
-        row["source_index"] = index
-        row["condition"] = _standard_condition(item.condition)
-        row["access"] = _standard_access(item.access)
-        row["certificate"] = _standard_certificate(item.certificate)
-        row["source_platforms"] = "; ".join(dict.fromkeys(platforms))
-        row["source_url"] = item.source_url or ""
-        row["price_type"] = _standard_price_type(item.price_type)
-        row["listing_date"] = _standard_optional_date(item.listing_date)
-        row["date_found"] = captured
-        row["date_found_basis"] = "Tanggal diproses sistem; bukan tanggal publikasi listing"
-        row["adjustment_pct"] = 0.0
-        row["parse_source"] = "Gemini narrative parser"
-        # Human-readable evidence provenance; never present a source platform as a direct URL.
-        row["source_evidence"] = item.source_evidence or ""
-        rows.append(row)
+    return {
+        "items": rows,
+        "parsing_notes": all_notes,
+        "captured_at": captured,
+        "count": len(rows),
+        "detected_sections": expected_count,
+        "api_calls": (expected_count + batch_size - 1) // batch_size,
+    }
 
-    return {"items": rows, "parsing_notes": parsed.parsing_notes, "captured_at": captured, "count": len(rows), "detected_sections": expected_count}

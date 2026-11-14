@@ -1,6 +1,6 @@
 """Central application defaults. Tax/legal rates are editable assumptions, not legal advice."""
 APP_NAME = "Property Flipper Management System"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 MIN_ROI_PCT = 25.0
 MID_ROI_PCT = 35.0

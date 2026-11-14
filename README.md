@@ -1,4 +1,4 @@
-# Property Flipper Management System (PFMS) — V1.0.3
+# Property Flipper Management System (PFMS) — V1.0.4.3
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
@@ -192,7 +192,15 @@ python -m compileall -q .
 
 Suite pengujian V1.0.3 mencakup 49 unit test untuk kalkulasi BPHTB/biaya penjualan/BPN, ROI, maximum bid, cash reserve, lifecycle closing, validasi comparable, risk register, JSON sanitization untuk Google Sheets, schema Gemini RAB dan pemetaan item RAB. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
 
-## I. Batasan yang diketahui
+## I. Catatan V1.0.4 — parser comparable
+
+- Heading `**1. [Nama listing](URL)**` dan `**2. Nama listing**` kini dikenali sebagai blok terpisah.
+- Satu listing dapat memiliki banyak bullet; bullet tidak dipecah menjadi baris properti.
+- Schema Gemini menggunakan key JSON ringkas dan `max_output_tokens=4096`; input lebih dari lima listing diproses dalam batch maksimum empat.
+- URL portal diambil dari teks asli per blok. URL Google Knowledge Panel `kgmid` tidak dianggap sebagai URL listing. URL portal kategori/venue tetap perlu diperiksa apakah mengarah ke iklan individual.
+- Jika Gemini tetap berhenti dengan `MAX_TOKENS` atau JSON tidak lengkap, parser menolak keseluruhan hasil dan tidak mengisi tabel dengan data parsial.
+
+## J. Batasan yang diketahui
 
 - Belum ada scraping otomatis situs KPKNL.
 - V1 tidak mengandalkan automatic web search untuk comparable. User mencari listing dan menempelkan narasi; Gemini hanya menstrukturkan teks yang diberikan, bukan memverifikasi bahwa listing masih aktif atau benar.

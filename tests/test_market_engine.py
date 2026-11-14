@@ -59,7 +59,7 @@ def test_missing_condition_access_lb_and_direct_url_are_quality_penalties_not_au
     market = assess_comparables([row], {"land_area": 100, "building_area": 90})
     assert market["valid_count"] == 1
     assert "LB" in market["valid"][0]["missing_quality_fields"]
-    assert "URL langsung" in market["valid"][0]["missing_quality_fields"]
+    assert "URL sumber" in market["valid"][0]["missing_quality_fields"]
 
 
 def test_source_platform_without_direct_url_is_accepted_as_provenance():

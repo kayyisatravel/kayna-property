@@ -315,7 +315,7 @@ elif page == "New Auction Analysis":
                 "na_costs_reviewed": data.get("costs", {}).get("cost_estimates_reviewed", False),
             }
             for k, v in mapping.items(): st.session_state[k] = v
-            comparable_columns = ["name", "address", "price", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
+            comparable_columns = ["name", "address", "price", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
             risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "mitigation", "status"]
             loaded_comps = data.get("comparables", [])
             loaded_risks = data.get("risk_register", [])
@@ -578,11 +578,11 @@ elif page == "New Auction Analysis":
             st.caption(f"Parsing terakhir: {summary.get('count')} listing · tanggal tangkap sistem {summary.get('captured_at')}. Tanggal ini bukan tanggal publikasi iklan.")
             for note in st.session_state.get("na_comparable_parse_notes", []):
                 st.warning(note)
-        default_cols = ["name", "address", "complex_name", "price", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
-        if st.session_state.get("na_comparable_schema_version") != 2:
+        default_cols = ["name", "address", "complex_name", "price", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
+        if st.session_state.get("na_comparable_schema_version") != 3:
             if "na_comparables_editor_widget" in st.session_state:
                 del st.session_state["na_comparables_editor_widget"]
-            st.session_state.na_comparable_schema_version = 2
+            st.session_state.na_comparable_schema_version = 3
         if "na_comparables_editor" not in st.session_state:
             st.session_state.na_comparables_editor = pd.DataFrame([{c: None for c in default_cols} for _ in range(5)])
         else:
@@ -591,7 +591,7 @@ elif page == "New Auction Analysis":
                 if column not in comp_frame.columns:
                     comp_frame[column] = None
             st.session_state.na_comparables_editor = comp_frame[default_cols]
-        st.caption("Baris dapat digunakan untuk valuasi indikatif jika nama, harga, minimal salah satu LT/LB, dan sumber listing tersedia. Untuk GO final, setiap comparable harus memiliki URL listing langsung dan tanggal ditemukan agar dapat ditelusuri. Kondisi, akses, LB, dan tanggal publikasi yang tidak disebutkan tidak akan ditebak; kekurangannya menurunkan confidence.")
+        st.caption("Baris dapat digunakan untuk valuasi indikatif jika nama, harga, minimal salah satu LT/LB, dan sumber listing tersedia. Untuk GO final, setiap comparable harus memiliki URL iklan individual dan tanggal ditemukan. URL pencarian, agregator, dan halaman kompleks tidak dihitung sebagai iklan individual. Kondisi, akses, LB, dan tanggal publikasi yang tidak disebutkan tidak akan ditebak; kekurangannya menurunkan confidence.")
         edited = st.data_editor(st.session_state.na_comparables_editor, num_rows="dynamic", use_container_width=True, key="na_comparables_editor_widget", column_config={
             "name": st.column_config.TextColumn("Nama listing"),
             "address": st.column_config.TextColumn("Alamat/lokasi"),
@@ -602,7 +602,8 @@ elif page == "New Auction Analysis":
             "access": st.column_config.SelectboxColumn("Akses", options=["", "2 Mobil", "1 Mobil", "Gang"]),
             "price_type": st.column_config.SelectboxColumn("Jenis harga", options=["Asking aktif", "Marked sold / perlu verifikasi", "Transaksi terverifikasi"]),
             "source_platforms": st.column_config.TextColumn("Portal/platform sumber"),
-            "source_url": st.column_config.TextColumn("URL langsung (opsional)"),
+            "source_url": st.column_config.TextColumn("URL sumber (dari input)"),
+            "source_url_scope": st.column_config.SelectboxColumn("Jenis halaman sumber", options=["", "Listing individual", "Portal pencarian/kategori", "Halaman venue/kompleks", "Perlu verifikasi"], help="Untuk GO final, pilih Listing individual hanya bila URL benar-benar membuka iklan rumah tertentu."),
             "listing_date": st.column_config.TextColumn("Tanggal iklan (jika diketahui)"),
             "date_found": st.column_config.TextColumn("Tanggal ditemukan"),
             "adjustment_pct": st.column_config.NumberColumn("Penyesuaian (%)", help="Hanya diisi dengan alasan yang dapat dijelaskan."),

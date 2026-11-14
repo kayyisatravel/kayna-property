@@ -139,12 +139,16 @@ def assess_comparables(comparables: list[dict[str, Any]], subject: dict[str, Any
         for key, penalty, label in [
             ("condition", 7, "kondisi"), ("access", 5, "akses"),
             ("certificate", 3, "sertifikat"), ("building_area", 7, "LB"),
-            ("source_url", 6, "URL langsung"), ("date_found", 3, "tanggal ditemukan"),
+            ("source_url", 6, "URL sumber"), ("date_found", 3, "tanggal ditemukan"),
             ("listing_date", 4, "tanggal publikasi iklan"),
         ]:
             if is_blank(row.get(key)):
                 missing_penalty += penalty
                 missing_fields.append(label)
+        url_scope = str(row.get("source_url_scope") or "")
+        if str(row.get("source_url") or "").startswith(("http://", "https://")) and url_scope != "Listing individual":
+            missing_penalty += 6
+            missing_fields.append("URL belum membuktikan halaman listing individual")
         source_adjustment = 5 if price_type == "Transaksi terverifikasi" else (-8 if price_type == "Marked sold / perlu verifikasi" else -2)
         row_score = max(5.0, min(100.0, score - recency_penalty - missing_penalty + source_adjustment))
         source_weight = 1.20 if price_type == "Transaksi terverifikasi" else (0.80 if price_type == "Marked sold / perlu verifikasi" else 1.00)
@@ -167,13 +171,15 @@ def assess_comparables(comparables: list[dict[str, Any]], subject: dict[str, Any
     conservative = base * (1 - quick_sale_discount_pct / 100)
     optimistic = base * 1.05
     direct_url_count = sum(1 for r in rows if str(r.get("source_url") or "").startswith(("http://", "https://")))
+    individual_listing_url_count = sum(1 for r in rows if str(r.get("source_url_scope") or "") == "Listing individual")
     # GO-grade evidence must be traceable to an individual source listing and carry
     # a system/user capture date. Portal names alone are enough for preliminary math,
     # but not enough for a final investment approval audit trail.
     go_grade_count = sum(
         1 for r in rows
         if str(r.get("source_url") or "").startswith(("http://", "https://"))
+        and str(r.get("source_url_scope") or "") == "Listing individual"
         and not is_blank(r.get("date_found"))
     )
     status = "READY" if count >= 5 and go_grade_count >= 5 and confidence >= 55 else "PRELIMINARY"
-    return {"valid_count": count, "go_grade_count": go_grade_count, "valid": rows, "invalid": invalid, "base_exit": round(base), "conservative_exit": round(conservative), "optimistic_exit": round(optimistic), "confidence": round(confidence, 1), "simple_median": round(simple_median), "land_unit_price_median": round(land_unit_median) if land_unit_median else None, "building_unit_price_median": round(building_unit_median) if building_unit_median else None, "dispersion_pct": round(dispersion * 100, 1), "direct_url_count": direct_url_count, "status": status, "negotiation_discount_pct": negotiation_discount_pct, "quick_sale_discount_pct": quick_sale_discount_pct}
+    return {"valid_count": count, "go_grade_count": go_grade_count, "valid": rows, "invalid": invalid, "base_exit": round(base), "conservative_exit": round(conservative), "optimistic_exit": round(optimistic), "confidence": round(confidence, 1), "simple_median": round(simple_median), "land_unit_price_median": round(land_unit_median) if land_unit_median else None, "building_unit_price_median": round(building_unit_median) if building_unit_median else None, "dispersion_pct": round(dispersion * 100, 1), "direct_url_count": direct_url_count, "individual_listing_url_count": individual_listing_url_count, "status": status, "negotiation_discount_pct": negotiation_discount_pct, "quick_sale_discount_pct": quick_sale_discount_pct}

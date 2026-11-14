@@ -6,7 +6,7 @@ All related records use `property_id`; each immutable underwriting snapshot uses
 |---|---|---|
 | PROPERTIES | `property_id` | Master property, latest input payload, decision status, lifecycle status |
 | SURVEYS | `survey_id`; `property_id` | Survey and occupancy payload snapshots |
-| COMPARABLES | `comparable_id`; `property_id`, `analysis_id` | Raw comparable fields plus complete payload/validation results; payload includes source platforms/evidence, listing date, capture date, condition/access detail and other extracted specs |
+| COMPARABLES | `comparable_id`; `property_id`, `analysis_id` | Raw comparable fields (including source_url_scope) plus complete payload/validation results; payload includes source platforms/evidence, listing date, capture date, condition/access detail and other extracted specs |
 | COST_ESTIMATES | `estimate_id`; `property_id`, `analysis_id` | Cost assumptions and rules snapshot |
 | RISK_REGISTER | `risk_id`; `property_id`, `analysis_id` | Risk category, probability, impact, cash reserve, mitigation and status |
 | COST_ACTUALS | `actual_id`; `property_id` | Actual project cash outflow and receipt URL |
