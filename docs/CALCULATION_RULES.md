@@ -79,3 +79,13 @@ HOLD applies when evidence, survey, cash confirmation, increments, taxes or crit
 DO NOT BID applies when the limit fails the ROI hurdle, a legal dispute hard stop is reported, or a risk-adjusted ceiling is below auction limit.
 
 These rules are conservative workflow controls, not legal/tax advice. Review rule inputs for every region and auction lot.
+
+
+## 7. AI-assisted renovation RAB (V1.0.3)
+
+- Gemini may draft itemized renovation work from uploaded auction PDF/screenshot, up to five survey photos, current user condition description and property context.
+- The model must use only visible findings and explicit user descriptions. Hidden structural, roof, electrical, plumbing or interior defects must not be stated as confirmed from facade-only images; they go to `items_to_inspect`.
+- Each line may include quantity/unit, low unit-cost estimate and conservative upper unit-cost estimate. Python uses the conservative upper unit cost in the editable `unit_cost` column.
+- Unit rates are indicative estimates, not live contractor quotations or verified local supplier prices. User must review measurements, unit rates and scope before confirming cost estimates.
+- Renovation contingency remains a separate Python calculation and must not be included in AI line items (avoid double counting).
+- If quantity or unit cost is unknown, keep it blank and require user input.

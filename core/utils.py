@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json, math, re
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 
@@ -27,14 +28,19 @@ def to_float(value: Any, default: float = 0.0) -> float:
 
 def _json_safe(value: Any) -> Any:
     """Convert pandas/numpy values and non-finite numbers to strict JSON values."""
+    # pandas uses singleton sentinels that are not JSON serializable.
+    if value is None or type(value).__name__ in {"NAType", "NaTType"}:
+        return None
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(v) for v in value]
-    if value is None or isinstance(value, (str, bool, int)):
+    if isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else None
     # Handle pandas/numpy scalar values without requiring either package here.
     if hasattr(value, "item") and callable(value.item):
         try:
@@ -48,8 +54,25 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def json_safe_value(value: Any) -> Any:
+    """Public sanitizer for values sent to JSON/HTTP/Google Sheets."""
+    return _json_safe(value)
+
+
 def safe_json(value: Any) -> str:
     return json.dumps(_json_safe(value), ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def sheet_cell_value(value: Any) -> Any:
+    """Return a scalar/JSON string safe for gspread's requests(json=...) body."""
+    value = _json_safe(value)
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return safe_json(value)
+    if isinstance(value, (str, bool, int, float)):
+        return value
+    return str(value)
 
 
 def parse_json(value: Any, default: Any = None) -> Any:

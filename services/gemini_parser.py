@@ -94,6 +94,27 @@ class ComparableExtraction(BaseModel):
     parsing_notes: list[str] = Field(default_factory=list)
 
 
+class RenovationRabItem(BaseModel):
+    """One draft renovation work item; conservative unit cost is used by Python."""
+    work_item: str
+    scope_description: Optional[str] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    unit_cost_low: Optional[int] = None
+    unit_cost_conservative: Optional[int] = None
+    priority: Optional[str] = None
+    evidence_basis: Optional[str] = None
+    confidence: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RenovationRabExtraction(BaseModel):
+    items: list[RenovationRabItem] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    items_to_inspect: list[str] = Field(default_factory=list)
+    overall_note: Optional[str] = None
+
+
 
 def file_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -113,14 +134,18 @@ def prepare_upload(file_bytes: bytes, mime_type: str, max_width: int = 1280, jpe
         raise ValueError(f"Gambar tidak dapat diproses: {exc}") from exc
 
 
-def _client_call(api_key: str, model: str, prompt: str, file_bytes: bytes | None = None, mime_type: str | None = None, schema: Any = None, max_output_tokens: int = 1600) -> str:
+def _client_call(api_key: str, model: str, prompt: str, file_bytes: bytes | None = None, mime_type: str | None = None, schema: Any = None, max_output_tokens: int = 1600, extra_files: list[tuple[bytes, str]] | None = None) -> str:
     if not api_key: raise RuntimeError("GEMINI_API_KEY belum dikonfigurasi di Streamlit Secrets.")
     from google import genai
     from google.genai import types
     contents: Any = prompt
+    parts = []
     if file_bytes is not None:
-        part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type or "application/octet-stream")
-        contents = [prompt, part]
+        parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type or "application/octet-stream"))
+    for extra_bytes, extra_mime in extra_files or []:
+        parts.append(types.Part.from_bytes(data=extra_bytes, mime_type=extra_mime or "application/octet-stream"))
+    if parts:
+        contents = [prompt, *parts]
     last_exc = None
     for attempt in range(3):
         try:
@@ -158,6 +183,112 @@ def extract_auction_document(api_key: str, file_bytes: bytes, mime_type: str, fi
     except Exception as exc:
         raise RuntimeError(f"JSON hasil ekstraksi tidak sesuai skema: {exc}. Respons awal: {raw[:300]}") from exc
     data["document_sha256"] = file_sha256(file_bytes)
+    return data
+
+
+def renovation_estimate_to_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Map Gemini RAB output into the editable Streamlit renovation table.
+
+    `unit_cost` is deliberately populated with the conservative upper estimate;
+    all rows remain drafts until the user reviews and applies them.
+    """
+    output: list[dict[str, Any]] = []
+    for item in data.get("items", []):
+        raw_high = item.get("unit_cost_conservative")
+        raw_low = item.get("unit_cost_low")
+        high = max(0, int(raw_high)) if raw_high is not None else None
+        low = max(0, int(raw_low)) if raw_low is not None else None
+        if high == 0: high = None
+        if low == 0: low = None
+        if high is not None and low is not None and high < low:
+            high = low  # enforce that the conservative unit rate is never below the low estimate
+        quantity = item.get("quantity")
+        if quantity is not None and float(quantity) <= 0:
+            quantity = None
+        notes = [x for x in [item.get("scope_description"), item.get("evidence_basis"), item.get("notes")] if x]
+        if low is not None or high is not None:
+            notes.append(f"Kisaran indikatif: {low if low is not None else '—'}–{high if high is not None else '—'} / {item.get('unit') or 'unit'}")
+        if item.get("confidence"):
+            notes.append(f"Keyakinan estimasi: {item['confidence']}")
+        output.append({
+            "work_item": item.get("work_item", ""),
+            "quantity": quantity,
+            "unit": item.get("unit"),
+            "unit_cost_low": low,
+            "unit_cost": high,
+            "unit_cost_high": high,
+            "priority": item.get("priority"),
+            "evidence_basis": item.get("evidence_basis"),
+            "confidence": item.get("confidence"),
+            "notes": " | ".join(str(x) for x in notes),
+        })
+    return output
+
+
+def estimate_renovation_rab(
+    api_key: str,
+    files: list[tuple[bytes, str, str]],
+    condition_description: str,
+    property_context: dict[str, Any] | None = None,
+    model: str = DEFAULT_MODEL,
+) -> dict[str, Any]:
+    """Create an AI-assisted draft RAB from survey images/PDF and user descriptions.
+
+    The AI may only price visible/user-described work. Hidden structural/interior
+    defects must be flagged for inspection rather than invented as certain repairs.
+    """
+    description = (condition_description or "").strip()
+    selected_files = (files or [])[:6]
+    if not description and not selected_files:
+        raise ValueError("Unggah minimal satu foto/dokumen survei atau isi deskripsi kondisi rumah.")
+    prepared_files: list[tuple[bytes, str]] = []
+    file_labels: list[str] = []
+    for raw, mime, filename in selected_files:
+        prepared, prepared_mime = prepare_upload(raw, mime)
+        prepared_files.append((prepared, prepared_mime))
+        file_labels.append(filename)
+    context = property_context or {}
+    context_payload = {
+        "lokasi": context.get("address") or context.get("district") or "Tidak diketahui",
+        "luas_tanah_m2": context.get("land_area"),
+        "luas_bangunan_m2": context.get("building_area"),
+        "jenis_bangunan": context.get("property_type"),
+        "kondisi_umum_survei": context.get("physical_condition"),
+        "foto_dokumen_yang_dikirim": file_labels,
+    }
+    prompt = (
+        "Anda adalah estimator awal pekerjaan renovasi rumah di Indonesia. Buat DRAFT RAB terperinci dalam JSON sesuai schema. "
+        "Gunakan hanya bukti yang tampak pada foto/dokumen dan deskripsi kondisi yang diberikan pengguna. "
+        "Satu baris untuk satu pekerjaan, bukan satu baris untuk setiap foto. Prioritaskan pekerjaan wajib agar rumah aman, "
+        "berfungsi dan layak dipasarkan. Tambahkan pekerjaan kosmetik hanya jika terlihat/dijelaskan atau tandai sebagai opsional. "
+        "JANGAN menganggap atap, pondasi, struktur, instalasi listrik, pipa, plafon atau interior rusak jika tidak tampak/disebut. "
+        "Untuk bagian tersembunyi yang tidak dapat dinilai, jangan buat biaya seolah-olah kerusakannya pasti; masukkan ke items_to_inspect. "
+        "Buat kuantitas sebagai estimasi awal dari data LT/LB/foto hanya bila dapat diperkirakan; bila tidak, quantity=null dan jelaskan pengukuran yang dibutuhkan. "
+        "Berikan unit_cost_low dan unit_cost_conservative (batas atas rasional) dalam rupiah per satuan, termasuk material+upah bila relevan. "
+        "Harga satuan hanya ESTIMASI INDIKATIF, bukan penawaran kontraktor atau harga pasar real-time; gunakan perkiraan konservatif wajar untuk wilayah Sidoarjo/Jawa Timur bila lokasi cocok, "
+        "dan nyatakan ketidakpastiannya. Jangan mengarang sumber/vendor. Python akan memakai unit_cost_conservative sebagai dasar awal dan menambah contingency terpisah. "
+        "Jangan memasukkan contingency ke item RAB agar tidak dihitung dua kali. Bedakan priority Wajib/Disarankan/Opsional, confidence Tinggi/Sedang/Rendah, "
+        "dan evidence_basis hanya Fakta visual / Deskripsi pengguna / Asumsi kuantitas. Data yang tidak diketahui bukan nol dan bukan kerusakan pasti. "
+        "Jika foto hanya fasad, batasi item pada pekerjaan yang terlihat dan pekerjaan yang secara eksplisit dijelaskan pengguna. "
+        "Jangan memberi kepastian bahwa struktur aman hanya dari foto. Bahasa Indonesia, ringkas tetapi terukur.\n\n"
+        "KONTEKS OBJEK:\n" + json.dumps(context_payload, ensure_ascii=False, default=str) +
+        "\n\nDESKRIPSI KONDISI TERKINI DARI PENGGUNA:\n" + (description or "Tidak ada deskripsi tertulis; gunakan foto hanya untuk temuan visual.")
+    )
+    raw = _client_call(api_key, model or DEFAULT_MODEL, prompt, schema=RenovationRabExtraction, max_output_tokens=2800, extra_files=prepared_files)
+    try:
+        parsed = RenovationRabExtraction.model_validate_json(raw)
+    except Exception as exc:
+        raise RuntimeError(f"JSON RAB Gemini tidak sesuai schema: {exc}. Respons: {raw[:500]}") from exc
+    data = parsed.model_dump()
+    data["editor_rows"] = renovation_estimate_to_rows(data)
+    complete_low = [r for r in data["editor_rows"] if r.get("quantity") is not None and r.get("unit_cost_low") is not None]
+    complete_high = [r for r in data["editor_rows"] if r.get("quantity") is not None and r.get("unit_cost") is not None]
+    data["total_low_indicative"] = round(sum(r["quantity"] * r["unit_cost_low"] for r in complete_low)) if complete_low else None
+    data["total_conservative_indicative"] = round(sum(r["quantity"] * r["unit_cost"] for r in complete_high)) if complete_high else None
+    data["unpriced_items"] = [r.get("work_item", "Pekerjaan tanpa nama") for r in data["editor_rows"] if r.get("quantity") is None or r.get("unit_cost") is None]
+    data["total_conservative_complete"] = len(data["unpriced_items"]) == 0 and bool(data["editor_rows"])
+    data["files_used"] = file_labels
+    data["estimation_basis"] = "Draft AI berdasarkan foto/deskripsi pengguna; harga satuan indikatif dan wajib diverifikasi." 
     return data
 
 

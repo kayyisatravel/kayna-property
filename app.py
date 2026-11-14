@@ -12,7 +12,7 @@ from core.underwriting import run_underwriting
 from core.liquidity import compute_liquidity
 from core.lifecycle import actual_project_summary
 from core.calculator import calculate_project
-from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, file_sha256
+from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, estimate_renovation_rab, file_sha256
 from services.comparable_importer import parse_comparable_paste
 from storage.gsheets_db import GoogleSheetsDB, SCHEMA
 from storage.drive_storage import upload_file_to_drive
@@ -90,6 +90,22 @@ def budget_actual_table(estimate: dict[str, Any], actual_rows: list[dict[str, An
     for row in rows:
         row["Varians (Aktual - Anggaran)"] = row["Aktual"] - row["Anggaran"]
     return pd.DataFrame(rows)
+
+# Guided risk library: defaults are conservative planning placeholders, not official tariffs.
+RISK_PRESETS = {
+    "Penghuni belum bersedia mengosongkan objek": {"category":"Penguasaan", "risk_description":"Penghuni belum bersedia mengosongkan objek", "probability_1_5":4, "impact_1_5":5, "cost_reserve":100_000_000, "critical":True, "mitigation":"Verifikasi penghuni dan dasar penguasaan; negosiasi sukarela terdokumentasi; konsultasi bantuan hukum sebelum bidding.", "status":"Open"},
+    "Dokumen/identitas objek belum cocok": {"category":"Legalitas", "risk_description":"Dokumen atau identitas fisik objek belum cocok dengan pengumuman/sertifikat", "probability_1_5":3, "impact_1_5":5, "cost_reserve":25_000_000, "critical":True, "mitigation":"Cocokkan alamat, nomor hak, luas, peta bidang dan objek fisik; minta klarifikasi tertulis sebelum bidding.", "status":"Open"},
+    "Potensi sengketa atau klaim pihak ketiga": {"category":"Legalitas", "risk_description":"Potensi sengketa, sita lain, atau klaim pihak ketiga belum terselesaikan", "probability_1_5":2, "impact_1_5":5, "cost_reserve":50_000_000, "critical":True, "mitigation":"Telusuri dokumen dan status hak; konsultasi hukum independen; jangan bidding selama klaim material belum jelas.", "status":"Open"},
+    "Interior belum diperiksa": {"category":"Fisik/Renovasi", "risk_description":"Interior belum diperiksa sehingga kerusakan tersembunyi belum diketahui", "probability_1_5":4, "impact_1_5":4, "cost_reserve":30_000_000, "critical":False, "mitigation":"Lakukan inspeksi interior dan dokumentasikan atap, plafon, lantai, kamar mandi, listrik, air serta indikasi rembes.", "status":"Open"},
+    "Indikasi kebocoran/kerusakan atap": {"category":"Fisik/Renovasi", "risk_description":"Terdapat indikasi kebocoran atau kerusakan atap/talang", "probability_1_5":3, "impact_1_5":4, "cost_reserve":20_000_000, "critical":False, "mitigation":"Inspeksi saat/ setelah hujan; cek genteng, nok, talang, rangka dan plafon; minta penawaran tukang.", "status":"Open"},
+    "Indikasi masalah struktur": {"category":"Fisik/Renovasi", "risk_description":"Terdapat retak/indikasi masalah struktur yang perlu diperiksa tenaga kompeten", "probability_1_5":2, "impact_1_5":5, "cost_reserve":40_000_000, "critical":True, "mitigation":"Minta pemeriksaan teknis; jangan menyimpulkan struktur aman hanya dari foto; tahan keputusan sampai temuan dinilai.", "status":"Open"},
+    "Banjir/genangan lingkungan": {"category":"Lingkungan", "risk_description":"Riwayat banjir atau genangan di lingkungan belum terverifikasi", "probability_1_5":3, "impact_1_5":4, "cost_reserve":20_000_000, "critical":False, "mitigation":"Tanya RT/tetangga; cek elevasi, drainase, bekas genangan dan riwayat hujan.", "status":"Open"},
+    "Akses jalan/parkir membatasi pembeli": {"category":"Pasar/Lokasi", "risk_description":"Akses jalan atau parkir membatasi segmen calon pembeli", "probability_1_5":3, "impact_1_5":3, "cost_reserve":5_000_000, "critical":False, "mitigation":"Ukur lebar jalan dan uji akses kendaraan; sesuaikan comparable serta strategi/harga jual.", "status":"Open"},
+    "Biaya renovasi berpotensi membengkak": {"category":"Fisik/Renovasi", "risk_description":"RAB masih indikatif dan berpotensi membengkak setelah pekerjaan dibuka", "probability_1_5":4, "impact_1_5":4, "cost_reserve":20_000_000, "critical":False, "mitigation":"Rinci volume pekerjaan; minta minimal dua penawaran; gunakan contingency terpisah dan approval sebelum pekerjaan tambah.", "status":"Open"},
+    "Keterlambatan legalitas/penguasaan": {"category":"Waktu/Holding", "risk_description":"Pengurusan legalitas atau penguasaan berpotensi lebih lama dari rencana", "probability_1_5":3, "impact_1_5":4, "cost_reserve":15_000_000, "critical":False, "mitigation":"Buat checklist dokumen dan milestone; sediakan jadwal buffer; hitung ulang holding cost jika terlambat.", "status":"Open"},
+    "Harga pasar/comparable kurang kuat": {"category":"Pasar/Likuiditas", "risk_description":"Comparable belum cukup setara atau harga masih berupa asking price", "probability_1_5":4, "impact_1_5":4, "cost_reserve":0, "critical":True, "mitigation":"Tambah listing yang setara, verifikasi status dan tanggal, cari bukti transaksi atau konfirmasi agen.", "status":"Open"},
+    "Tunggakan utilitas/PBB/IPL": {"category":"Biaya/Administrasi", "risk_description":"Tunggakan listrik, air, PBB, IPL atau kewajiban lingkungan belum diketahui", "probability_1_5":3, "impact_1_5":3, "cost_reserve":10_000_000, "critical":False, "mitigation":"Minta informasi pengelola/instansi; cek rekening, PBB dan bukti pembayaran; masukkan tunggakan aktual.", "status":"Open"},
+}
 
 # ------------------------- Google Sheets connection ------------------------
 @st.cache_resource(show_spinner=False)
@@ -315,8 +331,9 @@ elif page == "New Auction Analysis":
             renovation_columns = ["work_item", "quantity", "unit", "unit_cost", "notes"]
             loaded_reno = data.get("costs", {}).get("renovation_items", [])
             st.session_state.na_renovation_items_editor = pd.DataFrame(loaded_reno) if loaded_reno else pd.DataFrame([{c: None for c in renovation_columns} for _ in range(4)])
+            st.session_state.na_rab_estimate = data.get("costs", {}).get("renovation_ai_estimate")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", False))
-            for widget_key in ["na_comparables_editor_widget", "na_risk_editor_widget", "na_renovation_items_widget"]:
+            for widget_key in ["na_comparables_editor_widget", "na_risk_editor_widget", "na_renovation_items_widget", "na_risk_editor_widget_v103", "na_renovation_items_widget_v103"]:
                 if widget_key in st.session_state: del st.session_state[widget_key]
             st.session_state.loaded_property_id = pid
             st.success("Data objek dimuat. Silakan koreksi dan analisis ulang.")
@@ -456,23 +473,52 @@ elif page == "New Auction Analysis":
         survey_photos = st.file_uploader("Foto hasil survei (opsional; pilih beberapa foto)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, key="na_survey_photos")
         st.caption("Foto survei tidak otomatis dikirim ke Gemini. Bila Google Drive archive diaktifkan, foto disimpan ke folder Drive dan metadata/hash dicatat di database.")
         st.markdown("### Risk register dan mitigasi")
-        st.caption("Isi risiko yang ditemukan. Probabilitas dan dampak 1–5. Cadangan biaya hanya menambah kebutuhan likuiditas; tidak dianggap sebagai biaya profit sampai benar-benar digunakan.")
+        st.caption("Pilih risiko yang relevan; sistem mengisi deskripsi, skor awal, mitigasi dan cadangan indikatif. Anda tetap dapat mengubah seluruh nilai. Cadangan risiko menambah kebutuhan kas, bukan biaya profit sampai benar-benar terpakai.")
         risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "mitigation", "status"]
         if "na_risk_editor" not in st.session_state:
-            st.session_state.na_risk_editor = pd.DataFrame([{c: None for c in risk_columns}])
-        risk_edited = st.data_editor(st.session_state.na_risk_editor, num_rows="dynamic", use_container_width=True, key="na_risk_editor_widget", column_config={
+            st.session_state.na_risk_editor = pd.DataFrame(columns=risk_columns)
+        with st.container(border=True):
+            st.markdown("**Tambah risiko dari daftar terpandu**")
+            selected_risk = st.selectbox("Pilih risiko umum", [""] + list(RISK_PRESETS.keys()), key="na_risk_preset_choice")
+            if st.button("＋ Tambahkan risiko terpilih", disabled=not selected_risk, key="na_add_risk_preset"):
+                rows_now = st.session_state.na_risk_editor.to_dict(orient="records")
+                existing_desc = {str(r.get("risk_description", "")).strip().lower() for r in rows_now}
+                preset = dict(RISK_PRESETS[selected_risk])
+                if preset["risk_description"].strip().lower() not in existing_desc:
+                    rows_now.append(preset)
+                    st.session_state.na_risk_editor = pd.DataFrame(rows_now, columns=risk_columns)
+                    st.session_state.na_risk_reviewed = False
+                    st.session_state.na_risk_reviewed_signature = ""
+                    for widget_key in ["na_risk_editor_widget", "na_risk_editor_widget_v103"]:
+                        if widget_key in st.session_state:
+                            del st.session_state[widget_key]
+                    st.rerun()
+                else:
+                    st.info("Risiko tersebut sudah ada di register.")
+            st.caption("Cadangan yang terisi otomatis adalah placeholder konservatif untuk membantu mulai mengisi, bukan tarif resmi. Ubah sesuai kondisi objek dan estimasi yang dapat dipertanggungjawabkan.")
+        risk_frame = st.session_state.na_risk_editor.copy()
+        for col in risk_columns:
+            if col not in risk_frame.columns: risk_frame[col] = None
+        risk_edited = st.data_editor(risk_frame[risk_columns], num_rows="dynamic", use_container_width=True, key="na_risk_editor_widget_v103", column_config={
             "category": st.column_config.TextColumn("Kategori"),
-            "risk_description": st.column_config.TextColumn("Deskripsi risiko"),
-            "probability_1_5": st.column_config.NumberColumn("Probabilitas (1–5)", min_value=1, max_value=5, step=1),
+            "risk_description": st.column_config.TextColumn("Risiko / temuan"),
+            "probability_1_5": st.column_config.NumberColumn("Kemungkinan (1–5)", min_value=1, max_value=5, step=1),
             "impact_1_5": st.column_config.NumberColumn("Dampak (1–5)", min_value=1, max_value=5, step=1),
-            "cost_reserve": st.column_config.NumberColumn("Cadangan biaya (Rp)", min_value=0, format="Rp %.0f"),
+            "cost_reserve": st.column_config.NumberColumn("Cadangan kas (Rp)", min_value=0, format="Rp %.0f"),
             "critical": st.column_config.CheckboxColumn("Kritis?"),
-            "mitigation": st.column_config.TextColumn("Mitigasi"),
+            "mitigation": st.column_config.TextColumn("Mitigasi / tindakan"),
             "status": st.column_config.SelectboxColumn("Status", options=["Open", "Mitigated", "Resolved"]),
         })
         st.session_state.na_risk_current = risk_edited.to_dict(orient="records")
+        if len(risk_edited):
+            st.caption("Skor risiko dihitung otomatis: kemungkinan × dampak. Skor 20–25 ditandai sangat tinggi. Risiko kritis yang masih terbuka akan menahan keputusan GO.")
+        risk_signature = hashlib.sha256(safe_json(st.session_state.na_risk_current).encode("utf-8")).hexdigest()
+        if st.session_state.get("na_risk_reviewed_signature", "") != risk_signature:
+            st.session_state.na_risk_reviewed = False
         set_default("na_risk_reviewed", False)
-        st.checkbox("Saya sudah meninjau risk register; semua risiko tambahan sudah dicatat atau tidak ada risiko tambahan yang diketahui.", key="na_risk_reviewed")
+        st.checkbox("Saya sudah meninjau risiko yang relevan dan mitigasinya; saya memahami bahwa risiko yang belum terselesaikan dapat menahan keputusan GO.", key="na_risk_reviewed")
+        if st.session_state.na_risk_reviewed:
+            st.session_state.na_risk_reviewed_signature = risk_signature
     with t3:
         st.subheader("Market comparables — AI narrative parser")
         st.caption("Tempel uraian listing apa adanya (boleh berupa narasi bernomor dan bullet seperti hasil riset Anda). Gemini akan menggabungkan setiap judul listing beserta bullet turunannya menjadi SATU baris properti di tabel. AI tidak membuat URL, tanggal publikasi, kondisi, atau akses yang tidak disebutkan.")
@@ -570,16 +616,71 @@ elif page == "New Auction Analysis":
     with t4:
         st.subheader("Biaya proyek dan target")
         rules = get_rules()
-        st.markdown("### RAB renovasi per item pekerjaan")
-        renovation_columns = ["work_item", "quantity", "unit", "unit_cost", "notes"]
+        st.markdown("### RAB renovasi — AI-assisted draft")
+        st.caption("Gemini menyusun rincian awal berdasarkan foto/screenshot yang diunggah dan deskripsi kondisi terbaru yang Anda masukkan. Harga satuan adalah estimasi indikatif konservatif, bukan penawaran kontraktor. Anda wajib memeriksa dan mengoreksinya sebelum dipakai menghitung bid.")
+        set_default("na_rab_condition_description", "")
+        st.text_area("Deskripsi kondisi aktual dan pekerjaan yang terlihat/diperlukan", key="na_rab_condition_description", height=115, placeholder="Contoh: fasad lama tidak terawat, cat luar mengelupas, pagar berkarat, beberapa genteng tampak bergeser; interior belum dapat diperiksa; pemilik menyampaikan kamar mandi perlu perbaikan...")
+        available_rab_files: list[tuple[bytes, str, str]] = []
+        if uploaded is not None:
+            available_rab_files.append((uploaded.getvalue(), uploaded.type or "application/octet-stream", uploaded.name))
+        for photo in (survey_photos or [])[:5]:
+            available_rab_files.append((photo.getvalue(), photo.type or "image/jpeg", photo.name))
+        st.caption(f"Berkas visual tersedia untuk RAB: {len(available_rab_files)} (dokumen lelang + maksimal 5 foto survei). Foto interior/atap/utilitas akan membantu; foto fasad saja tidak dapat memastikan kerusakan tersembunyi.")
+        if st.button("✨ Susun RAB awal dengan Gemini", type="secondary", disabled=not GEMINI_KEY or (not available_rab_files and not st.session_state.na_rab_condition_description.strip()), key="na_generate_rab"):
+            context = {"address": st.session_state.get("na_address", ""), "district": st.session_state.get("na_district", ""), "land_area": st.session_state.get("na_land"), "building_area": st.session_state.get("na_building"), "property_type": st.session_state.get("na_property_type", ""), "physical_condition": st.session_state.get("na_physical_condition", "")}
+            cache_material = st.session_state.na_rab_condition_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
+            cache_key = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+            cache = st.session_state.setdefault("na_rab_cache", {})
+            try:
+                if cache_key in cache:
+                    rab_result = cache[cache_key]
+                    st.info("Hasil RAB untuk input dan foto yang sama digunakan dari cache; Gemini tidak dipanggil ulang.")
+                else:
+                    with st.spinner("Gemini menilai foto dan deskripsi, lalu menyusun draft RAB per pekerjaan..."):
+                        rab_result = estimate_renovation_rab(GEMINI_KEY, available_rab_files, st.session_state.na_rab_condition_description, context, GEMINI_MODEL)
+                    cache[cache_key] = rab_result
+                st.session_state.na_rab_estimate = rab_result
+                st.session_state.na_renovation_items_editor = pd.DataFrame(rab_result.get("editor_rows", []))
+                st.session_state.na_costs_reviewed = False
+                for widget_key in ["na_renovation_items_widget", "na_renovation_items_widget_v103"]:
+                    if widget_key in st.session_state:
+                        del st.session_state[widget_key]
+                st.session_state.na_rab_accepted_pending = True
+                st.rerun()
+            except Exception as exc:
+                st.error(f"RAB AI gagal dibuat: {exc}. Anda tetap dapat mengisi RAB secara manual.")
+        if not GEMINI_KEY:
+            st.info("GEMINI_API_KEY belum diatur. RAB manual tetap tersedia.")
+        rab_estimate = st.session_state.get("na_rab_estimate")
+        if rab_estimate:
+            with st.expander("Ringkasan asumsi dan batasan RAB dari Gemini", expanded=True):
+                st.metric("Total indikatif konservatif dari AI", idr(rab_estimate.get("total_conservative_indicative")))
+                if not rab_estimate.get("total_conservative_complete", False):
+                    st.warning("Total RAB masih parsial karena volume atau harga satuan belum terisi pada sebagian pekerjaan. Lengkapi kolom tersebut sebelum mengonfirmasi anggaran.")
+                    if rab_estimate.get("unpriced_items"):
+                        st.caption("Pekerjaan yang belum masuk total: " + "; ".join(rab_estimate["unpriced_items"]))
+                for note in rab_estimate.get("assumptions", []): st.write(f"• {note}")
+                if rab_estimate.get("items_to_inspect"):
+                    st.warning("Perlu inspeksi sebelum final: " + "; ".join(rab_estimate["items_to_inspect"]))
+                if rab_estimate.get("overall_note"): st.caption(rab_estimate["overall_note"])
+                st.caption(rab_estimate.get("estimation_basis", "Draft AI; wajib diverifikasi."))
+        renovation_columns = ["work_item", "quantity", "unit", "unit_cost_low", "unit_cost", "unit_cost_high", "priority", "evidence_basis", "confidence", "notes"]
         if "na_renovation_items_editor" not in st.session_state:
             st.session_state.na_renovation_items_editor = pd.DataFrame([{c: None for c in renovation_columns} for _ in range(4)])
-        renovation_edited = st.data_editor(st.session_state.na_renovation_items_editor, num_rows="dynamic", use_container_width=True, key="na_renovation_items_widget", column_config={
+        renovation_frame = st.session_state.na_renovation_items_editor.copy()
+        for col in renovation_columns:
+            if col not in renovation_frame.columns: renovation_frame[col] = None
+        renovation_edited = st.data_editor(renovation_frame[renovation_columns], num_rows="dynamic", use_container_width=True, key="na_renovation_items_widget_v103", column_config={
             "work_item": st.column_config.TextColumn("Pekerjaan"),
             "quantity": st.column_config.NumberColumn("Volume", min_value=0.0, step=1.0),
             "unit": st.column_config.TextColumn("Satuan"),
-            "unit_cost": st.column_config.NumberColumn("Harga satuan (Rp)", min_value=0, format="Rp %.0f"),
-            "notes": st.column_config.TextColumn("Catatan / sumber estimasi"),
+            "unit_cost_low": st.column_config.NumberColumn("Harga satuan rendah (Rp)", min_value=0, format="Rp %.0f"),
+            "unit_cost": st.column_config.NumberColumn("Harga satuan konservatif (Rp)", min_value=0, format="Rp %.0f", help="Nilai inilah yang dipakai Python untuk menghitung RAB."),
+            "unit_cost_high": st.column_config.NumberColumn("Batas atas (Rp)", min_value=0, format="Rp %.0f"),
+            "priority": st.column_config.SelectboxColumn("Prioritas", options=["Wajib", "Disarankan", "Opsional"]),
+            "evidence_basis": st.column_config.SelectboxColumn("Dasar", options=["Fakta visual", "Deskripsi pengguna", "Asumsi kuantitas"]),
+            "confidence": st.column_config.SelectboxColumn("Keyakinan", options=["Tinggi", "Sedang", "Rendah"]),
+            "notes": st.column_config.TextColumn("Catatan / asumsi / sumber"),
         })
         st.session_state.na_renovation_items_current = renovation_edited.to_dict(orient="records")
         renovation_items = [r for r in st.session_state.na_renovation_items_current if str(r.get("work_item") or "").strip()]
@@ -603,8 +704,25 @@ elif page == "New Auction Analysis":
             set_default("na_risk_ceiling", None); st.number_input("Hard ceiling bid tambahan (opsional, Rp)", min_value=0, step=1_000_000, value=st.session_state.na_risk_ceiling, key="na_risk_ceiling")
         st.caption("Contingency renovasi dihitung otomatis oleh Python berdasarkan persentase Settings & Rules.")
         st.metric("Minimum ROI", "25%", help="Target wajib untuk seluruh periode proyek.")
+        cost_review_payload = {
+            "renovation_items": st.session_state.get("na_renovation_items_current", []),
+            "renovation_extra": st.session_state.get("na_renovation_extra", 0),
+            "renovation_months": st.session_state.get("na_renovation_months", 0),
+            "selling_months": st.session_state.get("na_selling_months", 0),
+            "legal_delay_months": st.session_state.get("na_legal_delay_months", 0),
+            "holding": st.session_state.get("na_monthly_holding", 0),
+            "marketing": st.session_state.get("na_marketing_cost", 0),
+            "other_presale": st.session_state.get("na_other_presale", 0),
+            "possession": st.session_state.get("na_possession_cost", 0),
+            "possession_reserve": st.session_state.get("na_possession_risk_reserve", 0),
+        }
+        cost_signature = hashlib.sha256(safe_json(cost_review_payload).encode("utf-8")).hexdigest()
+        if st.session_state.get("na_costs_reviewed_signature", "") != cost_signature:
+            st.session_state.na_costs_reviewed = False
         set_default("na_costs_reviewed", False)
-        st.checkbox("Saya sudah meninjau seluruh estimasi biaya (termasuk BPN, penguasaan, setiap item renovasi, contingency, holding, marketing, dan biaya lain). Nilai nol adalah keputusan yang disengaja.", key="na_costs_reviewed")
+        st.checkbox("Saya sudah meninjau seluruh estimasi biaya (BPN, penguasaan, setiap item RAB, contingency, holding, marketing dan biaya lain). Nilai nol adalah keputusan yang disengaja.", key="na_costs_reviewed")
+        if st.session_state.na_costs_reviewed:
+            st.session_state.na_costs_reviewed_signature = cost_signature
         with st.expander("Asumsi biaya dan pajak (editable pada Settings & Rules)"):
             st.json(rules)
 
@@ -624,7 +742,7 @@ elif page == "New Auction Analysis":
         renovation_items_data = [r for r in st.session_state.get("na_renovation_items_current", []) if str(r.get("work_item") or "").strip()]
         renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items_data)
         renovation_extra_cost = to_float(st.session_state.na_renovation_extra)
-        costs_data = {"renovation_cost": renovation_item_total + renovation_extra_cost, "renovation_items": renovation_items_data, "renovation_extra_cost": renovation_extra_cost, "renovation_months": st.session_state.na_renovation_months, "selling_months": st.session_state.na_selling_months, "legal_delay_months": st.session_state.na_legal_delay_months, "monthly_holding_cost": st.session_state.na_monthly_holding, "marketing_cost": st.session_state.na_marketing_cost, "other_presale_cost": st.session_state.na_other_presale, "cost_estimates_reviewed": bool(st.session_state.na_costs_reviewed)}
+        costs_data = {"renovation_cost": renovation_item_total + renovation_extra_cost, "renovation_items": renovation_items_data, "renovation_ai_estimate": st.session_state.get("na_rab_estimate"), "renovation_extra_cost": renovation_extra_cost, "renovation_months": st.session_state.na_renovation_months, "selling_months": st.session_state.na_selling_months, "legal_delay_months": st.session_state.na_legal_delay_months, "monthly_holding_cost": st.session_state.na_monthly_holding, "marketing_cost": st.session_state.na_marketing_cost, "other_presale_cost": st.session_state.na_other_presale, "cost_estimates_reviewed": bool(st.session_state.na_costs_reviewed)}
         comp_data = st.session_state.get("na_comparables_current", [])
         cash_profile, cash_events, liquidity = get_cash_data()
         if not cash_profile.get("cash_confirmed", False): liquidity["cash_confirmed"] = False

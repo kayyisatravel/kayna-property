@@ -70,3 +70,21 @@ Tombol **ANALISIS SEKARANG** tidak menunggu semua field lengkap. Sistem menghitu
 Tempel seluruh narasi listing bernomor (1., 2., 3.) beserta bullet di bawah masing-masing judul, lalu klik Parse narasi dengan Gemini AI. Sistem mendeteksi jumlah blok bernomor dan menolak hasil AI bila jumlah baris tidak sama, sehingga bullet tidak boleh berubah menjadi listing terpisah. Platform sumber seperti Rumah123/Pinhome disimpan sebagai provenance; URL langsung tidak dibuat-buat. Listing tanpa URL dapat masuk valuasi indikatif, tetapi tidak dihitung sebagai comparable GO-grade untuk persetujuan GO final.
 
 Analisis parsial tetap dapat dijalankan dengan data KPKNL yang tersedia. Jika limit tersedia, biaya pada harga limit dihitung meskipun ARV belum dapat ditentukan. Profit/ROI akan ditampilkan sebagai belum tersedia, bukan Rp0. Jika ARV indikatif menunjukkan maximum bid di bawah limit, sistem dapat memberi DO NOT BID / WALK AWAY meskipun data belum lengkap; keputusan tersebut diberi label preliminary dan tidak dapat menjadi GO. Jika LT/LB objek dan comparable tidak cukup untuk valuasi, hasilnya HOLD karena batas ekonomi belum bisa dihitung secara bertanggung jawab.
+
+
+## Draft RAB renovasi dengan Gemini (V1.0.3)
+
+1. Pada tab Survei, unggah foto kondisi aktual (depan, samping, belakang, interior, atap, kamar mandi, utilitas jika dapat diakses).
+2. Pada tab Biaya & Target, isi deskripsi kondisi terkini dan pekerjaan yang menurut survei terlihat/diperlukan.
+3. Klik `Susun RAB awal dengan Gemini`. Sistem mengirim satu request dengan dokumen pengumuman bila diunggah, maksimal lima foto survei, deskripsi, serta LT/LB/lokasi. Hasil identik di sesi yang sama menggunakan cache.
+4. Periksa daftar pekerjaan, volume, satuan, harga rendah, harga konservatif, dasar temuan, dan confidence. Kolom `unit_cost` adalah harga konservatif yang dipakai Python.
+5. Periksa `items_to_inspect`. Foto fasad tidak bisa memastikan kondisi struktur, atap tersembunyi, instalasi, atau interior yang tidak terlihat. Lakukan inspeksi/penawaran tukang sebelum final.
+6. Edit/ hapus / tambah item RAB di data editor. Perubahan RAB otomatis membatalkan konfirmasi tinjauan biaya; centang ulang setelah seluruhnya ditinjau.
+
+## Risk register terpandu (V1.0.3)
+
+Pilih risiko umum dari dropdown lalu klik `Tambahkan risiko terpilih`. Sistem mengisi skor awal, mitigasi dan cadangan kas indikatif. Ubah nilainya sesuai bukti objek. Risiko khusus dapat dimasukkan langsung sebagai baris baru di editor. Perubahan daftar risiko membatalkan konfirmasi risk review sehingga pengguna harus meninjau ulang.
+
+## Penyimpanan Google Sheets (V1.0.3)
+
+Sel kosong dari `st.data_editor` sering menjadi `NaN` Pandas. Adapter sekarang menormalisasi setiap kolom sebelum dikirim: nilai non-finite dan missing menjadi sel kosong, sementara struktur di dalam `payload_json` disimpan sebagai JSON valid. Bila masih terjadi error simpan, periksa log untuk tab yang gagal dan jangan menekan simpan berulang kali sebelum memastikan apakah baris pertama sudah masuk.

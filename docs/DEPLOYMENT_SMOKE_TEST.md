@@ -57,3 +57,13 @@
 
 ## 6. Benchmark TAS 3 M6/12
 Gunakan hanya angka dan dokumen yang sudah diverifikasi. Jangan mengisi biaya legal/pajak atau harga closing yang belum diketahui dengan angka rekaan. Bandingkan hasil aplikasi dengan lembar perhitungan manual sebelum menjadikan aplikasi dasar keputusan bidding.
+
+
+## 7. Regression V1.0.3 — Sheets save, RAB AI and guided risks
+- [ ] Isi comparable dengan beberapa kolom angka kosong, simpan; pastikan tidak ada `InvalidJSONError` dan nilai kosong menjadi sel kosong di Sheets.
+- [ ] Simpan risk register dengan satu baris kosong/diabaikan dan satu risiko terisi; pastikan tidak ada NaN di payload.
+- [ ] Upload foto survei dan isi deskripsi aktual; klik `Susun RAB awal dengan Gemini`.
+- [ ] Pastikan item RAB masuk sebagai satu baris per pekerjaan, memakai harga konservatif pada kolom `unit_cost`, dan tetap bisa diedit.
+- [ ] Pastikan AI menandai bagian yang perlu inspeksi dan tidak menambahkan kerusakan interior/struktur yang tidak tampak atau tidak disebut.
+- [ ] Ubah satu baris RAB setelah konfirmasi; pastikan checkbox tinjauan biaya kembali belum dicentang.
+- [ ] Tambahkan risiko dari preset, ubah probabilitas/dampak/cadangan/mitigasi, dan pastikan risk review harus dikonfirmasi ulang setelah perubahan.

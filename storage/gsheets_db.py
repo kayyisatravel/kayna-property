@@ -7,7 +7,7 @@ import random
 import time
 import gspread
 from gspread.exceptions import WorksheetNotFound
-from core.utils import safe_json, new_id
+from core.utils import safe_json, sheet_cell_value, new_id
 
 SCHEMA: dict[str, list[str]] = {
     "PROPERTIES": ["property_id", "created_at", "updated_at", "lot_code", "name", "address", "auction_date", "auction_limit", "decision_status", "lifecycle_status", "payload_json"],
@@ -110,13 +110,24 @@ class GoogleSheetsDB:
         return output
 
     def _row_values(self, title: str, record: dict[str, Any]) -> list[Any]:
-        values = []
+        """Build strictly JSON-safe Sheets cells.
+
+        Pandas data_editor returns NaN for blank numeric cells. gspread forwards
+        row values through requests(json=...), whose JSON encoder rejects NaN/Inf.
+        Sanitize every scalar (not only nested payload_json) before HTTP serialization.
+        """
+        if title not in SCHEMA:
+            raise KeyError(title)
+        values: list[Any] = []
         for col in SCHEMA[title]:
             value = record.get(col, "")
-            if col == "payload_json" and "payload" in record: value = safe_json(record.get("payload", {}))
-            if col == "value_json" and "value" in record: value = safe_json(record["value"])
-            if isinstance(value, (dict, list)): value = safe_json(value)
-            if value is None: value = ""
+            if col == "payload_json" and "payload" in record:
+                value = safe_json(record.get("payload", {}))
+            elif col == "value_json" and "value" in record:
+                value = safe_json(record["value"])
+            else:
+                value = sheet_cell_value(value)
+            # Nested JSON fields are also normalized with allow_nan=False by safe_json.
             values.append(value)
         return values
 

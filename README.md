@@ -1,4 +1,4 @@
-# Property Flipper Management System (PFMS) — V1.0.2
+# Property Flipper Management System (PFMS) — V1.0.3
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
@@ -8,7 +8,8 @@ Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelola
 
 - Upload PDF/screenshot pengumuman lelang; Gemini 3.5 Flash-Lite mengekstrak metadata dan menilai kondisi fasad dalam satu panggilan terstruktur.
 - Hasil ekstraksi otomatis mengisi field Streamlit. Data yang tidak ditemukan tetap kosong; pengguna memeriksa dan mengoreksi sebelum analisis.
-- Form survei, status hunian, biaya dan waktu penguasaan, RAB renovasi, risk register dan unggahan foto survei.
+- Form survei, status hunian, biaya dan waktu penguasaan, unggahan foto survei, dan risk register terpandu dengan preset risiko serta mitigasi yang dapat diedit.
+- Draft RAB renovasi per pekerjaan dibuat dengan satu klik Gemini berdasarkan screenshot/PDF pengumuman, maksimal lima foto survei, deskripsi kondisi terkini dan data luas/lokasi. Harga satuan konservatif diisi sebagai estimasi indikatif, tetap dapat diedit dan wajib disetujui pengguna.
 - Comparable pasar: tempel narasi beberapa listing (judul bernomor + bullet) lalu klik **Parse narasi dengan Gemini AI**. AI mengelompokkan setiap properti menjadi satu baris tabel terstruktur; CSV/TSV dan `st.data_editor` tetap tersedia sebagai alternatif. Listing divalidasi, dideduplikasi, diberi bobot kesetaraan/kebaruan, lalu dihitung menjadi conservative/base/optimistic ARV.
 - Data comparable yang tidak disebutkan (misalnya LB, kondisi, akses, URL langsung, tanggal publikasi) tetap kosong dan menurunkan confidence; tidak diisi tebakan. Nama portal/sumber yang disebut pengguna disimpan sebagai provenance. Untuk GO final, lima comparable harus memiliki URL listing langsung dan tanggal ditemukan; portal name saja hanya cukup untuk valuasi indikatif.
 - Analisis parsial tetap dapat dijalankan dengan data KPKNL seadanya. Sistem menghitung biaya yang sudah bisa dihitung; bila ARV belum tersedia, profit/ROI dibiarkan null dan status HOLD. Bila data pasar yang tersedia sudah menunjukkan ceiling bid di bawah limit, sistem dapat menampilkan DO NOT BID/Walk Away meski belum memenuhi gate GO.
@@ -17,7 +18,7 @@ Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelola
 - Investor cashflow: real cash diinput user, outflow mendatang hanya mengurangi kapasitas bila dikonfirmasi user, cadangan likuiditas 10–20%.
 - Simpan semua keputusan (GO, CONDITIONAL GO, HOLD, DO NOT BID) sebagai opportunity dan snapshot analisis.
 - Lifecycle aset WON/ACTIVE/SOLD, milestones, biaya aktual, closing, dan track record.
-- Google Sheets CRUD, cache pembacaan 300 detik, manual refresh, batch append untuk tabel yang relevan, retry/backoff untuk error sementara.
+- Google Sheets CRUD dengan normalisasi seluruh sel (NaN/Inf/pd.NA/NaT menjadi kosong/null), cache pembacaan 300 detik, manual refresh, batch append dan retry/backoff untuk error sementara.
 - Gemini schema menggunakan model Pydantic dengan properti tetap (tidak memakai dynamic dictionary `additionalProperties`) agar kompatibel dengan Gemini Developer API.
 - Optional Google Drive archive untuk dokumen dan foto.
 
@@ -189,7 +190,7 @@ pytest -q
 python -m compileall -q .
 ```
 
-Suite pengujian V1.0.2 mencakup 42 unit test untuk kalkulasi BPHTB/biaya penjualan/BPN, ROI, maximum bid, cash reserve, lifecycle closing, validasi comparable, risk register, JSON serialization dan decision gate. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
+Suite pengujian V1.0.3 mencakup 49 unit test untuk kalkulasi BPHTB/biaya penjualan/BPN, ROI, maximum bid, cash reserve, lifecycle closing, validasi comparable, risk register, JSON sanitization untuk Google Sheets, schema Gemini RAB dan pemetaan item RAB. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
 
 ## I. Batasan yang diketahui
 
