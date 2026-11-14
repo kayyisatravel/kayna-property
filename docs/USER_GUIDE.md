@@ -101,3 +101,8 @@ Isi tipe properti, LT/LB, jumlah lantai, kamar tidur/mandi, kondisi fisik umum, 
 Gemini memilih scope dan memberi rentang harga satuan indikatif; Python memberikan volume screening dari katalog yang transparan. Jumlah kamar mandi dapat menjadi dasar jumlah paket area basah jika pekerjaan itu memang dipilih; kamar tidur hanya menjadi konteks kompleksitas ruang dan bukan jumlah pintu. Lebar/jenis akses menjadi konteks mobilisasi/harga satuan, bukan pengali volume otomatis.
 
 Kategori Auto dengan kondisi yang belum diketahui hanya menampilkan inspeksi/persiapan. Renovasi ringan memakai allowance area lokal ber-confidence rendah (atap 5–15%, plafon 3–10%, keramik 2–6%) hanya jika ada indikasi relevan. Renovasi berat tidak mengisi volume struktur otomatis dan harus dinilai engineer. Setiap RAB harus diperiksa, dikoreksi dan dibandingkan dengan pengukuran serta penawaran kontraktor sebelum menekan konfirmasi biaya.
+
+
+## Error penyimpanan Google Sheets (V1.0.7)
+
+PFMS mengompresi JSON panjang pada kolom `*_json` agar satu sel tidak melewati batas Google Sheets sekitar 50.000 karakter. Aplikasi membaca/dekompresi otomatis; jangan mengedit isi marker `__PFMS_GZIP_JSON_V1__:` secara manual. Jika penulisan tetap gagal, baca HTTP status dan pesan Google yang ditampilkan aplikasi. Untuk 403, periksa akses Editor Service Account dan proteksi sheet; untuk 400/range, periksa tab/header; untuk grid limit, tambahkan baris worksheet. Setelah kegagalan simpan multi-tab, periksa Database & History sebelum mencoba ulang karena sebagian tab mungkin sudah berhasil ditulis.

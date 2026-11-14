@@ -1,5 +1,13 @@
 # Changelog
 
+## V1.0.7
+- Compress long JSON cells using a versioned gzip/base64 marker and transparently decode on read to stay below Google Sheets per-cell character limits.
+- Add preflight validation for overlong non-JSON cells.
+- Surface Google API HTTP status and response message with tab/range context.
+- Catch save errors in the UI and warn that earlier table writes may have succeeded.
+- Add round-trip and error-diagnostic regression tests.
+
+
 ## V1.0.0
 - Modular Streamlit application for Indonesian auction-property underwriting and full property lifecycle tracking.
 - Gemini structured document extraction and facade assessment.

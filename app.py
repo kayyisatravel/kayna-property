@@ -874,78 +874,82 @@ elif page == "New Auction Analysis":
         report = build_analysis_markdown(snap)
         st.download_button("Unduh Investment Memo (Markdown)", report, file_name=f"investment-memo-{snap['property_id']}.md", mime="text/markdown")
         if st.button("💾 SIMPAN / UPDATE ANALISIS KE DATABASE", type="primary", use_container_width=True):
-            propid = snap["property_id"]
-            latest = {**snap, "ai_review": st.session_state.ai_review}
-            old = next((p for p in list_properties() if p.get("property_id") == propid), None)
-            lifecycle = old.get("lifecycle_status", "PROSPECT") if old else "PROSPECT"
-            save_property_record(propid, st.session_state.current_inputs, decision["status"], lifecycle, latest)
-            upsert_record("ANALYSIS_HISTORY", "analysis_id", {"analysis_id": snap["analysis_id"], "property_id": propid, "analyzed_at": snap["analyzed_at"], "decision_status": decision["status"], "eligibility_index_pct": snap["eligibility_index_pct"], "conservative_arv": mkt.get("conservative_exit"), "max_bid": tiers.get("max_bid"), "roi_at_limit_pct": at.get("roi_pct"), "payload": latest})
-            upsert_record("SURVEYS", "survey_id", {"survey_id": f"{snap['analysis_id']}-SRV", "property_id": propid, "updated_at": iso_now(), "survey_status": snap["survey"].get("survey_status"), "occupancy_status": snap["survey"].get("occupancy_status"), "payload": snap["survey"]})
-            upsert_record("COST_ESTIMATES", "estimate_id", {"estimate_id": f"{snap['analysis_id']}-CST", "property_id": propid, "analysis_id": snap["analysis_id"], "updated_at": iso_now(), "payload": {"costs": snap["costs"], "rules": snap["rules"]}})
-            existing_risk_ids = {str(x.get("risk_id")) for x in read_table("RISK_REGISTER")}
-            risk_records = []
-            for idx, risk in enumerate(snap.get("risk_register", []), start=1):
-                risk_id = f"{snap['analysis_id']}-RISK{idx:02d}"
-                if risk_id in existing_risk_ids: continue
-                risk_records.append({"risk_id": risk_id, "property_id": propid, "analysis_id": snap["analysis_id"], "category": risk.get("category"), "risk_description": risk.get("risk_description"), "probability_1_5": risk.get("probability_1_5"), "impact_1_5": risk.get("impact_1_5"), "severity_score": to_float(risk.get("probability_1_5")) * to_float(risk.get("impact_1_5")), "cost_reserve": risk.get("cost_reserve"), "critical": bool(risk.get("critical", False)), "mitigation": risk.get("mitigation"), "status": risk.get("status"), "created_at": iso_now()})
-            if risk_records:
-                if repo: repo.append_records("RISK_REGISTER", risk_records); cached_read.clear()
-                else: st.session_state.local_db["RISK_REGISTER"].extend(risk_records)
-            comps = []
-            valid_names = {str(c.get("name")) for c in mkt.get("valid", [])}
-            invalid_by_name = {str(x.get("name")): x.get("errors", []) for x in mkt.get("invalid", [])}
-            existing_comparable_ids = {str(x.get("comparable_id")) for x in read_table("COMPARABLES")}
-            for idx, c in enumerate(snap.get("comparables", []), start=1):
-                cname = str(c.get("name", ""))
-                comparable_id = f"{snap['analysis_id']}-CMP{idx:02d}"
-                if comparable_id in existing_comparable_ids: continue
-                comps.append({"comparable_id": comparable_id, "property_id": propid, "analysis_id": snap["analysis_id"], "name": c.get("name"), "price": c.get("price"), "land_area": c.get("land_area"), "building_area": c.get("building_area"), "price_type": c.get("price_type"), "source_url": c.get("source_url"), "date_found": c.get("date_found"), "payload": {**c, "validation_status": "VALID" if cname in valid_names else "INVALID", "validation_errors": invalid_by_name.get(cname, [])}})
-            if comps:
-                if repo: repo.save_comparables(comps); cached_read.clear()
-                else: st.session_state.local_db["COMPARABLES"].extend(comps)
-            if uploaded:
-                digest = file_sha256(uploaded.getvalue())
-                existing_doc = next((d for d in read_table("DOCUMENTS") if d.get("property_id") == propid and d.get("document_hash") == digest), None)
-                if not existing_doc:
+            try:
+                propid = snap["property_id"]
+                latest = {**snap, "ai_review": st.session_state.ai_review}
+                old = next((p for p in list_properties() if p.get("property_id") == propid), None)
+                lifecycle = old.get("lifecycle_status", "PROSPECT") if old else "PROSPECT"
+                save_property_record(propid, st.session_state.current_inputs, decision["status"], lifecycle, latest)
+                upsert_record("ANALYSIS_HISTORY", "analysis_id", {"analysis_id": snap["analysis_id"], "property_id": propid, "analyzed_at": snap["analyzed_at"], "decision_status": decision["status"], "eligibility_index_pct": snap["eligibility_index_pct"], "conservative_arv": mkt.get("conservative_exit"), "max_bid": tiers.get("max_bid"), "roi_at_limit_pct": at.get("roi_pct"), "payload": latest})
+                upsert_record("SURVEYS", "survey_id", {"survey_id": f"{snap['analysis_id']}-SRV", "property_id": propid, "updated_at": iso_now(), "survey_status": snap["survey"].get("survey_status"), "occupancy_status": snap["survey"].get("occupancy_status"), "payload": snap["survey"]})
+                upsert_record("COST_ESTIMATES", "estimate_id", {"estimate_id": f"{snap['analysis_id']}-CST", "property_id": propid, "analysis_id": snap["analysis_id"], "updated_at": iso_now(), "payload": {"costs": snap["costs"], "rules": snap["rules"]}})
+                existing_risk_ids = {str(x.get("risk_id")) for x in read_table("RISK_REGISTER")}
+                risk_records = []
+                for idx, risk in enumerate(snap.get("risk_register", []), start=1):
+                    risk_id = f"{snap['analysis_id']}-RISK{idx:02d}"
+                    if risk_id in existing_risk_ids: continue
+                    risk_records.append({"risk_id": risk_id, "property_id": propid, "analysis_id": snap["analysis_id"], "category": risk.get("category"), "risk_description": risk.get("risk_description"), "probability_1_5": risk.get("probability_1_5"), "impact_1_5": risk.get("impact_1_5"), "severity_score": to_float(risk.get("probability_1_5")) * to_float(risk.get("impact_1_5")), "cost_reserve": risk.get("cost_reserve"), "critical": bool(risk.get("critical", False)), "mitigation": risk.get("mitigation"), "status": risk.get("status"), "created_at": iso_now()})
+                if risk_records:
+                    if repo: repo.append_records("RISK_REGISTER", risk_records); cached_read.clear()
+                    else: st.session_state.local_db["RISK_REGISTER"].extend(risk_records)
+                comps = []
+                valid_names = {str(c.get("name")) for c in mkt.get("valid", [])}
+                invalid_by_name = {str(x.get("name")): x.get("errors", []) for x in mkt.get("invalid", [])}
+                existing_comparable_ids = {str(x.get("comparable_id")) for x in read_table("COMPARABLES")}
+                for idx, c in enumerate(snap.get("comparables", []), start=1):
+                    cname = str(c.get("name", ""))
+                    comparable_id = f"{snap['analysis_id']}-CMP{idx:02d}"
+                    if comparable_id in existing_comparable_ids: continue
+                    comps.append({"comparable_id": comparable_id, "property_id": propid, "analysis_id": snap["analysis_id"], "name": c.get("name"), "price": c.get("price"), "land_area": c.get("land_area"), "building_area": c.get("building_area"), "price_type": c.get("price_type"), "source_url": c.get("source_url"), "date_found": c.get("date_found"), "payload": {**c, "validation_status": "VALID" if cname in valid_names else "INVALID", "validation_errors": invalid_by_name.get(cname, [])}})
+                if comps:
+                    if repo: repo.save_comparables(comps); cached_read.clear()
+                    else: st.session_state.local_db["COMPARABLES"].extend(comps)
+                if uploaded:
+                    digest = file_sha256(uploaded.getvalue())
+                    existing_doc = next((d for d in read_table("DOCUMENTS") if d.get("property_id") == propid and d.get("document_hash") == digest), None)
+                    if not existing_doc:
+                        drive_folder_id = str(secret("DRIVE_FOLDER_ID", "") or "")
+                        source_link = snap["property"].get("auction_url", "")
+                        notes = "Dokumen digunakan untuk ekstraksi AI."
+                        if drive_folder_id and service_info:
+                            try:
+                                drive_file = upload_file_to_drive(dict(service_info), drive_folder_id, uploaded.name, uploaded.type, uploaded.getvalue())
+                                source_link = drive_file.get("web_view_link") or source_link
+                                notes += f" Diarsipkan di Google Drive; file_id={drive_file.get('file_id')}."
+                            except Exception as drive_exc:
+                                notes += f" Arsip Drive gagal: {drive_exc}. File binary tidak tersimpan; simpan manual bila diperlukan."
+                                st.warning(notes)
+                        else:
+                            notes += " DRIVE_FOLDER_ID belum diatur; file binary tidak disimpan permanen, hanya metadata dan hash."
+                            st.warning(notes)
+                        append_record("DOCUMENTS", {"document_id": new_id("DOC"), "property_id": propid, "file_name": uploaded.name, "mime_type": uploaded.type, "source_url": source_link, "document_hash": digest, "uploaded_at": iso_now(), "notes": notes, "extraction_json": safe_json(snap.get("document_extraction") or {})})
+                    elif existing_doc and not existing_doc.get("extraction_json") and snap.get("document_extraction"):
+                        upsert_record("DOCUMENTS", "document_id", {**existing_doc, "extraction_json": safe_json(snap.get("document_extraction"))})
+                for photo in (survey_photos or []):
+                    photo_bytes = photo.getvalue()
+                    photo_digest = file_sha256(photo_bytes)
+                    existing_photo = next((d for d in read_table("DOCUMENTS") if d.get("property_id") == propid and d.get("document_hash") == photo_digest), None)
+                    if existing_photo: continue
+                    photo_link = ""
+                    photo_notes = "Foto hasil survei lapangan."
                     drive_folder_id = str(secret("DRIVE_FOLDER_ID", "") or "")
-                    source_link = snap["property"].get("auction_url", "")
-                    notes = "Dokumen digunakan untuk ekstraksi AI."
                     if drive_folder_id and service_info:
                         try:
-                            drive_file = upload_file_to_drive(dict(service_info), drive_folder_id, uploaded.name, uploaded.type, uploaded.getvalue())
-                            source_link = drive_file.get("web_view_link") or source_link
-                            notes += f" Diarsipkan di Google Drive; file_id={drive_file.get('file_id')}."
-                        except Exception as drive_exc:
-                            notes += f" Arsip Drive gagal: {drive_exc}. File binary tidak tersimpan; simpan manual bila diperlukan."
-                            st.warning(notes)
+                            drive_file = upload_file_to_drive(dict(service_info), drive_folder_id, photo.name, photo.type, photo_bytes)
+                            photo_link = drive_file.get("web_view_link", "")
+                            photo_notes += f" Diarsipkan di Google Drive; file_id={drive_file.get('file_id')}."
+                        except Exception as photo_exc:
+                            photo_notes += f" Arsip Drive gagal: {photo_exc}; simpan manual bila diperlukan."
+                            st.warning(photo_notes)
                     else:
-                        notes += " DRIVE_FOLDER_ID belum diatur; file binary tidak disimpan permanen, hanya metadata dan hash."
-                        st.warning(notes)
-                    append_record("DOCUMENTS", {"document_id": new_id("DOC"), "property_id": propid, "file_name": uploaded.name, "mime_type": uploaded.type, "source_url": source_link, "document_hash": digest, "uploaded_at": iso_now(), "notes": notes, "extraction_json": safe_json(snap.get("document_extraction") or {})})
-                elif existing_doc and not existing_doc.get("extraction_json") and snap.get("document_extraction"):
-                    upsert_record("DOCUMENTS", "document_id", {**existing_doc, "extraction_json": safe_json(snap.get("document_extraction"))})
-            for photo in (survey_photos or []):
-                photo_bytes = photo.getvalue()
-                photo_digest = file_sha256(photo_bytes)
-                existing_photo = next((d for d in read_table("DOCUMENTS") if d.get("property_id") == propid and d.get("document_hash") == photo_digest), None)
-                if existing_photo: continue
-                photo_link = ""
-                photo_notes = "Foto hasil survei lapangan."
-                drive_folder_id = str(secret("DRIVE_FOLDER_ID", "") or "")
-                if drive_folder_id and service_info:
-                    try:
-                        drive_file = upload_file_to_drive(dict(service_info), drive_folder_id, photo.name, photo.type, photo_bytes)
-                        photo_link = drive_file.get("web_view_link", "")
-                        photo_notes += f" Diarsipkan di Google Drive; file_id={drive_file.get('file_id')}."
-                    except Exception as photo_exc:
-                        photo_notes += f" Arsip Drive gagal: {photo_exc}; simpan manual bila diperlukan."
-                        st.warning(photo_notes)
-                else:
-                    photo_notes += " DRIVE_FOLDER_ID belum diatur; file binary tidak tersimpan permanen, hanya metadata dan hash."
-                append_record("DOCUMENTS", {"document_id": new_id("DOC"), "property_id": propid, "file_name": photo.name, "mime_type": photo.type, "source_url": photo_link, "document_hash": photo_digest, "uploaded_at": iso_now(), "notes": photo_notes, "extraction_json": ""})
-            log_event("ANALYSIS", snap["analysis_id"], "SAVED", {"decision": decision["status"]})
-            st.success("Analisis tersimpan. Seluruh status keputusan disimpan sebagai opportunity record.")
-            st.session_state.loaded_property_id = propid
+                        photo_notes += " DRIVE_FOLDER_ID belum diatur; file binary tidak tersimpan permanen, hanya metadata dan hash."
+                    append_record("DOCUMENTS", {"document_id": new_id("DOC"), "property_id": propid, "file_name": photo.name, "mime_type": photo.type, "source_url": photo_link, "document_hash": photo_digest, "uploaded_at": iso_now(), "notes": photo_notes, "extraction_json": ""})
+                log_event("ANALYSIS", snap["analysis_id"], "SAVED", {"decision": decision["status"]})
+                st.success("Analisis tersimpan. Seluruh status keputusan disimpan sebagai opportunity record.")
+                st.session_state.loaded_property_id = propid
+            except Exception as save_exc:
+                st.error("Gagal menyimpan analisis ke Google Sheets. Tidak semua tab mungkin sudah tersimpan; periksa Database & History sebelum menekan simpan ulang.")
+                st.code(str(save_exc))
 
 # ============================ PAGE 3: CASHFLOW =============================
 elif page == "Investor Cashflow":

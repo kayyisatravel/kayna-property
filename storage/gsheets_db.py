@@ -4,7 +4,10 @@ from datetime import datetime
 from typing import Any
 import json
 import random
+import re
 import time
+import base64
+import gzip
 import gspread
 from gspread.exceptions import WorksheetNotFound
 from core.utils import safe_json, sheet_cell_value, new_id
@@ -38,6 +41,93 @@ def _col(n: int) -> str:
 def _as_bool(v: Any) -> bool:
     return v is True or str(v).strip().lower() in {"true", "1", "yes", "ya"}
 
+
+
+# Google Sheets rejects any single cell over 50,000 characters. PFMS stores
+# snapshots as JSON in payload_json; seven comparables, RAB line items, risks
+# and input evidence can exceed this limit. Compress long JSON cells while
+# keeping them transparently readable by older application code.
+_JSON_GZIP_PREFIX = "__PFMS_GZIP_JSON_V1__:"
+_GOOGLE_SHEETS_MAX_CELL_CHARS = 50_000
+_SAFE_CELL_CHARS = 49_000  # margin below the documented cell limit
+_JSON_COMPRESS_THRESHOLD = 12_000
+
+
+def _encode_json_cell(raw_value: Any, *, tab: str, column: str) -> str:
+    if raw_value is None or raw_value == "":
+        return ""
+    if isinstance(raw_value, (dict, list, tuple)):
+        raw = json.dumps(raw_value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    else:
+        raw = str(raw_value)
+    if len(raw) >= _JSON_COMPRESS_THRESHOLD:
+        try:
+            # Compress only valid JSON strings; ordinary text remains unchanged.
+            json.loads(raw)
+            compressed = _JSON_GZIP_PREFIX + base64.b64encode(
+                gzip.compress(raw.encode("utf-8"), compresslevel=9, mtime=0)
+            ).decode("ascii")
+            if len(compressed) < len(raw):
+                raw = compressed
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+    if len(raw) > _SAFE_CELL_CHARS:
+        raise ValueError(
+            f"Data kolom {tab}.{column} masih {len(raw):,} karakter setelah kompresi. "
+            f"Google Sheets membatasi satu sel sekitar {_GOOGLE_SHEETS_MAX_CELL_CHARS:,} karakter. "
+            "Kurangi lampiran/teks berulang atau arsipkan dokumen biner di Google Drive; jangan hapus snapshot analisis."
+        )
+    return raw
+
+
+def _decode_json_cell(raw_value: Any) -> str:
+    if not isinstance(raw_value, str) or not raw_value.startswith(_JSON_GZIP_PREFIX):
+        return str(raw_value or "")
+    payload = raw_value[len(_JSON_GZIP_PREFIX):]
+    try:
+        return gzip.decompress(base64.b64decode(payload)).decode("utf-8")
+    except Exception as exc:
+        raise ValueError("Payload JSON terkompresi di Google Sheets rusak atau tidak lengkap.") from exc
+
+
+def _google_error_detail(exc: Exception) -> str:
+    response = getattr(exc, "response", None) or getattr(exc, "resp", None)
+    status = getattr(response, "status_code", None) or getattr(response, "status", None) or getattr(exc, "code", None)
+    body = ""
+    if response is not None:
+        try:
+            parsed = response.json()
+            err = parsed.get("error", parsed) if isinstance(parsed, dict) else parsed
+            if isinstance(err, dict):
+                body = str(err.get("message") or err.get("status") or err)
+            else:
+                body = str(err)
+        except Exception:
+            body = str(getattr(response, "text", "") or "")
+    body = re.sub(r"\s+", " ", body).strip()[:900]
+    status_text = f"HTTP {status}" if status is not None else "status tidak terbaca"
+    if not body:
+        body = str(exc)[:500]
+    return f"{status_text}: {body}"
+
+
+def _raise_sheet_write_error(exc: Exception, *, tab: str, operation: str, range_name: str = "") -> None:
+    detail = _google_error_detail(exc)
+    context = f"Google Sheets gagal {operation} pada tab {tab}"
+    if range_name:
+        context += f" ({range_name})"
+    low = detail.lower()
+    if "50,000" in detail or "50000" in detail or "maximum cell size" in low:
+        hint = "Payload satu sel melebihi batas Google Sheets. PFMS V1.0.7 mengompresi JSON panjang; periksa apakah repository sudah memakai storage/gsheets_db.py terbaru."
+    elif "permission" in low or "forbidden" in low or "403" in detail:
+        hint = "Periksa akses Editor Service Account dan proteksi tab/range."
+    elif "unable to parse range" in low or "not found" in low or "404" in detail:
+        hint = "Periksa nama tab dan header template Google Sheets; jangan mengubah urutan header."
+    elif "exceeds grid limits" in low:
+        hint = "Jumlah baris/kolom worksheet mencapai batas grid; tambahkan baris atau kolom yang diperlukan."
+    else:
+        hint = "Buka Manage app → Logs untuk detail Google API. Periksa juga izin spreadsheet, nama tab, dan ukuran payload."
+    raise RuntimeError(f"{context}. {detail}. {hint}") from exc
 
 def _retry_google(fn, *args, **kwargs):
     """Truncated exponential backoff for Google Sheets 429 and transient 5xx."""
@@ -99,6 +189,10 @@ class GoogleSheetsDB:
             if not any(str(x).strip() for x in row): continue
             padded = row + [""] * (len(headers) - len(row))
             record = dict(zip(headers, padded[:len(headers)]))
+            # Transparently unpack long JSON fields stored with gzip/base64 prefix.
+            for json_col in ("payload_json", "value_json", "extraction_json", "details_json"):
+                if json_col in record and record.get(json_col):
+                    record[json_col] = _decode_json_cell(record[json_col])
             if "payload_json" in record:
                 try: record["payload"] = json.loads(record.get("payload_json") or "{}")
                 except Exception: record["payload"] = {}
@@ -119,6 +213,7 @@ class GoogleSheetsDB:
         if title not in SCHEMA:
             raise KeyError(title)
         values: list[Any] = []
+        json_columns = {"payload_json", "value_json", "details_json", "extraction_json"}
         for col in SCHEMA[title]:
             value = record.get(col, "")
             if col == "payload_json" and "payload" in record:
@@ -127,19 +222,33 @@ class GoogleSheetsDB:
                 value = safe_json(record["value"])
             else:
                 value = sheet_cell_value(value)
-            # Nested JSON fields are also normalized with allow_nan=False by safe_json.
+            if col in json_columns:
+                value = _encode_json_cell(value, tab=title, column=col)
+            else:
+                if isinstance(value, str) and len(value) > _SAFE_CELL_CHARS:
+                    raise ValueError(
+                        f"Data kolom {title}.{col} melebihi batas aman {_SAFE_CELL_CHARS:,} karakter. "
+                        "Ringkas teks atau simpan dokumen sebagai file di Google Drive."
+                    )
             values.append(value)
         return values
 
     def append_record(self, title: str, record: dict[str, Any]) -> dict[str, Any]:
         if title not in SCHEMA: raise KeyError(title)
         row = self._row_values(title, record)
-        _retry_google(self.sheets[title].append_row, row, value_input_option="RAW")
+        try:
+            _retry_google(self.sheets[title].append_row, row, value_input_option="RAW")
+        except Exception as exc:
+            _raise_sheet_write_error(exc, tab=title, operation="menambahkan baris")
         return record
 
     def append_records(self, title: str, records: list[dict[str, Any]]) -> None:
         if not records: return
-        _retry_google(self.sheets[title].append_rows, [self._row_values(title, r) for r in records], value_input_option="RAW")
+        rows = [self._row_values(title, r) for r in records]
+        try:
+            _retry_google(self.sheets[title].append_rows, rows, value_input_option="RAW")
+        except Exception as exc:
+            _raise_sheet_write_error(exc, tab=title, operation=f"menambahkan {len(rows)} baris")
 
     def upsert_record(self, title: str, key_field: str, record: dict[str, Any]) -> dict[str, Any]:
         rows = self.read_table(title)
@@ -148,7 +257,12 @@ class GoogleSheetsDB:
         for idx, old in enumerate(rows, start=2):
             if str(old.get(key_field, "")) == key and key:
                 end = _col(len(SCHEMA[title]))
-                _retry_google(ws.update, range_name=f"A{idx}:{end}{idx}", values=[self._row_values(title, record)], value_input_option="RAW")
+                range_name = f"A{idx}:{end}{idx}"
+                row_values = self._row_values(title, record)
+                try:
+                    _retry_google(ws.update, range_name=range_name, values=[row_values], value_input_option="RAW")
+                except Exception as exc:
+                    _raise_sheet_write_error(exc, tab=title, operation="memperbarui baris", range_name=range_name)
                 return record
         self.append_record(title, record)
         return record
@@ -183,7 +297,11 @@ class GoogleSheetsDB:
         ws = self.sheets["PROJECT_MILESTONES"]
         for idx, old in enumerate(rows, start=2):
             if str(old.get("property_id")) == str(record.get("property_id")) and str(old.get("stage")) == str(record.get("stage")):
-                _retry_google(ws.update, range_name=f"A{idx}:H{idx}", values=[self._row_values("PROJECT_MILESTONES", record)], value_input_option="RAW")
+                range_name = f"A{idx}:H{idx}"
+                try:
+                    _retry_google(ws.update, range_name=range_name, values=[self._row_values("PROJECT_MILESTONES", record)], value_input_option="RAW")
+                except Exception as exc:
+                    _raise_sheet_write_error(exc, tab="PROJECT_MILESTONES", operation="memperbarui milestone", range_name=range_name)
                 return
         self.append_record("PROJECT_MILESTONES", record)
 

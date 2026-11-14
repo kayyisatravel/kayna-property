@@ -1,4 +1,4 @@
-# Property Flipper Management System (PFMS) — V1.0.6
+# Property Flipper Management System (PFMS) — V1.0.7
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
@@ -190,7 +190,7 @@ pytest -q
 python -m compileall -q .
 ```
 
-Suite pengujian V1.0.6 mencakup 68 unit test, termasuk pemulihan field form lintas payload lama/baru, koefisien kuantitas RAB, kategori renovasi, estimasi atap multi-lantai, allowance perbaikan lokal, schema Gemini, sanitasi Google Sheets, ROI, maximum bid dan decision gate. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
+Suite pengujian V1.0.7 mencakup 73 unit test, termasuk kompresi/dekompresi payload JSON Google Sheets, diagnostik API write, pemulihan field form, estimator RAB, schema Gemini, ROI, maximum bid dan decision gate. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
 
 ## I. Catatan V1.0.4 — parser comparable
 
@@ -222,3 +222,14 @@ Aplikasi ini adalah alat bantu internal untuk underwriting. Keputusan pembelian 
 - Koefisien volume diberi label allowance screening dan confidence. Luas atap memakai luas tapak aktual atau estimasi LB/jumlah lantai; dinding memakai rentang 2,5–3,0 × LB dengan titik tengah heuristic yang mempertimbangkan jumlah kamar tidur; perbaikan lokal ringan menggunakan rentang lokal ber-confidence rendah; pekerjaan struktur tidak dihitung otomatis tanpa engineer.
 - `Luas tapak lantai dasar` menjadi field opsional untuk memperbaiki estimasi luas atap, terutama bangunan bertingkat.
 - Seluruh baris RAB wajib yang tidak dikembalikan AI ditambahkan sebagai placeholder tanpa harga; RAB menjadi parsial dan GO diblokir sampai ditinjau/dilengkapi.
+
+
+## V1.0.7 — Google Sheets payload protection
+Long JSON snapshots are gzip-compressed and base64-encoded when stored in Sheets; the repository transparently decompresses them when reading. This protects `PROPERTIES.payload_json` and `ANALYSIS_HISTORY.payload_json` against the 50,000-character-per-cell limit. Ordinary strings are not silently truncated; oversized text is rejected with the tab/column name. Google API write errors now show the returned HTTP status and message where available.
+
+
+## L. Catatan V1.0.7 — Perlindungan payload Google Sheets
+
+Google Sheets membatasi isi satu sel sekitar 50.000 karakter. Snapshot analisis yang disimpan dalam `PROPERTIES.payload_json` dapat membesar karena menyimpan input, comparable, RAB, risk register dan hasil kalkulasi. Mulai V1.0.7, JSON panjang dikompresi dengan gzip/base64 dan otomatis didekompresi saat dibaca. Tidak ada perubahan nama tab atau header. Jangan menurunkan versi aplikasi ke V1.0.6 setelah data terkompresi baru ditulis, karena versi lama belum mengenali marker kompresi.
+
+Jika Google API tetap menolak penulisan, UI menampilkan HTTP status dan pesan Google yang lebih spesifik beserta tab/range. Periksa pesan itu sebelum retry. Simpan analisis menulis ke beberapa tab secara berurutan dan Google Sheets tidak menyediakan transaksi lintas-tab; setelah kegagalan, periksa Database & History sebelum menekan simpan ulang.

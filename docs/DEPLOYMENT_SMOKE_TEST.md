@@ -79,3 +79,12 @@ Gunakan hanya angka dan dokumen yang sudah diverifikasi. Jangan mengisi biaya le
 - [ ] Uji Auto + kondisi belum diketahui; sistem hanya memberikan inspeksi/persiapan, bukan mengasumsikan renovasi ringan.
 - [ ] Uji Renovasi Berat; item struktur harus kosong dan meminta pemeriksaan engineer.
 - [ ] Koreksi/hapus item RAB, centang ulang tinjauan biaya, analisis dan simpan snapshot baru.
+
+
+## 9. Smoke test payload besar dan update Google Sheets (V1.0.7)
+- [ ] Simpan satu properti dengan minimal lima comparable, risk register dan beberapa item RAB.
+- [ ] Pastikan PROPERTIES tersimpan tanpa APIError.
+- [ ] Pastikan `payload_json` panjang dapat dibaca kembali ke form melalui Database & History.
+- [ ] Pastikan snapshot ANALYSIS_HISTORY dapat dibuka kembali tanpa terlihat marker kompresi pada UI.
+- [ ] Ubah satu field dan lakukan update; pastikan satu baris PROPERTIES diperbarui dan snapshot analisis baru tercatat.
+- [ ] Jika gagal, catat HTTP status/pesan Google yang ditampilkan; jangan menekan simpan berulang kali tanpa memeriksa baris yang mungkin sudah berhasil.
