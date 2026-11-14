@@ -49,17 +49,21 @@ def test_renovation_schema_has_no_dynamic_additional_properties():
 
 
 def test_ai_rab_uses_conservative_unit_cost_in_existing_calculator_column():
+    from core.renovation_engine import build_renovation_quantity_guidance
+    context = {"land_area": 100, "building_area": 80, "physical_condition": "Renovasi kosmetik", "renovation_category": "Renovasi Kosmetik"}
+    guidance = build_renovation_quantity_guidance(context)
     parsed = {"items": [{
-        "work_item": "Perbaikan cat fasad", "scope_description": "Cat ulang area luar",
-        "quantity": 40, "unit": "m2", "unit_cost_low": 25000,
+        "item_code": "COS_WALL", "work_item": "Perbaikan cat fasad", "scope_description": "Cat ulang area luar",
+        "quantity": 40, "quantity_basis": "Tebakan Gemini yang harus diabaikan jika ada hint Python", "unit": "m2", "unit_cost_low": 25000,
         "unit_cost_conservative": 40000, "priority": "Wajib",
         "evidence_basis": "Fakta visual", "confidence": "Sedang", "notes": "Cat lama mengelupas"
     }]}
-    rows = renovation_estimate_to_rows(parsed)
+    rows = renovation_estimate_to_rows(parsed, guidance)
     assert len(rows) == 1
     assert rows[0]["unit_cost"] == 40000
     assert rows[0]["unit_cost_low"] == 25000
-    assert rows[0]["quantity"] * rows[0]["unit_cost"] == 1_600_000
+    assert rows[0]["quantity"] == 240  # Python upper quantity: LB x 3.0
+    assert rows[0]["quantity"] * rows[0]["unit_cost"] == 9_600_000
 
 
 def test_rab_estimator_uses_uploaded_image_and_maps_conservative_cost(monkeypatch):
@@ -72,9 +76,11 @@ def test_rab_estimator_uses_uploaded_image_and_maps_conservative_cost(monkeypatc
     raw_image = buffer.getvalue()
     response = {
         "items": [{
+            "item_code": "COS_WALL",
             "work_item": "Pembersihan dan pengecatan ulang fasad",
             "scope_description": "Bersihkan permukaan dan cat area fasad yang terlihat mengelupas",
             "quantity": 35,
+            "quantity_basis": "Tebakan model; volume harus mengikuti katalog Python",
             "unit": "m2",
             "unit_cost_low": 30000,
             "unit_cost_conservative": 45000,
@@ -101,14 +107,16 @@ def test_rab_estimator_uses_uploaded_image_and_maps_conservative_cost(monkeypatc
         "fake-key",
         [(raw_image, "image/png", "foto-fasad.png")],
         "Cat fasad mengelupas dan pagar berkarat.",
-        {"address": "Sidoarjo", "land_area": 100, "building_area": 80},
+        {"address": "Sidoarjo", "land_area": 100, "building_area": 80, "physical_condition": "Renovasi kosmetik", "renovation_category": "Renovasi Kosmetik", "floor_count": 1, "bedrooms": 2, "bathrooms": 1},
     )
     assert calls["model"] == gp.DEFAULT_MODEL
     assert len(calls["files"]) == 1
     assert calls["files"][0][1] == "image/jpeg"
     assert calls["schema"] is gp.RenovationRabExtraction
     assert result["editor_rows"][0]["unit_cost"] == 45000
-    assert result["total_conservative_indicative"] == 1_575_000
+    assert result["total_conservative_indicative"] == 10_800_000
+    assert result["category"] == "Renovasi Kosmetik"
+    assert result["quantity_guidance"]["bedrooms"] == 2
     assert result["items_to_inspect"]
 
 
@@ -159,13 +167,14 @@ def test_rab_total_is_marked_partial_when_item_has_unknown_quantity_or_cost(monk
     import services.gemini_parser as gp
     payload = {
         "items": [
-            {"work_item":"Cat luar", "quantity":20, "unit":"m2", "unit_cost_low":25000, "unit_cost_conservative":40000},
-            {"work_item":"Perbaikan atap", "quantity":None, "unit":"m2", "unit_cost_low":50000, "unit_cost_conservative":80000},
+            {"item_code":"COS_CEILING", "work_item":"Cat luar", "quantity":20, "unit":"m2", "unit_cost_low":25000, "unit_cost_conservative":40000},
+            {"item_code":"COS_JOINERY", "work_item":"Perbaikan atap", "quantity":None, "unit":"unit", "unit_cost_low":50000, "unit_cost_conservative":80000},
         ],
         "assumptions": [], "items_to_inspect": ["Atap perlu diperiksa"], "overall_note": "Draft"
     }
     monkeypatch.setattr(gp, "_client_call", lambda *args, **kwargs: json.dumps(payload))
-    result = gp.estimate_renovation_rab("fake-key", [], "Cat luar mengelupas; kondisi atap belum dapat diukur.")
-    assert result["total_conservative_indicative"] == 800000
+    result = gp.estimate_renovation_rab("fake-key", [], "Cat luar mengelupas; kondisi atap belum dapat diukur.", {"building_area":80, "physical_condition":"Renovasi kosmetik", "renovation_category":"Renovasi Kosmetik"})
+    assert result["total_conservative_indicative"] == 3_200_000
     assert result["total_conservative_complete"] is False
-    assert result["unpriced_items"] == ["Perbaikan atap"]
+    assert "Cat ulang kusen/daun pintu dan ganti aksesori minor" in result["unpriced_items"]
+    assert any("Pengecatan plafon" in row["work_item"] for row in result["editor_rows"])

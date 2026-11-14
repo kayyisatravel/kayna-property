@@ -11,6 +11,8 @@ from core.utils import idr, pct, safe_json, parse_json, new_id, iso_now, to_floa
 from core.underwriting import run_underwriting
 from core.liquidity import compute_liquidity
 from core.lifecycle import actual_project_summary
+from core.form_state import form_state_from_input_data
+from core.renovation_engine import CATEGORIES as RENOVATION_CATEGORIES, rab_item_is_in_scope, infer_renovation_category
 from core.calculator import calculate_project
 from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, estimate_renovation_rab, file_sha256
 from services.comparable_importer import parse_comparable_paste
@@ -296,25 +298,23 @@ elif page == "New Auction Analysis":
             st.rerun()
         if pid:
             row = next(x for x in existing_props if x.get("property_id") == pid)
-            payload = record_payload(row); data = payload.get("input_data", {})
-            mapping = {
-                "na_lot_code": data.get("property", {}).get("lot_code", ""), "na_name": data.get("property", {}).get("name", ""),
-                "na_complex": data.get("property", {}).get("complex_name", ""), "na_address": data.get("property", {}).get("address", ""),
-                "na_district": data.get("property", {}).get("district", ""), "na_province": data.get("property", {}).get("province", ""),
-                "na_office": data.get("property", {}).get("auction_office", ""), "na_seller": data.get("property", {}).get("seller", ""),
-                "na_auction_type": data.get("property", {}).get("auction_type", ""), "na_auction_date": data.get("property", {}).get("auction_date", ""),
-                "na_limit": data.get("property", {}).get("auction_limit"), "na_deposit": data.get("property", {}).get("deposit_amount"),
-                "na_increment": data.get("property", {}).get("bid_increment"), "na_certificate": data.get("property", {}).get("certificate_type", ""),
-                "na_certificate_no": data.get("property", {}).get("certificate_no", ""), "na_land": data.get("property", {}).get("land_area"),
-                "na_building": data.get("property", {}).get("building_area"), "na_njop": data.get("property", {}).get("njop"),
-                "na_survey_status": data.get("survey", {}).get("survey_status", "Belum Survei"),
-                "na_possession_cost": data.get("survey", {}).get("possession_cost", 25_000_000), "na_possession_months": data.get("survey", {}).get("possession_months", 6),
-                "na_renovation_extra": data.get("costs", {}).get("renovation_extra_cost", data.get("costs", {}).get("renovation_cost", 0)), "na_renovation_months": data.get("costs", {}).get("renovation_months", 1),
-                "na_selling_months": data.get("costs", {}).get("selling_months", 3), "na_monthly_holding": data.get("costs", {}).get("monthly_holding_cost", 1_000_000),
-                "na_legal_verified": data.get("legal", {}).get("identity_verified", False), "na_dispute": data.get("legal", {}).get("dispute_detected", False),
-                "na_costs_reviewed": data.get("costs", {}).get("cost_estimates_reviewed", False),
+            payload = record_payload(row)
+            latest_saved = payload.get("latest_analysis") or {}
+            data = payload.get("input_data") or {
+                "property": latest_saved.get("property", {}),
+                "survey": latest_saved.get("survey", {}),
+                "legal": latest_saved.get("legal", {}),
+                "costs": latest_saved.get("costs", {}),
+                "comparables": latest_saved.get("comparables", []),
+                "risk_register": latest_saved.get("risk_register", []),
+                "risk_reviewed": latest_saved.get("risk_reviewed", False),
+                "rules": latest_saved.get("rules", {}),
             }
-            for k, v in mapping.items(): st.session_state[k] = v
+            mapping = form_state_from_input_data(data, latest_saved)
+            for k, v in mapping.items():
+                st.session_state[k] = v
+            st.session_state.na_last_occupancy = mapping.get("na_survey_status", "Belum Survei")
+            st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", latest_saved.get("risk_reviewed", False)))
             comparable_columns = ["name", "address", "price", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
             risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "mitigation", "status"]
             loaded_comps = data.get("comparables", [])
@@ -328,9 +328,13 @@ elif page == "New Auction Analysis":
             else:
                 st.session_state.na_comparables_editor = pd.DataFrame([{c: None for c in comparable_columns} for _ in range(5)])
             st.session_state.na_risk_editor = pd.DataFrame(loaded_risks) if loaded_risks else pd.DataFrame([{c: None for c in risk_columns}])
-            renovation_columns = ["work_item", "quantity", "unit", "unit_cost", "notes"]
+            renovation_columns = ["item_code", "work_item", "quantity_low", "quantity", "quantity_high", "quantity_basis", "unit", "unit_cost_low", "unit_cost", "unit_cost_high", "priority", "evidence_basis", "confidence", "notes"]
             loaded_reno = data.get("costs", {}).get("renovation_items", [])
-            st.session_state.na_renovation_items_editor = pd.DataFrame(loaded_reno) if loaded_reno else pd.DataFrame([{c: None for c in renovation_columns} for _ in range(4)])
+            reno_frame = pd.DataFrame(loaded_reno) if loaded_reno else pd.DataFrame([{c: None for c in renovation_columns} for _ in range(4)])
+            for column in renovation_columns:
+                if column not in reno_frame.columns:
+                    reno_frame[column] = None
+            st.session_state.na_renovation_items_editor = reno_frame[renovation_columns]
             st.session_state.na_rab_estimate = data.get("costs", {}).get("renovation_ai_estimate")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", False))
             for widget_key in ["na_comparables_editor_widget", "na_risk_editor_widget", "na_renovation_items_widget", "na_risk_editor_widget_v103", "na_renovation_items_widget_v103"]:
@@ -425,7 +429,11 @@ elif page == "New Auction Analysis":
             set_default("na_bedrooms", None); st.number_input("Jumlah kamar tidur", min_value=0, step=1, value=st.session_state.na_bedrooms, key="na_bedrooms")
         with c2:
             set_default("na_bathrooms", None); st.number_input("Jumlah kamar mandi", min_value=0, step=1, value=st.session_state.na_bathrooms, key="na_bathrooms")
-        set_default("na_property_type", ""); st.selectbox("Tipe properti", ["", "Rumah 1 lantai", "Rumah 2 lantai", "Cluster/modern", "Rumah kecil/standar", "Rumah besar", "Lainnya"], key="na_property_type")
+        set_default("na_property_type", ""); property_type_options = ["", "Rumah 1 lantai", "Rumah 2 lantai", "Cluster/modern", "Rumah kecil/standar", "Rumah besar", "Ruko", "Tanah kosong", "Lainnya"]
+        if st.session_state.na_property_type and st.session_state.na_property_type not in property_type_options: property_type_options.append(st.session_state.na_property_type)
+        st.selectbox("Tipe properti", property_type_options, key="na_property_type")
+        set_default("na_floor_count", 1); st.number_input("Jumlah lantai bangunan", min_value=1, max_value=5, step=1, key="na_floor_count", help="Digunakan untuk memperkirakan tapak atap dari luas bangunan total. Periksa bila luas tiap lantai berbeda.")
+        set_default("na_building_footprint", None); st.number_input("Luas tapak lantai dasar (m², opsional)", min_value=0.0, step=1.0, value=st.session_state.na_building_footprint, key="na_building_footprint", help="Isi jika diketahui dari site plan/pengukuran. Lebih akurat untuk luas atap daripada LB dibagi jumlah lantai.")
         st.markdown("**Verifikasi legal (checkbox harus berdasarkan pemeriksaan pengguna)**")
         set_default("na_legal_verified", False); st.checkbox("Identitas objek dan dokumen hak sudah saya cocokkan", key="na_legal_verified")
         set_default("na_dispute", False); st.checkbox("Terdapat indikasi sengketa/ketidaksesuaian kritis", key="na_dispute")
@@ -466,7 +474,10 @@ elif page == "New Auction Analysis":
         set_default("na_survey_date", date.today().isoformat()); st.text_input("Tanggal survei", key="na_survey_date")
         set_default("na_road_width", None); st.number_input("Lebar jalan (meter)", min_value=0.0, step=0.5, value=st.session_state.na_road_width, key="na_road_width")
         set_default("na_access", ""); st.selectbox("Akses jalan", ["", "2 Mobil", "1 Mobil", "Gang"], key="na_access")
-        set_default("na_physical_condition", "Belum diketahui"); st.selectbox("Kondisi fisik umum", ["Belum diketahui", "Siap huni", "Renovasi kosmetik", "Renovasi sedang", "Renovasi berat", "Hitung tanah"], key="na_physical_condition")
+        set_default("na_physical_condition", "Belum diketahui")
+        physical_options = ["Belum diketahui", "Siap huni", "Renovasi kosmetik", "Renovasi ringan", "Renovasi sedang", "Renovasi berat", "Hitung tanah"]
+        if st.session_state.na_physical_condition and st.session_state.na_physical_condition not in physical_options: physical_options.append(st.session_state.na_physical_condition)
+        st.selectbox("Kondisi fisik umum", physical_options, key="na_physical_condition")
         set_default("na_interior_inspected", False); st.checkbox("Interior sudah diperiksa", key="na_interior_inspected")
         set_default("na_facade_manual", st.session_state.get("na_facade_ai", "")); st.text_area("Deskripsi fasad (hasil AI dapat diedit)", key="na_facade_manual", height=90)
         set_default("na_survey_notes", ""); st.text_area("Catatan survei, penghuni, RT/tetangga, utilitas, banjir, struktur", key="na_survey_notes", height=100)
@@ -618,18 +629,36 @@ elif page == "New Auction Analysis":
         st.subheader("Biaya proyek dan target")
         rules = get_rules()
         st.markdown("### RAB renovasi — AI-assisted draft")
-        st.caption("Gemini menyusun rincian awal berdasarkan foto/screenshot yang diunggah dan deskripsi kondisi terbaru yang Anda masukkan. Harga satuan adalah estimasi indikatif konservatif, bukan penawaran kontraktor. Anda wajib memeriksa dan mengoreksinya sebelum dipakai menghitung bid.")
+        st.caption("Pilih kelas pekerjaan terlebih dahulu. Python menyiapkan scope dan rentang volume dari LT/LB, luas tapak (jika diketahui), jumlah lantai, tipe properti serta jumlah kamar. Gemini menilai foto/deskripsi dan mengusulkan harga satuan konservatif. Semua hasil tetap draft untuk diperiksa.")
+        set_default("na_renovation_category", "Auto sesuai kondisi umum")
+        rab_category_options = RENOVATION_CATEGORIES
+        if st.session_state.na_renovation_category not in rab_category_options: rab_category_options = rab_category_options + [st.session_state.na_renovation_category]
+        st.selectbox("Kategori / lingkup RAB", rab_category_options, key="na_renovation_category", help="Kategori menentukan paket pekerjaan. Untuk renovasi berat, kuantitas struktur tetap wajib dari desain/engineer.")
         set_default("na_rab_condition_description", "")
-        st.text_area("Deskripsi kondisi aktual dan pekerjaan yang terlihat/diperlukan", key="na_rab_condition_description", height=115, placeholder="Contoh: fasad lama tidak terawat, cat luar mengelupas, pagar berkarat, beberapa genteng tampak bergeser; interior belum dapat diperiksa; pemilik menyampaikan kamar mandi perlu perbaikan...")
+        st.text_area("Deskripsi kondisi aktual dan pekerjaan yang terlihat/diperlukan", key="na_rab_condition_description", height=115, placeholder="Deskripsi singkat cukup: misalnya rumah lama, cat mengelupas, atap perlu diganti, kamar mandi 1 unit perlu renovasi; interior sebagian belum diperiksa...")
         available_rab_files: list[tuple[bytes, str, str]] = []
         if uploaded is not None:
             available_rab_files.append((uploaded.getvalue(), uploaded.type or "application/octet-stream", uploaded.name))
         for photo in (survey_photos or [])[:5]:
             available_rab_files.append((photo.getvalue(), photo.type or "image/jpeg", photo.name))
-        st.caption(f"Berkas visual tersedia untuk RAB: {len(available_rab_files)} (dokumen lelang + maksimal 5 foto survei). Foto interior/atap/utilitas akan membantu; foto fasad saja tidak dapat memastikan kerusakan tersembunyi.")
-        if st.button("✨ Susun RAB awal dengan Gemini", type="secondary", disabled=not GEMINI_KEY or (not available_rab_files and not st.session_state.na_rab_condition_description.strip()), key="na_generate_rab"):
-            context = {"address": st.session_state.get("na_address", ""), "district": st.session_state.get("na_district", ""), "land_area": st.session_state.get("na_land"), "building_area": st.session_state.get("na_building"), "property_type": st.session_state.get("na_property_type", ""), "physical_condition": st.session_state.get("na_physical_condition", "")}
-            cache_material = st.session_state.na_rab_condition_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
+        st.caption(f"Berkas visual tersedia untuk RAB: {len(available_rab_files)} (dokumen lelang + maksimal 5 foto survei). Bila foto fasad saja, AI tidak boleh menyimpulkan interior/struktur/MEP rusak.")
+        rab_inputs_sufficient = bool(st.session_state.get("na_building") or st.session_state.get("na_land") or available_rab_files or st.session_state.na_rab_condition_description.strip())
+        if st.button("✨ Susun RAB awal dengan Gemini", type="secondary", disabled=not GEMINI_KEY or not rab_inputs_sufficient, key="na_generate_rab"):
+            context = {
+                "address": st.session_state.get("na_address", ""), "district": st.session_state.get("na_district", ""),
+                "land_area": st.session_state.get("na_land"), "building_area": st.session_state.get("na_building"),
+                "building_footprint_m2": st.session_state.get("na_building_footprint"),
+                "property_type": st.session_state.get("na_property_type", ""), "floor_count": st.session_state.get("na_floor_count", 1),
+                "bedrooms": st.session_state.get("na_bedrooms"), "bathrooms": st.session_state.get("na_bathrooms"),
+                "physical_condition": st.session_state.get("na_physical_condition", ""),
+                "renovation_category": st.session_state.get("na_renovation_category", "Auto sesuai kondisi umum"),
+                "road_width_m": st.session_state.get("na_road_width"), "access": st.session_state.get("na_access", ""),
+                "facade_description": st.session_state.get("na_facade_manual", ""),
+                "survey_notes": st.session_state.get("na_survey_notes", ""),
+                "condition_description": st.session_state.get("na_rab_condition_description", ""),
+            }
+            rab_description = "\n".join(x for x in [st.session_state.na_rab_condition_description.strip(), "Deskripsi fasad: " + context["facade_description"] if context["facade_description"] else "", "Catatan survei: " + context["survey_notes"] if context["survey_notes"] else ""] if x)
+            cache_material = rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
             cache_key = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
             cache = st.session_state.setdefault("na_rab_cache", {})
             try:
@@ -638,7 +667,7 @@ elif page == "New Auction Analysis":
                     st.info("Hasil RAB untuk input dan foto yang sama digunakan dari cache; Gemini tidak dipanggil ulang.")
                 else:
                     with st.spinner("Gemini menilai foto dan deskripsi, lalu menyusun draft RAB per pekerjaan..."):
-                        rab_result = estimate_renovation_rab(GEMINI_KEY, available_rab_files, st.session_state.na_rab_condition_description, context, GEMINI_MODEL)
+                        rab_result = estimate_renovation_rab(GEMINI_KEY, available_rab_files, rab_description, context, GEMINI_MODEL)
                     cache[cache_key] = rab_result
                 st.session_state.na_rab_estimate = rab_result
                 st.session_state.na_renovation_items_editor = pd.DataFrame(rab_result.get("editor_rows", []))
@@ -655,7 +684,12 @@ elif page == "New Auction Analysis":
         rab_estimate = st.session_state.get("na_rab_estimate")
         if rab_estimate:
             with st.expander("Ringkasan asumsi dan batasan RAB dari Gemini", expanded=True):
+                st.write(f"Kategori RAB: **{rab_estimate.get('category', 'Belum ditentukan')}**")
                 st.metric("Total indikatif konservatif dari AI", idr(rab_estimate.get("total_conservative_indicative")))
+                guidance = rab_estimate.get("quantity_guidance", {})
+                if guidance:
+                    st.caption(f"Profil volume: LT {guidance.get('land_area') or '—'} m² · LB {guidance.get('building_area') or '—'} m² · {guidance.get('floor_count', 1)} lantai · {guidance.get('bedrooms') or '—'} KT · {guidance.get('bathrooms') or '—'} KM")
+                    st.caption(guidance.get("method_note", ""))
                 if not rab_estimate.get("total_conservative_complete", False):
                     st.warning("Total RAB masih parsial karena volume atau harga satuan belum terisi pada sebagian pekerjaan. Lengkapi kolom tersebut sebelum mengonfirmasi anggaran.")
                     if rab_estimate.get("unpriced_items"):
@@ -665,27 +699,31 @@ elif page == "New Auction Analysis":
                     st.warning("Perlu inspeksi sebelum final: " + "; ".join(rab_estimate["items_to_inspect"]))
                 if rab_estimate.get("overall_note"): st.caption(rab_estimate["overall_note"])
                 st.caption(rab_estimate.get("estimation_basis", "Draft AI; wajib diverifikasi."))
-        renovation_columns = ["work_item", "quantity", "unit", "unit_cost_low", "unit_cost", "unit_cost_high", "priority", "evidence_basis", "confidence", "notes"]
+        renovation_columns = ["item_code", "work_item", "quantity_low", "quantity", "quantity_high", "quantity_basis", "unit", "unit_cost_low", "unit_cost", "unit_cost_high", "priority", "evidence_basis", "confidence", "notes"]
         if "na_renovation_items_editor" not in st.session_state:
             st.session_state.na_renovation_items_editor = pd.DataFrame([{c: None for c in renovation_columns} for _ in range(4)])
         renovation_frame = st.session_state.na_renovation_items_editor.copy()
         for col in renovation_columns:
             if col not in renovation_frame.columns: renovation_frame[col] = None
         renovation_edited = st.data_editor(renovation_frame[renovation_columns], num_rows="dynamic", use_container_width=True, key="na_renovation_items_widget_v103", column_config={
+            "item_code": st.column_config.TextColumn("Kode scope", disabled=True),
             "work_item": st.column_config.TextColumn("Pekerjaan"),
-            "quantity": st.column_config.NumberColumn("Volume", min_value=0.0, step=1.0),
+            "quantity_low": st.column_config.NumberColumn("Vol. rendah", min_value=0.0, step=1.0),
+            "quantity": st.column_config.NumberColumn("Volume dipakai", min_value=0.0, step=1.0, help="Volume konservatif yang dipakai Python untuk menghitung RAB; dapat Anda koreksi."),
+            "quantity_high": st.column_config.NumberColumn("Vol. atas", min_value=0.0, step=1.0),
+            "quantity_basis": st.column_config.TextColumn("Dasar estimasi volume", disabled=True),
             "unit": st.column_config.TextColumn("Satuan"),
             "unit_cost_low": st.column_config.NumberColumn("Harga satuan rendah (Rp)", min_value=0, format="Rp %.0f"),
             "unit_cost": st.column_config.NumberColumn("Harga satuan konservatif (Rp)", min_value=0, format="Rp %.0f", help="Nilai inilah yang dipakai Python untuk menghitung RAB."),
             "unit_cost_high": st.column_config.NumberColumn("Batas atas (Rp)", min_value=0, format="Rp %.0f"),
-            "priority": st.column_config.SelectboxColumn("Prioritas", options=["Wajib", "Disarankan", "Opsional"]),
+            "priority": st.column_config.SelectboxColumn("Prioritas", options=["Wajib", "Disarankan", "Opsional", "Tidak diperlukan setelah ditinjau"]),
             "evidence_basis": st.column_config.SelectboxColumn("Dasar", options=["Fakta visual", "Deskripsi pengguna", "Asumsi kuantitas"]),
             "confidence": st.column_config.SelectboxColumn("Keyakinan", options=["Tinggi", "Sedang", "Rendah"]),
             "notes": st.column_config.TextColumn("Catatan / asumsi / sumber"),
         })
         st.session_state.na_renovation_items_current = renovation_edited.to_dict(orient="records")
         renovation_items = [r for r in st.session_state.na_renovation_items_current if str(r.get("work_item") or "").strip()]
-        renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items)
+        renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items if rab_item_is_in_scope(r))
         c1,c2,c3 = st.columns(3)
         with c1:
             set_default("na_renovation_extra", 0); st.number_input("Tambahan renovasi di luar item (Rp)", min_value=0, step=500_000, key="na_renovation_extra")
@@ -735,15 +773,15 @@ elif page == "New Auction Analysis":
             "auction_date": st.session_state.na_auction_date, "auction_time": st.session_state.get("na_auction_time", ""), "deposit_deadline": st.session_state.get("na_deposit_deadline", ""), "payment_deadline": st.session_state.get("na_payment_deadline", ""), "auction_url": st.session_state.get("na_auction_url", ""),
             "auction_limit": st.session_state.na_limit, "deposit_amount": st.session_state.na_deposit, "bid_increment": st.session_state.na_increment,
             "certificate_type": st.session_state.na_certificate, "certificate_no": st.session_state.na_certificate_no, "rights_expiry": st.session_state.get("na_rights_expiry", ""),
-            "land_area": st.session_state.na_land, "building_area": st.session_state.na_building, "njop": st.session_state.na_njop, "bedrooms": st.session_state.get("na_bedrooms"), "bathrooms": st.session_state.get("na_bathrooms"), "property_type": st.session_state.get("na_property_type", ""), "rights_expiry": st.session_state.get("na_rights_expiry", ""),
+            "land_area": st.session_state.na_land, "building_area": st.session_state.na_building, "building_footprint_m2": st.session_state.get("na_building_footprint"), "njop": st.session_state.na_njop, "bedrooms": st.session_state.get("na_bedrooms"), "bathrooms": st.session_state.get("na_bathrooms"), "property_type": st.session_state.get("na_property_type", ""), "floor_count": st.session_state.get("na_floor_count", 1), "rights_expiry": st.session_state.get("na_rights_expiry", ""),
             "risk_adjusted_ceiling": st.session_state.na_risk_ceiling, "npoptkp_eligible": st.session_state.na_npoptkp_eligible,
         }
         survey_data = {"survey_status": st.session_state.na_survey_status, "occupancy_status": st.session_state.na_survey_status, "survey_date": st.session_state.na_survey_date, "possession_cost": st.session_state.na_possession_cost, "possession_risk_reserve": st.session_state.na_possession_risk_reserve, "possession_months": st.session_state.na_possession_months, "road_width_m": st.session_state.na_road_width, "access": st.session_state.na_access, "physical_condition": st.session_state.na_physical_condition, "interior_inspected": st.session_state.na_interior_inspected, "facade_description": st.session_state.na_facade_manual, "survey_notes": st.session_state.na_survey_notes}
         legal_data = {"identity_verified": st.session_state.na_legal_verified, "dispute_detected": st.session_state.na_dispute, "tax_rules_verified": st.session_state.na_tax_verified, "tax_region": st.session_state.na_tax_region, "tax_rule_source_url": st.session_state.na_tax_rule_source}
         renovation_items_data = [r for r in st.session_state.get("na_renovation_items_current", []) if str(r.get("work_item") or "").strip()]
-        renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items_data)
+        renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items_data if rab_item_is_in_scope(r))
         renovation_extra_cost = to_float(st.session_state.na_renovation_extra)
-        costs_data = {"renovation_cost": renovation_item_total + renovation_extra_cost, "renovation_items": renovation_items_data, "renovation_ai_estimate": st.session_state.get("na_rab_estimate"), "renovation_extra_cost": renovation_extra_cost, "renovation_months": st.session_state.na_renovation_months, "selling_months": st.session_state.na_selling_months, "legal_delay_months": st.session_state.na_legal_delay_months, "monthly_holding_cost": st.session_state.na_monthly_holding, "marketing_cost": st.session_state.na_marketing_cost, "other_presale_cost": st.session_state.na_other_presale, "cost_estimates_reviewed": bool(st.session_state.na_costs_reviewed)}
+        costs_data = {"renovation_cost": renovation_item_total + renovation_extra_cost, "renovation_items": renovation_items_data, "renovation_ai_estimate": st.session_state.get("na_rab_estimate"), "renovation_extra_cost": renovation_extra_cost, "renovation_category": st.session_state.get("na_renovation_category", "Auto sesuai kondisi umum"), "rab_condition_description": st.session_state.get("na_rab_condition_description", ""), "renovation_months": st.session_state.na_renovation_months, "selling_months": st.session_state.na_selling_months, "legal_delay_months": st.session_state.na_legal_delay_months, "monthly_holding_cost": st.session_state.na_monthly_holding, "marketing_cost": st.session_state.na_marketing_cost, "other_presale_cost": st.session_state.na_other_presale, "cost_estimates_reviewed": bool(st.session_state.na_costs_reviewed)}
         comp_data = st.session_state.get("na_comparables_current", [])
         cash_profile, cash_events, liquidity = get_cash_data()
         if not cash_profile.get("cash_confirmed", False): liquidity["cash_confirmed"] = False

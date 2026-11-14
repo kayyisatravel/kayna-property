@@ -42,3 +42,12 @@
 - Add regression tests for seven-listing Markdown input, URL mapping and MAX_TOKENS handling.
 
 - Track `source_url_scope`; portal/category/venue URLs no longer count as individual listing URLs for GO-grade market evidence.
+
+
+## V1.0.6 — Form restore & context-aware renovation estimator
+- Hardened form restoration: deep-merge current input and latest analysis (including older/flat payload aliases) for bedrooms, bathrooms, property type, floor count, road width/access, and general physical condition. Missing values clear instead of leaking from the previously loaded property.
+- Added optional ground-floor footprint input; roof quantities use measured footprint when available, otherwise LB divided by floors as a clearly labelled estimate.
+- Renovation context now includes property type, bedrooms, bathrooms, general condition, LT/LB, floor count, road width/access, survey notes and user condition description. Bedroom count only adjusts the wall-area midpoint inside the rough 2.5–3.0 × LB screening band; bathroom count informs per-bath packages.
+- Auto category with unknown condition now produces inspection/preparation guidance instead of assuming light renovation. Explicit cosmetic scope makes preparation, wall and ceiling work required; omitted required AI items become unpriced placeholders.
+- Added low-confidence local repair allowances for light renovation and explicit warning that they must be measured; structural work remains unquantified until engineer/design review.
+- Added regression tests. Current unit test suite: 68 passed; Python compile check passed.

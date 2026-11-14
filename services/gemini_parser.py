@@ -99,10 +99,12 @@ class ComparableExtraction(BaseModel):
 
 
 class RenovationRabItem(BaseModel):
-    """One draft renovation work item; conservative unit cost is used by Python."""
+    """One AI-selected RAB item; deterministic Python quantity hints take priority."""
+    item_code: Optional[str] = None
     work_item: str
     scope_description: Optional[str] = None
     quantity: Optional[float] = None
+    quantity_basis: Optional[str] = None
     unit: Optional[str] = None
     unit_cost_low: Optional[int] = None
     unit_cost_conservative: Optional[int] = None
@@ -208,14 +210,19 @@ def extract_auction_document(api_key: str, file_bytes: bytes, mime_type: str, fi
     return data
 
 
-def renovation_estimate_to_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Map Gemini RAB output into the editable Streamlit renovation table.
+def renovation_estimate_to_rows(data: dict[str, Any], quantity_guidance: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Map AI work items to the editable RAB table.
 
-    `unit_cost` is deliberately populated with the conservative upper estimate;
-    all rows remain drafts until the user reviews and applies them.
+    Python's catalog-derived quantity ranges are authoritative whenever an item
+    code matches. Gemini may classify scope and price unit rates, but it cannot
+    invent volumes for unmeasured/hidden works.
     """
     output: list[dict[str, Any]] = []
+    guidance = quantity_guidance or {}
+    hints = {str(x.get("item_code")): x for x in guidance.get("items", [])}
     for item in data.get("items", []):
+        code = str(item.get("item_code") or "")
+        hint = hints.get(code)
         raw_high = item.get("unit_cost_conservative")
         raw_low = item.get("unit_cost_low")
         high = max(0, int(raw_high)) if raw_high is not None else None
@@ -223,25 +230,56 @@ def renovation_estimate_to_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
         if high == 0: high = None
         if low == 0: low = None
         if high is not None and low is not None and high < low:
-            high = low  # enforce that the conservative unit rate is never below the low estimate
-        quantity = item.get("quantity")
+            high = low
+
+        # Do not allow a model-generated area to override a formula-driven hint.
+        # If the selected category has no measurable quantity, keep it blank.
+        if hint is not None:
+            quantity = hint.get("quantity_high")
+            quantity_low = hint.get("quantity_low")
+            quantity_high = hint.get("quantity_high")
+            unit = hint.get("unit") or item.get("unit")
+            quantity_basis = hint.get("quantity_basis") or item.get("quantity_basis")
+            hint_notes = hint.get("notes", "")
+            confidence = hint.get("confidence") or item.get("confidence")
+            priority = hint.get("priority") or item.get("priority")
+        else:
+            # Custom items may only use a quantity when the model cites a clear
+            # explicit measurement from user description; photos alone are not scale.
+            quantity = item.get("quantity") if item.get("quantity_basis") else None
+            quantity_low = quantity_high = quantity
+            unit = item.get("unit")
+            quantity_basis = item.get("quantity_basis") or "Volume belum terukur; perlu input pengguna/kontraktor."
+            hint_notes = "Item tambahan AI di luar katalog standar; verifikasi scope dan volume."
+            confidence = item.get("confidence") or "Rendah"
+            priority = item.get("priority") or "Disarankan"
         if quantity is not None and float(quantity) <= 0:
             quantity = None
-        notes = [x for x in [item.get("scope_description"), item.get("evidence_basis"), item.get("notes")] if x]
+        notes = [x for x in [item.get("scope_description"), item.get("evidence_basis"), hint_notes, item.get("notes")] if x]
+        if quantity_low is not None or quantity_high is not None:
+            notes.append(f"Rentang volume indikatif: {quantity_low if quantity_low is not None else '—'}–{quantity_high if quantity_high is not None else '—'} {unit or ''}")
+        if quantity_basis:
+            notes.append(f"Dasar volume: {quantity_basis}")
         if low is not None or high is not None:
-            notes.append(f"Kisaran indikatif: {low if low is not None else '—'}–{high if high is not None else '—'} / {item.get('unit') or 'unit'}")
-        if item.get("confidence"):
-            notes.append(f"Keyakinan estimasi: {item['confidence']}")
+            notes.append(f"Harga satuan AI indikatif: {low if low is not None else '—'}–{high if high is not None else '—'} / {unit or 'unit'}; bukan penawaran vendor")
+        if confidence:
+            notes.append(f"Keyakinan: {confidence}")
         output.append({
-            "work_item": item.get("work_item", ""),
+            "item_code": code or None,
+            # Canonical catalog name is authoritative for known item codes;
+            # the model may describe evidence in scope_description/notes.
+            "work_item": (hint.get("work_item") if hint else None) or item.get("work_item", ""),
             "quantity": quantity,
-            "unit": item.get("unit"),
+            "quantity_low": quantity_low,
+            "quantity_high": quantity_high,
+            "quantity_basis": quantity_basis,
+            "unit": unit,
             "unit_cost_low": low,
             "unit_cost": high,
             "unit_cost_high": high,
-            "priority": item.get("priority"),
+            "priority": priority,
             "evidence_basis": item.get("evidence_basis"),
-            "confidence": item.get("confidence"),
+            "confidence": confidence,
             "notes": " | ".join(str(x) for x in notes),
         })
     return output
@@ -254,11 +292,13 @@ def estimate_renovation_rab(
     property_context: dict[str, Any] | None = None,
     model: str = DEFAULT_MODEL,
 ) -> dict[str, Any]:
-    """Create an AI-assisted draft RAB from survey images/PDF and user descriptions.
+    """Draft a category-driven RAB using property facts, geometry hints and evidence.
 
-    The AI may only price visible/user-described work. Hidden structural/interior
-    defects must be flagged for inspection rather than invented as certain repairs.
+    Gemini chooses applicable scope and suggests unit prices. Python provides
+    transparent quantity ranges from configurable screening coefficients.
     """
+    from core.renovation_engine import build_renovation_quantity_guidance
+
     description = (condition_description or "").strip()
     selected_files = (files or [])[:6]
     if not description and not selected_files:
@@ -270,39 +310,71 @@ def estimate_renovation_rab(
         prepared_files.append((prepared, prepared_mime))
         file_labels.append(filename)
     context = property_context or {}
+    guidance = build_renovation_quantity_guidance(context)
     context_payload = {
         "lokasi": context.get("address") or context.get("district") or "Tidak diketahui",
         "luas_tanah_m2": context.get("land_area"),
-        "luas_bangunan_m2": context.get("building_area"),
-        "jenis_bangunan": context.get("property_type"),
-        "kondisi_umum_survei": context.get("physical_condition"),
+        "luas_bangunan_total_m2": context.get("building_area"),
+        "jumlah_lantai": context.get("floor_count") or 1,
+        "luas_tapak_lantai_dasar_m2": context.get("building_footprint_m2"),
+        "dasar_luas_tapak": "Input user bila tersedia; jika tidak Python memperkirakan LB agregat dibagi jumlah lantai",
+        "tipe_properti": context.get("property_type"),
+        "jumlah_kamar_tidur": context.get("bedrooms"),
+        "jumlah_kamar_mandi": context.get("bathrooms"),
+        "kondisi_fisik_umum": context.get("physical_condition"),
+        "kategori_lingkup_renovasi": guidance.get("category"),
+        "lebar_jalan_m": context.get("road_width_m"),
+        "akses_jalan": context.get("access"),
+        "konteks_mobilisasi": "Gunakan lebar dan tipe akses untuk memberi catatan biaya mobilisasi/harga satuan, tetapi jangan mengubah volume secara otomatis tanpa dasar.",
+        "deskripsi_fasad_dari_survei": context.get("facade_description"),
+        "deskripsi_kondisi_dan_scope_dari_pengguna": description,
+        "catatan_survei": context.get("survey_notes"),
         "foto_dokumen_yang_dikirim": file_labels,
     }
-    prompt = (
-        "Anda adalah estimator awal pekerjaan renovasi rumah di Indonesia. Buat DRAFT RAB terperinci dalam JSON sesuai schema. "
-        "Gunakan hanya bukti yang tampak pada foto/dokumen dan deskripsi kondisi yang diberikan pengguna. "
-        "Satu baris untuk satu pekerjaan, bukan satu baris untuk setiap foto. Prioritaskan pekerjaan wajib agar rumah aman, "
-        "berfungsi dan layak dipasarkan. Tambahkan pekerjaan kosmetik hanya jika terlihat/dijelaskan atau tandai sebagai opsional. "
-        "JANGAN menganggap atap, pondasi, struktur, instalasi listrik, pipa, plafon atau interior rusak jika tidak tampak/disebut. "
-        "Untuk bagian tersembunyi yang tidak dapat dinilai, jangan buat biaya seolah-olah kerusakannya pasti; masukkan ke items_to_inspect. "
-        "Buat kuantitas sebagai estimasi awal dari data LT/LB/foto hanya bila dapat diperkirakan; bila tidak, quantity=null dan jelaskan pengukuran yang dibutuhkan. "
-        "Berikan unit_cost_low dan unit_cost_conservative (batas atas rasional) dalam rupiah per satuan, termasuk material+upah bila relevan. "
-        "Harga satuan hanya ESTIMASI INDIKATIF, bukan penawaran kontraktor atau harga pasar real-time; gunakan perkiraan konservatif wajar untuk wilayah Sidoarjo/Jawa Timur bila lokasi cocok, "
-        "dan nyatakan ketidakpastiannya. Jangan mengarang sumber/vendor. Python akan memakai unit_cost_conservative sebagai dasar awal dan menambah contingency terpisah. "
-        "Jangan memasukkan contingency ke item RAB agar tidak dihitung dua kali. Bedakan priority Wajib/Disarankan/Opsional, confidence Tinggi/Sedang/Rendah, "
-        "dan evidence_basis hanya Fakta visual / Deskripsi pengguna / Asumsi kuantitas. Data yang tidak diketahui bukan nol dan bukan kerusakan pasti. "
-        "Jika foto hanya fasad, batasi item pada pekerjaan yang terlihat dan pekerjaan yang secara eksplisit dijelaskan pengguna. "
-        "Jangan memberi kepastian bahwa struktur aman hanya dari foto. Bahasa Indonesia, ringkas tetapi terukur.\n\n"
-        "KONTEKS OBJEK:\n" + json.dumps(context_payload, ensure_ascii=False, default=str) +
-        "\n\nDESKRIPSI KONDISI TERKINI DARI PENGGUNA:\n" + (description or "Tidak ada deskripsi tertulis; gunakan foto hanya untuk temuan visual.")
-    )
-    raw = _client_call(api_key, model or DEFAULT_MODEL, prompt, schema=RenovationRabExtraction, max_output_tokens=2800, extra_files=prepared_files)
+    prompt_parts = [
+        "Anda adalah estimator awal renovasi rumah tapak di Indonesia. Buat DRAFT RAB berdasarkan kategori renovasi, data rumah, foto dan deskripsi pengguna. Keluaran JSON mengikuti schema; tanpa markdown.",
+        "ATURAN KERAS: pilih item hanya dari katalog item_code di bawah; satu baris per pekerjaan; jangan mengarang kerusakan tersembunyi. Gunakan kondisi fisik umum, tipe properti, jumlah lantai, luas LT/LB, jumlah kamar tidur dan kamar mandi untuk memilih scope yang masuk akal. Jumlah kamar tidur hanya konteks kompleksitas ruang dan tidak boleh dianggap jumlah pintu; jumlah kamar mandi boleh menjadi jumlah paket area basah jika kategori memerlukan. Jika volume tidak punya petunjuk dari Python dan tidak terukur, quantity=null; Python akan mengisi volume dari quantity_catalog, jangan mengganti quantity hint dengan tebakan.",
+        "Harga satuan berikan rentang rendah dan konservatif dalam rupiah, bahan+upah bila relevan. Jika tidak yakin atau tidak ada basis harga yang layak, isi harga null dan beri catatan. Harga AI bukan harga real-time, bukan HSPK/HSP resmi, bukan quotation kontraktor. Jangan masukkan contingency; Python menghitungnya terpisah.",
+        "KATEGORI DAN SCOPE:",
+        "Renovasi Kosmetik: persiapan/proteksi, dinding dan plafon merupakan scope utama saat kategori ini dipilih eksplisit; lantai pilih poles ATAU vinyl/SPC (jangan keduanya); kusen/pintu/aksesori hanya bila dibutuhkan. Jika kondisi hanya disebut siap huni dan kategori Auto, jangan memaksakan pengecatan penuh; cukup rekomendasikan persiapan/inspeksi dan item kosmetik opsional.",
+        "Renovasi Ringan: perbaikan lokal atap/nok/talang/lisplang; plafon lokal; keramik lokal; sanitair minor sesuai jumlah kamar mandi bila ada bukti; saklar/stopkontak/lampu lokal; daun pintu/jendela lokal. Python memberi allowance area lokal low-confidence (atap 5–15%, plafon 3–10%, keramik 2–6%); pakai hanya bila kondisi/deskripsi/foto mendukung. Jangan menganggap seluruh atap/MEP diganti.",
+        "Renovasi Sedang: pembongkaran/pembaruan atap dan rangka/foil/penutup; plafon dan lantai menyeluruh; renovasi kamar mandi; allowance instalasi listrik; pipa hanya bila jalur diketahui. Struktur dan denah dipertahankan.",
+        "Renovasi Berat: pembongkaran/perubahan ruang, dinding/fasad, atap/lantai/plafon/MEP. Item struktur harus ditandai perlu engineer dan volume/harga null sampai ada desain/perhitungan. Jangan menebak pondasi/kolom/balok/dak dari LT/LB.",
+        "Hitung Tanah: pemutusan utilitas, demolisi bangunan, pemuatan/pembuangan puing, land clearing; bukan RAB renovasi. Volume puing sangat kasar dan harus dicek kontraktor.",
+        "KONTEKS PROPERTI:", json.dumps(context_payload, ensure_ascii=False, default=str),
+        "KATALOG KUANTITAS PYTHON (gunakan item_code persis, jangan menghitung ulang quantity):",
+        json.dumps(guidance, ensure_ascii=False, default=str, separators=(",", ":")),
+        "DESKRIPSI KONDISI TERKINI:", description or "Tidak ada deskripsi; gunakan hanya hal yang terlihat dari foto.",
+        "Bukti visual harus dipisahkan dari asumsi. Jika foto hanya fasad, jangan mengklaim interior/struktur/MEP rusak. Untuk pekerjaan yang butuh inspeksi, masukkan ke items_to_inspect. Sertakan assumptions dan overall_note.",
+    ]
+    prompt = "\n\n".join(prompt_parts)
+    raw = _client_call(api_key, model or DEFAULT_MODEL, prompt, schema=RenovationRabExtraction, max_output_tokens=4096, extra_files=prepared_files)
     try:
         parsed = RenovationRabExtraction.model_validate_json(raw)
     except Exception as exc:
         raise RuntimeError(f"JSON RAB Gemini tidak sesuai schema: {exc}. Respons: {raw[:500]}") from exc
     data = parsed.model_dump()
-    data["editor_rows"] = renovation_estimate_to_rows(data)
+    data["quantity_guidance"] = guidance
+    data["category"] = guidance.get("category")
+    editor_rows = renovation_estimate_to_rows(data, guidance)
+    returned_codes = {str(r.get("item_code")) for r in data.get("items", []) if r.get("item_code")}
+    missing_required = []
+    for hint in guidance.get("items", []):
+        code = str(hint.get("item_code") or "")
+        if hint.get("priority") == "Wajib" and not hint.get("conditional") and code and code not in returned_codes:
+            missing_required.append(hint.get("work_item", code))
+            editor_rows.append({
+                "item_code": code, "work_item": hint.get("work_item"),
+                "quantity_low": hint.get("quantity_low"), "quantity": hint.get("quantity_high"),
+                "quantity_high": hint.get("quantity_high"), "quantity_basis": hint.get("quantity_basis"),
+                "unit": hint.get("unit"), "unit_cost_low": None, "unit_cost": None,
+                "unit_cost_high": None, "priority": "Wajib", "evidence_basis": "Asumsi kuantitas",
+                "confidence": hint.get("confidence", "Rendah"),
+                "notes": "Scope wajib dari kategori belum diberi harga/diakui oleh AI. Lengkapi atau konfirmasi tidak diperlukan setelah inspeksi. " + str(hint.get("notes", "")),
+            })
+    data["editor_rows"] = editor_rows
+    if missing_required:
+        data["items_to_inspect"] = list(data.get("items_to_inspect", [])) + ["Scope wajib belum diberi harga oleh AI: " + "; ".join(missing_required)]
     complete_low = [r for r in data["editor_rows"] if r.get("quantity") is not None and r.get("unit_cost_low") is not None]
     complete_high = [r for r in data["editor_rows"] if r.get("quantity") is not None and r.get("unit_cost") is not None]
     data["total_low_indicative"] = round(sum(r["quantity"] * r["unit_cost_low"] for r in complete_low)) if complete_low else None
@@ -310,9 +382,9 @@ def estimate_renovation_rab(
     data["unpriced_items"] = [r.get("work_item", "Pekerjaan tanpa nama") for r in data["editor_rows"] if r.get("quantity") is None or r.get("unit_cost") is None]
     data["total_conservative_complete"] = len(data["unpriced_items"]) == 0 and bool(data["editor_rows"])
     data["files_used"] = file_labels
-    data["estimation_basis"] = "Draft AI berdasarkan foto/deskripsi pengguna; harga satuan indikatif dan wajib diverifikasi." 
+    data["estimation_basis"] = "Draft AI berbasis foto/deskripsi dan katalog kuantitas Python. Volume/koefisien adalah allowance awal, harga satuan bukan penawaran vendor; wajib diverifikasi."
+    data["assumptions"] = list(data.get("assumptions", [])) + guidance.get("warnings", []) + [guidance.get("method_note", "")]
     return data
-
 
 def review_investment(api_key: str, model: str, snapshot: dict[str, Any]) -> dict[str, Any]:
     compact = {

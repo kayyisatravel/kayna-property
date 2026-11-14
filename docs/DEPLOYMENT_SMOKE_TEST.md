@@ -67,3 +67,15 @@ Gunakan hanya angka dan dokumen yang sudah diverifikasi. Jangan mengisi biaya le
 - [ ] Pastikan AI menandai bagian yang perlu inspeksi dan tidak menambahkan kerusakan interior/struktur yang tidak tampak atau tidak disebut.
 - [ ] Ubah satu baris RAB setelah konfirmasi; pastikan checkbox tinjauan biaya kembali belum dicentang.
 - [ ] Tambahkan risiko dari preset, ubah probabilitas/dampak/cadangan/mitigasi, dan pastikan risk review harus dikonfirmasi ulang setelah perubahan.
+
+
+## 8. Smoke test form restore & renovation RAB (V1.0.6)
+- [ ] Simpan objek dengan 3 kamar tidur, 2 kamar mandi, tipe Rumah 2 lantai, lebar jalan 6 m, akses 1 Mobil, kondisi Renovasi Sedang.
+- [ ] Keluar/muat ulang objek yang sama dan pastikan seluruh pilihan tersebut kembali ke field masing-masing.
+- [ ] Muat objek lain yang tidak punya field itu; pastikan nilai dari objek pertama tidak terbawa.
+- [ ] Masukkan luas tapak aktual dan pastikan quantity atap memakai tapak tersebut; jika kosong, sistem memberi label estimasi LB/jumlah lantai.
+- [ ] Uji Renovasi Kosmetik dan pastikan scope persiapan/dinding/plafon muncul; bila AI menghilangkan scope wajib, placeholder tanpa harga harus tampil.
+- [ ] Uji Renovasi Ringan dan pastikan allowances lokal ber-confidence rendah tidak dianggap penggantian seluruh atap/MEP.
+- [ ] Uji Auto + kondisi belum diketahui; sistem hanya memberikan inspeksi/persiapan, bukan mengasumsikan renovasi ringan.
+- [ ] Uji Renovasi Berat; item struktur harus kosong dan meminta pemeriksaan engineer.
+- [ ] Koreksi/hapus item RAB, centang ulang tinjauan biaya, analisis dan simpan snapshot baru.

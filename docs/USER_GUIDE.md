@@ -88,3 +88,16 @@ Pilih risiko umum dari dropdown lalu klik `Tambahkan risiko terpilih`. Sistem me
 ## Penyimpanan Google Sheets (V1.0.3)
 
 Sel kosong dari `st.data_editor` sering menjadi `NaN` Pandas. Adapter sekarang menormalisasi setiap kolom sebelum dikirim: nilai non-finite dan missing menjadi sel kosong, sementara struktur di dalam `payload_json` disimpan sebagai JSON valid. Bila masih terjadi error simpan, periksa log untuk tab yang gagal dan jangan menekan simpan berulang kali sebelum memastikan apakah baris pertama sudah masuk.
+
+
+## Memuat ulang objek dan koreksi field (V1.0.6)
+
+Di New Auction Analysis, pilih objek yang tersimpan lalu klik **Muat objek terpilih**. Sistem memulihkan data dari input terakhir dan menggunakan snapshot analisis terakhir sebagai fallback untuk field yang tidak ada pada input lama. Field yang dipulihkan termasuk jumlah kamar tidur/mandi, tipe properti, jumlah lantai, lebar dan akses jalan, serta kondisi fisik umum. Field yang tidak pernah diisi tetap kosong/default aman; sistem tidak membawa nilai dari properti yang sebelumnya dibuka. Jika data lama menggunakan alias kolom, mapper mencoba beberapa nama umum.
+
+## Estimasi RAB berbasis kondisi dan profil rumah (V1.0.6)
+
+Isi tipe properti, LT/LB, jumlah lantai, kamar tidur/mandi, kondisi fisik umum, dan kategori RAB. Bila diketahui dari site plan/pengukuran, masukkan **Luas tapak lantai dasar**; ini lebih baik daripada memperkirakan tapak dari LB dibagi jumlah lantai. Tambahkan foto dan deskripsi singkat. Klik **Susun RAB awal dengan Gemini**.
+
+Gemini memilih scope dan memberi rentang harga satuan indikatif; Python memberikan volume screening dari katalog yang transparan. Jumlah kamar mandi dapat menjadi dasar jumlah paket area basah jika pekerjaan itu memang dipilih; kamar tidur hanya menjadi konteks kompleksitas ruang dan bukan jumlah pintu. Lebar/jenis akses menjadi konteks mobilisasi/harga satuan, bukan pengali volume otomatis.
+
+Kategori Auto dengan kondisi yang belum diketahui hanya menampilkan inspeksi/persiapan. Renovasi ringan memakai allowance area lokal ber-confidence rendah (atap 5–15%, plafon 3–10%, keramik 2–6%) hanya jika ada indikasi relevan. Renovasi berat tidak mengisi volume struktur otomatis dan harus dinilai engineer. Setiap RAB harus diperiksa, dikoreksi dan dibandingkan dengan pengukuran serta penawaran kontraktor sebelum menekan konfirmasi biaya.

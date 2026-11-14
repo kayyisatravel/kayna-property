@@ -1,4 +1,4 @@
-# Property Flipper Management System (PFMS) — V1.0.4.3
+# Property Flipper Management System (PFMS) — V1.0.6
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
@@ -190,7 +190,7 @@ pytest -q
 python -m compileall -q .
 ```
 
-Suite pengujian V1.0.3 mencakup 49 unit test untuk kalkulasi BPHTB/biaya penjualan/BPN, ROI, maximum bid, cash reserve, lifecycle closing, validasi comparable, risk register, JSON sanitization untuk Google Sheets, schema Gemini RAB dan pemetaan item RAB. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
+Suite pengujian V1.0.6 mencakup 68 unit test, termasuk pemulihan field form lintas payload lama/baru, koefisien kuantitas RAB, kategori renovasi, estimasi atap multi-lantai, allowance perbaikan lokal, schema Gemini, sanitasi Google Sheets, ROI, maximum bid dan decision gate. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
 
 ## I. Catatan V1.0.4 — parser comparable
 
@@ -212,3 +212,13 @@ Suite pengujian V1.0.3 mencakup 49 unit test untuk kalkulasi BPHTB/biaya penjual
 ## Lisensi dan tanggung jawab
 
 Aplikasi ini adalah alat bantu internal untuk underwriting. Keputusan pembelian tetap tanggung jawab investor. Jangan memperlakukan hasil AI sebagai appraisal, pendapat hukum, atau jaminan profit.
+
+
+## K. Catatan V1.0.6 — form restore dan renovation estimator
+
+- Memuat objek tersimpan kini menggabungkan `input_data`, `latest_analysis`, dan struktur `latest_analysis.inputs` sebagai fallback. Field kamar tidur/mandi, tipe properti, jumlah lantai, lebar/akses jalan, kondisi fisik, kategori RAB, dan luas tapak dipulihkan bila tersedia; nilai yang memang tidak ada dibersihkan agar tidak terbawa dari objek sebelumnya.
+- RAB mengambil konteks tipe properti, LT/LB, jumlah lantai, luas tapak bila diketahui, jumlah kamar tidur/mandi, kondisi umum, deskripsi, lebar dan jenis akses. Konteks akses dipakai untuk catatan mobilisasi/harga satuan, bukan mengubah volume tanpa dasar.
+- Kategori Auto dengan kondisi belum diketahui hanya menyarankan inspeksi/persiapan, bukan menganggap renovasi ringan. Kategori kosmetik eksplisit mewajibkan scope persiapan, dinding dan plafon; kategori lain memakai scope per kategori.
+- Koefisien volume diberi label allowance screening dan confidence. Luas atap memakai luas tapak aktual atau estimasi LB/jumlah lantai; dinding memakai rentang 2,5–3,0 × LB dengan titik tengah heuristic yang mempertimbangkan jumlah kamar tidur; perbaikan lokal ringan menggunakan rentang lokal ber-confidence rendah; pekerjaan struktur tidak dihitung otomatis tanpa engineer.
+- `Luas tapak lantai dasar` menjadi field opsional untuk memperbaiki estimasi luas atap, terutama bangunan bertingkat.
+- Seluruh baris RAB wajib yang tidak dikembalikan AI ditambahkan sebagai placeholder tanpa harga; RAB menjadi parsial dan GO diblokir sampai ditinjau/dilengkapi.

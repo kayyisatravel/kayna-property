@@ -89,3 +89,41 @@ These rules are conservative workflow controls, not legal/tax advice. Review rul
 - Unit rates are indicative estimates, not live contractor quotations or verified local supplier prices. User must review measurements, unit rates and scope before confirming cost estimates.
 - Renovation contingency remains a separate Python calculation and must not be included in AI line items (avoid double counting).
 - If quantity or unit cost is unknown, keep it blank and require user input.
+
+
+## 8. Context-aware renovation estimator (V1.0.6)
+
+### Inputs used
+- General physical condition and selected renovation category.
+- LT, LB, floor count, optional measured ground-floor footprint.
+- Property type, bedroom and bathroom count.
+- Road width/access, facade notes, survey notes, user-described defects and uploaded photos.
+
+The AI may select applicable scope and suggest conservative unit rates. Python owns deterministic screening quantities. Access is context for mobilization/unit-rate review; it does not create an automatic volume multiplier. Bedroom count may move the wall-area midpoint within the screening interval only; it is not a measured wall take-off. Bathroom count is used as a possible count of bathroom work packages, not proof that each bathroom requires renovation.
+
+### Screening quantity assumptions
+| Work | Preliminary formula | Limitation |
+|---|---|---|
+| Floor / full ceiling | 1.0 × aggregate LB | Exclude voids, open areas, carport or areas not included in work.
+| Roof | 1.25–1.35 × ground-floor footprint | Use measured footprint if supplied; otherwise estimate LB ÷ floor count. Actual shape, slope and overhang require measurement.
+| Wall paint area | 2.5–3.0 × LB | Very rough combined internal/external surface allowance; midpoint within the range may be adjusted slightly by bedroom count. Verify perimeter, height, partitions and openings.
+| Full electrical rewire points | ceil(LB ÷ 6) | Allowance only for medium/heavy scope; not an electrical standard. Final point count and load by electrical plan/technician. Not used for minor repairs.
+| Demolition rubble | 0.30–0.50 m³ × LB | Very low-confidence screening; depends on masonry, concrete, foundation, separation, bulking and demolition method. Verify contractor/truck/landfill.
+| Truck trips | ceil(rubble volume ÷ configured truck capacity), default 5 m³ | Actual payload and access may be 4–6 m³ or differ; verify local provider.
+| Light roof repair | 5–15% × estimated roof area | Local-repair allowance only if supported by inspection/photos/description; not whole-roof replacement.
+| Light ceiling patch | 3–10% × LB | Allowance only if damaged ceiling area is indicated; measure actual patch.
+| Light tile patch | 2–6% × LB | Allowance only if damaged tiles are indicated; measure actual area.
+
+These ratios are not SNI/AHSP universal coefficients and do not replace detailed quantity take-off. Permen PUPR No. 8 Tahun 2023 on AHSP requires preparation from work components and local conditions, including method/specification, labor, materials, and equipment. Use applicable local government HSPK/SSH and current market quotes for unit prices; AI price estimates remain indicative and must be checked.
+
+### Category rules
+- **Auto / condition unknown:** inspection and preparation only; no assumed repair scope.
+- **Ready to occupy:** basic preparation and optional cosmetic scope; do not force full repaint if evidence does not support it.
+- **Cosmetic:** when explicitly selected/inferred from explicit paint/finishing condition, preparation, wall and ceiling are required; floor method is either polishing OR vinyl/SPC, never both.
+- **Light:** local repair scope only; low-confidence allowances are conditional and should be used only when indicated.
+- **Medium:** broad replacement scope; roof area based on footprint, ceiling/floor by LB, bathroom packages by known count, electrical points are indicative only.
+- **Heavy:** structural/foundation/column/beam/slab quantities and prices remain blank until assessed and designed by a competent engineer. No structural safety conclusion from photo/area alone.
+- **Hitung Tanah:** demolition, rubble and land clearing are separate from renovation. Rubble and truck estimates are low confidence.
+
+### Completeness gate
+A missing required work item is inserted as an unpriced placeholder. Any required RAB line without conservative quantity and unit price blocks GO. Conditional/optional work remains visible when selected by AI/user, but an unneeded item can be removed or marked optional after review. Contingency is calculated separately by Python and must not be duplicated in line items.
