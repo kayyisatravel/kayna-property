@@ -59,3 +59,14 @@
 - Auto category with unknown condition now produces inspection/preparation guidance instead of assuming light renovation. Explicit cosmetic scope makes preparation, wall and ceiling work required; omitted required AI items become unpriced placeholders.
 - Added low-confidence local repair allowances for light renovation and explicit warning that they must be measured; structural work remains unquantified until engineer/design review.
 - Added regression tests. Current unit test suite: 68 passed; Python compile check passed.
+
+## [1.0.8] - 2026-11-19
+### Added
+- Investor-facing Indonesian navigation, workflow guidance, progress indicator, market-quality explanation, and detailed capital/cash/selling-cost tables.
+- Optional comparable NJOP input and locally calibrated NJOP-to-market reference when at least three comparable price/NJOP pairs are available.
+- User-confirmed date-found helper and individual-listing URL attestation.
+### Changed
+- Missing listing publication dates are treated as uncertainty rather than a GO hard stop; date found remains distinct and required for GO evidence.
+- Market confidence >=55 remains the hard threshold; scores below 70 display quality warnings without independently blocking GO.
+### Fixed
+- Cost and risk review confirmations persist across Streamlit reruns and reset only when their underlying reviewed data changes.

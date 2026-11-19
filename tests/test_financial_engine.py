@@ -133,3 +133,21 @@ def test_missing_bid_increment_still_produces_indicative_economic_ceiling():
     assert result["increment_confirmed"] is False
     assert result["walk_away_from"] is None
     assert "bukan increment resmi" in result["increment_note"]
+
+
+def test_calculator_exposes_legal_cost_components_without_changing_legal_total():
+    from core.calculator import calculate_project
+    inputs = {
+        "property": {"njop": 100_000_000},
+        "survey": {},
+        "costs": {},
+        "rules": {
+            "buyer_auction_fee_pct": 2, "bphtb_rate_pct": 5, "npoptkp": 0,
+            "bphtb_basis_mode": "bid_only", "bpn_pnbp_cost": 2_000_000,
+            "roya_cost": 1_000_000, "other_acquisition_admin": 500_000,
+            "other_legal_cost": 250_000, "acquisition_notary_ppat_fee": 0,
+        },
+    }
+    result = calculate_project(100_000_000, None, inputs)
+    assert result["legal_bpn_cost"] == 3_750_000
+    assert result["bpn_pnbp_cost"] + result["roya_cost"] + result["other_acquisition_admin"] + result["other_legal_cost"] + result["acquisition_notary_ppat_fee"] == result["legal_bpn_cost"]

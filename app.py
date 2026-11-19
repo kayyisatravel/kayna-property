@@ -12,6 +12,7 @@ from core.underwriting import run_underwriting
 from core.liquidity import compute_liquidity
 from core.lifecycle import actual_project_summary
 from core.form_state import form_state_from_input_data
+from core.review_state import sync_review_confirmation
 from core.renovation_engine import CATEGORIES as RENOVATION_CATEGORIES, rab_item_is_in_scope, infer_renovation_category
 from core.calculator import calculate_project
 from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, estimate_renovation_rab, file_sha256
@@ -23,12 +24,22 @@ from reports.report_builder import build_analysis_markdown
 st.set_page_config(page_title=APP_NAME, page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
-.block-container{max-width:1580px;padding-top:1.2rem;padding-bottom:3rem}
-[data-testid="stMetric"]{background:rgba(15,118,110,.055);border:1px solid rgba(15,118,110,.12);padding:.75rem 1rem;border-radius:13px}
-.hero{padding:1.1rem 1.3rem;border:1px solid rgba(15,118,110,.20);border-radius:18px;background:linear-gradient(115deg,rgba(15,118,110,.10),rgba(14,116,144,.035))}
-.small-muted{font-size:.82rem;color:#667085}
-div.stButton>button{border-radius:10px;min-height:2.55rem;font-weight:600}
-div[data-testid="stDataFrame"]{border-radius:12px;overflow:hidden}
+:root{--pfms-ink:#172B4D;--pfms-muted:#667085;--pfms-line:#E5EAF0;--pfms-brand:#0F766E;--pfms-soft:#F5F8FA}
+.block-container{max-width:1480px;padding-top:1.05rem;padding-bottom:3rem}
+[data-testid="stMetric"]{background:#F7FAFC;border:1px solid #E5EAF0;padding:.8rem 1rem;border-radius:14px;min-height:112px}
+[data-testid="stMetricLabel"]{color:#526174;font-weight:600}
+.hero{padding:1.35rem 1.5rem;border:1px solid #DCE8E7;border-radius:18px;background:linear-gradient(115deg,#F0F8F7,#F7FAFC);margin-bottom:1rem}
+.hero h1,.hero h2{color:var(--pfms-ink);margin-bottom:.3rem}
+.hero p{color:#526174;margin-bottom:0}
+.small-muted{font-size:.85rem;color:var(--pfms-muted)}
+.stTabs [data-baseweb="tab-list"]{gap:8px;border-bottom:1px solid var(--pfms-line)}
+.stTabs [data-baseweb="tab"]{height:48px;padding:0 14px;border-radius:10px 10px 0 0;font-weight:600}
+div.stButton>button,div.stDownloadButton>button{border-radius:10px;min-height:2.55rem;font-weight:600}
+div[data-testid="stDataFrame"]{border:1px solid var(--pfms-line);border-radius:12px;overflow:hidden}
+div[data-testid="stExpander"]{border:1px solid var(--pfms-line);border-radius:12px}
+[data-testid="stAlert"]{border-radius:12px}
+section[data-testid="stSidebar"]{border-right:1px solid var(--pfms-line)}
+section[data-testid="stSidebar"] [data-testid="stRadio"] label{padding-top:.18rem;padding-bottom:.18rem}
 </style>
 """, unsafe_allow_html=True)
 
@@ -224,21 +235,32 @@ def set_default(key: str, value: Any):
 # ------------------------------- Sidebar -----------------------------------
 st.sidebar.markdown(f"## 🏠 {APP_NAME}")
 st.sidebar.caption(f"Version {APP_VERSION}")
-if repo: st.sidebar.success("Google Sheets terhubung")
-else: st.sidebar.warning("Mode lokal sementara" if not db_error else db_error[:180])
+if repo: st.sidebar.success("Database terhubung")
+else: st.sidebar.warning("Mode sementara · database belum terhubung" if not db_error else db_error[:180])
 GEMINI_KEY = str(secret("GEMINI_API_KEY", "") or "")
 GEMINI_MODEL = str(secret("GEMINI_MODEL", DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL)
-st.sidebar.caption(f"AI: {GEMINI_MODEL} · {'aktif' if GEMINI_KEY else 'API key belum diatur'}")
-page = st.sidebar.radio("Navigasi", ["Executive Dashboard", "New Auction Analysis", "Investor Cashflow", "Portfolio Comparison", "Active Properties", "Closed Projects & Track Record", "Database & History", "Settings & Rules"])
+st.sidebar.caption(f"Asisten AI: {'Siap digunakan' if GEMINI_KEY else 'Belum diaktifkan'}")
+page_labels = {
+    "🏠 Ringkasan utama": "Executive Dashboard",
+    "➕ Analisis objek lelang": "New Auction Analysis",
+    "💰 Kas & kemampuan investasi": "Investor Cashflow",
+    "⚖️ Bandingkan peluang": "Portfolio Comparison",
+    "🏘️ Properti aktif": "Active Properties",
+    "✅ Proyek selesai & hasil": "Closed Projects & Track Record",
+    "🗂️ Database & riwayat": "Database & History",
+    "⚙️ Pengaturan sistem": "Settings & Rules",
+}
+selected_page_label = st.sidebar.radio("MENU UTAMA", list(page_labels.keys()))
+page = page_labels[selected_page_label]
 if st.sidebar.button("↻ Refresh Data", use_container_width=True):
     cached_read.clear()
     st.rerun()
 st.sidebar.markdown("---")
-st.sidebar.caption("Sell First Before Buying · Python financial engine · Gemini reviewer")
+st.sidebar.caption("Analisis terukur · Risiko terlihat · Keputusan dapat diaudit")
 
 # ============================ PAGE 1: DASHBOARD ============================
 if page == "Executive Dashboard":
-    st.markdown(f"<div class='hero'><h1>Executive Dashboard</h1><p>Ringkasan peluang, likuiditas investor, modal pada aset aktif dan hasil investasi yang sudah terealisasi.</p></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='hero'><h1>Ringkasan Utama</h1><p>Pantau peluang lelang, kesiapan kas, properti yang sedang dikelola, dan hasil investasi yang sudah terealisasi.</p></div>", unsafe_allow_html=True)
     properties = list_properties(); analyses = list_analyses(); cash_profile, events, liq = get_cash_data()
     active = [p for p in properties if p.get("lifecycle_status") in {"WON", "ACTIVE"}]
     sold = [p for p in properties if p.get("lifecycle_status") == "SOLD"]
@@ -251,7 +273,7 @@ if page == "Executive Dashboard":
     total_realized_profit = sum(x.get("net_profit_actual", 0) for x in realized)
     active_actual_cost = sum(to_float(x.get("amount")) for x in read_table("COST_ACTUALS") if any(p.get("property_id") == x.get("property_id") for p in active))
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Kas siap investasi", idr(liq["cash_available_for_new_project"]))
+    k1.metric("Kas siap investasi", idr(liq["cash_available_for_new_project"]), help="Kas aktual dikurangi pengeluaran yang dikonfirmasi dan cadangan likuiditas.")
     k2.metric("Peluang tersimpan", len(opps))
     k3.metric("Aset aktif", len(active))
     k4.metric("Profit terealisasi", idr(total_realized_profit))
@@ -265,7 +287,7 @@ if page == "Executive Dashboard":
                 pay = record_payload(p); inp = pay.get("input_data", {}); prop = inp.get("property", {})
                 rows.append({"Property ID": p.get("property_id"), "Objek": p.get("name"), "Lifecycle": p.get("lifecycle_status"), "Status Analisis": p.get("decision_status"), "Limit": to_float(p.get("auction_limit")), "Tahap": pay.get("project_stage", "Settlement")})
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        else: st.info("Belum ada properti yang dimenangkan. Peluang GO tetap tersimpan sebagai prospek, bukan aset aktif.")
+        else: st.info("Belum ada properti yang dimenangkan. Semua peluang yang dianalisis tetap tersimpan sebagai prospek, termasuk yang berstatus HOLD atau DO NOT BID.")
     with c2:
         st.markdown("**Distribusi keputusan analisis**")
         if analyses:
@@ -277,8 +299,41 @@ if page == "Executive Dashboard":
 
 # =========================== PAGE 2: NEW ANALYSIS ==========================
 elif page == "New Auction Analysis":
-    st.title("New Auction Analysis")
-    st.caption("Isi data pengumuman, survei, pasar dan biaya. Python menghitung; Gemini hanya membantu ekstraksi dan review bila dipanggil.")
+    st.markdown("<div class='hero'><h1>Analisis Objek Lelang</h1><p>Ikuti empat langkah di bawah. Isi data yang diketahui, periksa hasil AI, lalu jalankan analisis untuk melihat kelayakan, total modal, kebutuhan kas, dan batas maksimal bidding.</p></div>", unsafe_allow_html=True)
+    with st.expander("Panduan singkat untuk pengguna baru", expanded=False):
+        st.markdown("""
+        **Cara menggunakan halaman ini**
+        1. **Data lelang & legalitas:** unggah pengumuman bila ada, periksa hasil ekstraksi, lalu lengkapi data objek.
+        2. **Survei & risiko:** masukkan kondisi fisik, status penghuni, hasil pemeriksaan, dan risiko yang relevan.
+        3. **Harga pasar:** masukkan listing pembanding. Tanggal terbit iklan boleh kosong; tanggal ditemukan berarti tanggal listing dikumpulkan.
+        4. **Biaya & RAB:** periksa setiap komponen biaya, lalu centang konfirmasi setelah selesai meninjau.
+
+        Klik **Analisis Sekarang** untuk menghitung. Klik **Simpan / Update Analisis** agar hasil tercatat di database.
+        """)
+    # Non-blocking progress indicator: it shows the user's place in the workflow,
+    # but never prevents analysis of partial data.
+    loaded_comp_rows = st.session_state.get("na_comparables_current")
+    if loaded_comp_rows is None:
+        loaded_comp_rows = st.session_state.get("na_comparables_editor")
+    if isinstance(loaded_comp_rows, pd.DataFrame):
+        comp_progress_rows = loaded_comp_rows.to_dict(orient="records")
+    elif isinstance(loaded_comp_rows, list):
+        comp_progress_rows = loaded_comp_rows
+    else:
+        comp_progress_rows = []
+    comparable_progress_count = sum(
+        1 for row in comp_progress_rows
+        if str(row.get("name") or "").strip() and to_float(row.get("price")) > 0
+        and (to_float(row.get("land_area")) > 0 or to_float(row.get("building_area")) > 0)
+    )
+    steps_done = [
+        bool(st.session_state.get("na_lot_code") and st.session_state.get("na_address") and to_float(st.session_state.get("na_limit")) > 0),
+        bool(st.session_state.get("na_survey_status") and st.session_state.get("na_survey_status") != "Belum Survei"),
+        comparable_progress_count >= 5,
+        bool(st.session_state.get("na_costs_reviewed", False) and st.session_state.get("na_risk_reviewed", False)),
+    ]
+    completed_steps = sum(steps_done)
+    st.progress(completed_steps / 4, text=f"Kemajuan pengisian: {completed_steps} dari 4 langkah memiliki data utama")
     existing_props = list_properties()
     load_options = {"Buat objek baru": ""}
     for p in existing_props: load_options[f"{p.get('lot_code') or p.get('property_id')} · {p.get('name','')} [{p.get('decision_status','')}] "] = p.get("property_id")
@@ -315,7 +370,7 @@ elif page == "New Auction Analysis":
                 st.session_state[k] = v
             st.session_state.na_last_occupancy = mapping.get("na_survey_status", "Belum Survei")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", latest_saved.get("risk_reviewed", False)))
-            comparable_columns = ["name", "address", "price", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
+            comparable_columns = ["name", "address", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
             risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "mitigation", "status"]
             loaded_comps = data.get("comparables", [])
             loaded_risks = data.get("risk_register", [])
@@ -388,7 +443,7 @@ elif page == "New Auction Analysis":
             if d.get("field_evidence"): st.json(d["field_evidence"])
 
     st.markdown("---")
-    t1, t2, t3, t4 = st.tabs(["① Data KPKNL & Legal", "② Survei & Penguasaan", "③ Comparable Pasar", "④ Biaya & Target"])
+    t1, t2, t3, t4 = st.tabs(["1 · Data lelang & legal", "2 · Survei & risiko", "3 · Harga pembanding", "4 · Biaya & RAB"])
     with t1:
         st.subheader("Identitas lelang")
         c1,c2,c3 = st.columns(3)
@@ -451,7 +506,8 @@ elif page == "New Auction Analysis":
             set_default("na_tax_rule_source", ""); st.text_input("URL sumber aturan resmi", key="na_tax_rule_source")
             set_default("na_tax_verified", False); st.checkbox("Saya sudah memverifikasi tarif dan dasar pengenaan untuk objek ini", key="na_tax_verified")
     with t2:
-        st.subheader("Survey status — gate utama")
+        st.subheader("Survei lapangan dan kondisi penghuni")
+        st.caption("Catat hanya hal yang benar-benar diketahui dari survei atau sumber yang dapat Anda jelaskan. Status belum survei akan menahan keputusan final.")
         statuses = list(OCCUPANCY_DEFAULTS.keys())
         set_default("na_survey_status", "Belum Survei")
         prior_status = st.session_state.get("na_last_occupancy", st.session_state.na_survey_status)
@@ -524,15 +580,12 @@ elif page == "New Auction Analysis":
         if len(risk_edited):
             st.caption("Skor risiko dihitung otomatis: kemungkinan × dampak. Skor 20–25 ditandai sangat tinggi. Risiko kritis yang masih terbuka akan menahan keputusan GO.")
         risk_signature = hashlib.sha256(safe_json(st.session_state.na_risk_current).encode("utf-8")).hexdigest()
-        if st.session_state.get("na_risk_reviewed_signature", "") != risk_signature:
-            st.session_state.na_risk_reviewed = False
-        set_default("na_risk_reviewed", False)
+        sync_review_confirmation(st.session_state, "na_risk_reviewed", "na_risk_reviewed_signature", risk_signature)
         st.checkbox("Saya sudah meninjau risiko yang relevan dan mitigasinya; saya memahami bahwa risiko yang belum terselesaikan dapat menahan keputusan GO.", key="na_risk_reviewed")
-        if st.session_state.na_risk_reviewed:
-            st.session_state.na_risk_reviewed_signature = risk_signature
     with t3:
-        st.subheader("Market comparables — AI narrative parser")
-        st.caption("Tempel uraian listing apa adanya (boleh berupa narasi bernomor dan bullet seperti hasil riset Anda). Gemini akan menggabungkan setiap judul listing beserta bullet turunannya menjadi SATU baris properti di tabel. AI tidak membuat URL, tanggal publikasi, kondisi, atau akses yang tidak disebutkan.")
+        st.subheader("Data pembanding harga pasar")
+        st.caption("Masukkan listing rumah yang benar-benar dapat ditelusuri. Satu listing = satu baris. Gemini membantu membaca narasi, tetapi tidak boleh mengarang harga, ukuran, URL, maupun tanggal.")
+        st.info("Tanggal publikasi iklan tidak wajib tersedia. **Tanggal ditemukan** adalah tanggal Anda mengumpulkan atau mencatat listing di PFMS. URL harus mengarah ke iklan rumah tertentu, bukan halaman pencarian atau daftar kategori.")
         set_default("na_comparable_paste", "")
         paste = st.text_area(
             "Paste narasi 5+ listing pasar",
@@ -589,7 +642,7 @@ elif page == "New Auction Analysis":
             st.caption(f"Parsing terakhir: {summary.get('count')} listing · tanggal tangkap sistem {summary.get('captured_at')}. Tanggal ini bukan tanggal publikasi iklan.")
             for note in st.session_state.get("na_comparable_parse_notes", []):
                 st.warning(note)
-        default_cols = ["name", "address", "complex_name", "price", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
+        default_cols = ["name", "address", "complex_name", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct"]
         if st.session_state.get("na_comparable_schema_version") != 3:
             if "na_comparables_editor_widget" in st.session_state:
                 del st.session_state["na_comparables_editor_widget"]
@@ -606,7 +659,8 @@ elif page == "New Auction Analysis":
         edited = st.data_editor(st.session_state.na_comparables_editor, num_rows="dynamic", use_container_width=True, key="na_comparables_editor_widget", column_config={
             "name": st.column_config.TextColumn("Nama listing"),
             "address": st.column_config.TextColumn("Alamat/lokasi"),
-            "price": st.column_config.NumberColumn("Harga penawaran (Rp)", min_value=0, format="Rp %.0f"),
+            "price": st.column_config.NumberColumn("Harga listing (Rp)", min_value=0, format="Rp %.0f"),
+            "njop": st.column_config.NumberColumn("NJOP pembanding (Rp, opsional)", min_value=0, format="Rp %.0f", help="Isi hanya bila Anda benar-benar memiliki NJOP/SPPT pembanding tersebut."),
             "land_area": st.column_config.NumberColumn("LT (m²)", min_value=0),
             "building_area": st.column_config.NumberColumn("LB (m²)", min_value=0, help="Boleh kosong bila tidak tercantum; sistem dapat memakai pendekatan LT saja."),
             "condition": st.column_config.SelectboxColumn("Kondisi", options=["", "Siap Huni", "Butuh Renovasi", "Hitung Tanah"]),
@@ -615,11 +669,48 @@ elif page == "New Auction Analysis":
             "source_platforms": st.column_config.TextColumn("Portal/platform sumber"),
             "source_url": st.column_config.TextColumn("URL sumber (dari input)"),
             "source_url_scope": st.column_config.SelectboxColumn("Jenis halaman sumber", options=["", "Listing individual", "Portal pencarian/kategori", "Halaman venue/kompleks", "Perlu verifikasi"], help="Untuk GO final, pilih Listing individual hanya bila URL benar-benar membuka iklan rumah tertentu."),
-            "listing_date": st.column_config.TextColumn("Tanggal iklan (jika diketahui)"),
-            "date_found": st.column_config.TextColumn("Tanggal ditemukan"),
+            "listing_date": st.column_config.TextColumn("Tanggal terbit iklan (opsional)"),
+            "date_found": st.column_config.TextColumn("Tanggal ditemukan / dikumpulkan"),
+            "date_found_basis": st.column_config.TextColumn("Dasar tanggal ditemukan", disabled=True),
             "adjustment_pct": st.column_config.NumberColumn("Penyesuaian (%)", help="Hanya diisi dengan alasan yang dapat dijelaskan."),
         })
         st.session_state.na_comparables_current = edited.to_dict(orient="records")
+        market_action_1, market_action_2 = st.columns(2)
+        with market_action_1:
+            if st.button("Isi tanggal ditemukan untuk baris yang masih kosong", use_container_width=True, key="na_fill_capture_dates"):
+                rows_to_update = edited.to_dict(orient="records")
+                changed = 0
+                for comp in rows_to_update:
+                    if str(comp.get("name") or "").strip() and to_float(comp.get("price")) > 0 and not str(comp.get("date_found") or "").strip():
+                        comp["date_found"] = date.today().isoformat()
+                        comp["date_found_basis"] = "Dikonfirmasi pengguna: tanggal dikumpulkan di PFMS"
+                        changed += 1
+                st.session_state.na_comparables_editor = pd.DataFrame(rows_to_update)
+                if "na_comparables_editor_widget" in st.session_state: del st.session_state["na_comparables_editor_widget"]
+                st.success(f"Tanggal ditemukan diisi untuk {changed} baris. Tanggal publikasi iklan tetap tidak diubah.")
+                st.rerun()
+        with market_action_2:
+            url_review_material = [
+                {"name": str(row.get("name") or "").strip(), "url": str(row.get("source_url") or "").strip()}
+                for row in edited.to_dict(orient="records")
+                if str(row.get("source_url") or "").strip()
+            ]
+            url_review_signature = hashlib.sha256(safe_json(url_review_material).encode("utf-8")).hexdigest()
+            sync_review_confirmation(st.session_state, "na_confirm_individual_urls", "na_confirm_individual_urls_signature", url_review_signature)
+            confirm_individual_urls = st.checkbox("Saya sudah membuka URL dan memastikan setiap link yang relevan adalah iklan properti individual.", key="na_confirm_individual_urls")
+            if st.button("Konfirmasi URL sebagai listing individual", disabled=not confirm_individual_urls, use_container_width=True, key="na_confirm_url_scope"):
+                rows_to_update = edited.to_dict(orient="records")
+                changed = 0
+                for comp in rows_to_update:
+                    url = str(comp.get("source_url") or "").strip()
+                    scope = str(comp.get("source_url_scope") or "")
+                    if url.startswith(("http://", "https://")) and scope not in {"Portal pencarian/kategori", "Halaman venue/kompleks"}:
+                        comp["source_url_scope"] = "Listing individual"
+                        changed += 1
+                st.session_state.na_comparables_editor = pd.DataFrame(rows_to_update)
+                if "na_comparables_editor_widget" in st.session_state: del st.session_state["na_comparables_editor_widget"]
+                st.success(f"{changed} URL ditandai sebagai listing individual berdasarkan konfirmasi Anda.")
+                st.rerun()
         set_default("na_negotiation_discount", DEFAULT_RULES["negotiation_discount_pct"])
         set_default("na_quick_sale_discount", DEFAULT_RULES["quick_sale_discount_pct"])
         c1,c2 = st.columns(2)
@@ -743,25 +834,32 @@ elif page == "New Auction Analysis":
             set_default("na_risk_ceiling", None); st.number_input("Hard ceiling bid tambahan (opsional, Rp)", min_value=0, step=1_000_000, value=st.session_state.na_risk_ceiling, key="na_risk_ceiling")
         st.caption("Contingency renovasi dihitung otomatis oleh Python berdasarkan persentase Settings & Rules.")
         st.metric("Minimum ROI", "25%", help="Target wajib untuk seluruh periode proyek.")
+        rules_for_cost_review = get_rules()
         cost_review_payload = {
             "renovation_items": st.session_state.get("na_renovation_items_current", []),
             "renovation_extra": st.session_state.get("na_renovation_extra", 0),
             "renovation_months": st.session_state.get("na_renovation_months", 0),
             "selling_months": st.session_state.get("na_selling_months", 0),
             "legal_delay_months": st.session_state.get("na_legal_delay_months", 0),
-            "holding": st.session_state.get("na_monthly_holding", 0),
+            "holding_monthly": st.session_state.get("na_monthly_holding", 0),
             "marketing": st.session_state.get("na_marketing_cost", 0),
             "other_presale": st.session_state.get("na_other_presale", 0),
             "possession": st.session_state.get("na_possession_cost", 0),
             "possession_reserve": st.session_state.get("na_possession_risk_reserve", 0),
+            "auction_limit": st.session_state.get("na_limit"),
+            "buyer_fee_pct": st.session_state.get("na_buyer_fee"),
+            "bphtb_rate_pct": st.session_state.get("na_bphtb_rate"),
+            "npoptkp": st.session_state.get("na_npoptkp"),
+            "npoptkp_eligible": st.session_state.get("na_npoptkp_eligible"),
+            "njop": st.session_state.get("na_njop"),
+            "bphtb_basis_mode": rules_for_cost_review.get("bphtb_basis_mode"),
+            "bpn_legal_rules": {k: rules_for_cost_review.get(k) for k in ["bpn_pnbp_cost", "roya_cost", "other_acquisition_admin", "other_legal_cost", "acquisition_notary_ppat_fee"]},
+            "selling_rules": {k: rules_for_cost_review.get(k) for k in ["seller_final_tax_pct", "seller_agent_pct", "seller_ajb_ppat_pct", "seller_misc_fixed"]},
+            "contingency_pct": rules_for_cost_review.get("renovation_contingency_pct"),
         }
         cost_signature = hashlib.sha256(safe_json(cost_review_payload).encode("utf-8")).hexdigest()
-        if st.session_state.get("na_costs_reviewed_signature", "") != cost_signature:
-            st.session_state.na_costs_reviewed = False
-        set_default("na_costs_reviewed", False)
+        sync_review_confirmation(st.session_state, "na_costs_reviewed", "na_costs_reviewed_signature", cost_signature)
         st.checkbox("Saya sudah meninjau seluruh estimasi biaya (BPN, penguasaan, setiap item RAB, contingency, holding, marketing dan biaya lain). Nilai nol adalah keputusan yang disengaja.", key="na_costs_reviewed")
-        if st.session_state.na_costs_reviewed:
-            st.session_state.na_costs_reviewed_signature = cost_signature
         with st.expander("Asumsi biaya dan pajak (editable pada Settings & Rules)"):
             st.json(rules)
 
@@ -801,25 +899,27 @@ elif page == "New Auction Analysis":
     if snap:
         st.markdown("---")
         decision = snap["decision"]; mkt = snap["market"]; tiers = snap["bidding"]; at = snap["at_limit"]
-        st.subheader("Hasil Underwriting")
+        st.subheader("Ringkasan hasil analisis")
         if mkt.get("conservative_exit") is None:
-            st.info("Analisis parsial berhasil dijalankan. ARV belum dapat dihitung karena data comparable atau luas objek belum cukup; biaya akuisisi/proyek pada nilai limit tetap dihitung. Status HOLD berarti jangan bidding sampai data pasar/luas dilengkapi.")
+            st.info("Analisis biaya tetap berhasil dihitung, tetapi ARV belum dapat diperkirakan karena data harga pembanding atau luas objek belum cukup. Lengkapi data pasar sebelum memakai simulasi bidding sebagai dasar keputusan.")
         elif mkt.get("status") != "READY":
             st.warning(
-                "ARV dan simulasi bidding masih INDIKATIF. Untuk GO final diperlukan minimal lima comparable yang dapat digunakan, "
-                "masing-masing memiliki URL listing langsung dan tanggal ditemukan, serta confidence minimal 55/100. "
-                "Sistem tetap menampilkan indikasi kelayakan atau Walk Away, tetapi tidak akan memberikan GO."
+                f"Estimasi ARV dan simulasi bidding masih bersifat indikatif. Saat ini terdapat {mkt.get('valid_count', 0)} comparable yang dapat dihitung, "
+                f"{mkt.get('go_grade_count', 0)} dari minimal 5 memiliki URL listing individual yang terkonfirmasi dan tanggal ditemukan, "
+                f"serta confidence {mkt.get('confidence', 0)}/100 (batas minimum 55). "
+                "Tanggal publikasi iklan boleh tidak tersedia; yang diperlukan adalah tanggal ketika listing dikumpulkan/ditemukan."
             )
         if decision["status"] == "GO": st.success("GO — SELURUH GATE UTAMA TERPENUHI")
         elif decision["status"] == "CONDITIONAL GO": st.warning("CONDITIONAL GO — ADA SYARAT YANG HARUS DIPENUHI")
         elif decision["status"] == "DO NOT BID": st.error("DO NOT BID / TIDAK LAYAK")
         else: st.warning("HOLD — DATA / VERIFIKASI BELUM MEMADAI")
         st.write(decision["summary"])
-        k1,k2,k3,k4 = st.columns(4)
-        k1.metric("Conservative ARV", idr(mkt.get("conservative_exit")))
-        k2.metric("Total modal @ limit", idr(at.get("capital_before_sale")))
-        k3.metric("Net profit @ limit", idr(at.get("net_profit")))
-        k4.metric("ROI @ limit", pct(at.get("roi_pct")))
+        k1,k2,k3,k4,k5 = st.columns(5)
+        k1.metric("ARV konservatif", idr(mkt.get("conservative_exit")), help="Estimasi harga keluar konservatif setelah quick-sale discount.")
+        k2.metric("ARV dasar", idr(mkt.get("base_exit")), help="Estimasi nilai pasar dasar dari comparable dan, bila tersedia, referensi NJOP terkalibrasi.")
+        k3.metric("Total modal proyek", idr(at.get("capital_before_sale")), help="Biaya proyek sebelum penjualan; cadangan risiko dan biaya penjualan disajikan terpisah.")
+        k4.metric("Estimasi profit bersih", idr(at.get("net_profit")))
+        k5.metric("ROI proyek", pct(at.get("roi_pct")))
         st.markdown("### Tangga bidding")
         tier_rows = []
         for label, bid, res in [
@@ -849,19 +949,102 @@ elif page == "New Auction Analysis":
         risk_summary = snap.get("risk_summary", {})
         st.caption(f"Risk register: {risk_summary.get('count',0)} risiko · Severity maksimum {risk_summary.get('maximum_severity',0)}/25 · Cadangan likuiditas risiko {idr(risk_summary.get('total_cash_reserve',0))}")
         if not tiers.get("increment_confirmed"): st.error("Kelipatan bid belum dikonfirmasi. Tangga bidding belum final.")
-        st.markdown("### Validasi pasar")
-        st.write(f"Comparable untuk valuasi indikatif: **{mkt.get('valid_count',0)}** · Comparable GO-grade (URL langsung + tanggal ditemukan): **{mkt.get('go_grade_count',0)} / 5** · Confidence index: **{mkt.get('confidence',0)}/100** · Status: **{mkt.get('status')}**")
-        mc1,mc2 = st.columns(2); mc1.metric("Median indikasi harga / m² LT", idr(mkt.get("land_unit_price_median"))); mc2.metric("Median indikasi harga / m² LB", idr(mkt.get("building_unit_price_median")))
-        if mkt.get("valid"): st.dataframe(pd.DataFrame(mkt["valid"]), use_container_width=True, hide_index=True)
-        if mkt.get("invalid"): st.warning("Baris tidak valid: " + safe_json(mkt["invalid"]))
-        st.markdown("### Rincian biaya pada nilai limit")
-        cost_rows = [{"Komponen":"Harga bid", "Nilai":at.get("bid_price")}, {"Komponen":"Bea lelang", "Nilai":at.get("buyer_auction_fee")}, {"Komponen":"BPHTB", "Nilai":at.get("bphtb")}, {"Komponen":"PNBP/legal/BPN", "Nilai":at.get("legal_bpn_cost")}, {"Komponen":"Penguasaan", "Nilai":at.get("possession_cost")}, {"Komponen":"Cadangan risiko penguasaan (bukan biaya sampai terpakai)", "Nilai":at.get("possession_risk_reserve")}, {"Komponen":"Renovasi", "Nilai":at.get("renovation_cost")}, {"Komponen":"Contingency renovasi", "Nilai":at.get("renovation_contingency")}, {"Komponen":"Holding", "Nilai":at.get("holding_cost")}, {"Komponen":"Biaya penjualan", "Nilai":at.get("selling_cost")}, {"Komponen":"Profit bersih", "Nilai":at.get("net_profit")}]
+        st.markdown("### Kualitas data pasar")
+        market_cols = st.columns(4)
+        market_cols[0].metric("Comparable terpakai", f"{mkt.get('valid_count', 0)} listing")
+        market_cols[1].metric("URL individual", f"{mkt.get('go_grade_count', 0)} / 5")
+        market_cols[2].metric("Confidence pasar", f"{mkt.get('confidence', 0)}/100")
+        market_cols[3].metric("Sebaran estimasi", f"{mkt.get('dispersion_pct', 0)}%")
+        if mkt.get("quality_notes"):
+            for note in mkt["quality_notes"]: st.caption("• " + note)
+        st.caption("Tanggal terbit iklan yang tidak diketahui hanya menurunkan keyakinan umur listing. Syarat kelengkapan untuk GO adalah lima URL iklan individual yang telah dikonfirmasi dan memiliki tanggal ditemukan.")
+        mc1,mc2 = st.columns(2)
+        mc1.metric("Median indikasi harga / m² tanah", idr(mkt.get("land_unit_price_median")))
+        mc2.metric("Median indikasi harga / m² bangunan", idr(mkt.get("building_unit_price_median")))
+        if mkt.get("subject_njop"):
+            if mkt.get("njop_indicated_exit"):
+                st.info(f"Referensi NJOP terkalibrasi: {idr(mkt.get('njop_indicated_exit'))}. Rasio pasar/NJOP lokal dihitung dari {mkt.get('njop_comparable_count')} comparable yang memiliki pasangan harga dan NJOP; kontribusinya {mkt.get('njop_weight_pct_used')}% pada ARV dasar.")
+            else:
+                st.info(f"NJOP objek tercatat sebesar {idr(mkt.get('subject_njop'))}. Sistem belum menemukan minimal 3 comparable dengan data NJOP untuk mengkalibrasi rasio pasar/NJOP, sehingga NJOP ditampilkan sebagai referensi dan belum dicampurkan ke ARV.")
+        elif mkt.get("njop_indicated_exit"):
+            st.info(f"Indikasi berbasis NJOP pembanding: {idr(mkt.get('njop_indicated_exit'))}. Isi NJOP objek agar referensi ini dapat dihitung untuk properti target.")
+        if mkt.get("valid"):
+            with st.expander("Lihat seluruh comparable, penyesuaian dan dasar confidence", expanded=False):
+                market_view = pd.DataFrame(mkt["valid"])
+                preferred_market_cols = [c for c in ["name", "address", "price", "negotiated_price", "land_area", "building_area", "njop", "source_url", "source_url_scope", "date_found", "listing_date", "similarity_score", "missing_quality_fields", "subject_normalized_value", "market_to_njop_ratio"] if c in market_view.columns]
+                st.dataframe(market_view[preferred_market_cols], use_container_width=True, hide_index=True)
+        if mkt.get("invalid"):
+            with st.expander("Listing yang belum dapat dihitung", expanded=False):
+                st.dataframe(pd.DataFrame(mkt["invalid"]), use_container_width=True, hide_index=True)
+        st.markdown("### Rincian total modal pada nilai limit")
+        cost_rows = [
+            {"Kelompok": "Akuisisi", "Komponen": "Harga bid / nilai limit", "Nilai": at.get("bid_price")},
+            {"Kelompok": "Akuisisi", "Komponen": "Bea lelang pembeli", "Nilai": at.get("buyer_auction_fee")},
+            {"Kelompok": "Akuisisi", "Komponen": "Dasar perhitungan BPHTB", "Nilai": at.get("bphtb_basis")},
+            {"Kelompok": "Akuisisi", "Komponen": "BPHTB", "Nilai": at.get("bphtb")},
+            {"Kelompok": "Legalitas / BPN", "Komponen": "PNBP BPN", "Nilai": at.get("bpn_pnbp_cost")},
+            {"Kelompok": "Legalitas / BPN", "Komponen": "Roya", "Nilai": at.get("roya_cost")},
+            {"Kelompok": "Legalitas / BPN", "Komponen": "Administrasi akuisisi", "Nilai": at.get("other_acquisition_admin")},
+            {"Kelompok": "Legalitas / BPN", "Komponen": "Biaya legal lain", "Nilai": at.get("other_legal_cost")},
+            {"Kelompok": "Legalitas / BPN", "Komponen": "PPAT/notaris akuisisi", "Nilai": at.get("acquisition_notary_ppat_fee")},
+            {"Kelompok": "Legalitas / BPN", "Komponen": "Subtotal legalitas / BPN", "Nilai": at.get("legal_bpn_cost")},
+            {"Kelompok": "Penguasaan", "Komponen": "Biaya penguasaan / kerohiman", "Nilai": at.get("possession_cost")},
+            {"Kelompok": "Renovasi", "Komponen": "RAB renovasi", "Nilai": at.get("renovation_cost")},
+            {"Kelompok": "Renovasi", "Komponen": "Contingency renovasi", "Nilai": at.get("renovation_contingency")},
+            {"Kelompok": "Holding", "Komponen": f"Holding ({at.get('holding_months', 0)} bulan)", "Nilai": at.get("holding_cost")},
+            {"Kelompok": "Pra-penjualan", "Komponen": "Marketing", "Nilai": at.get("marketing_cost")},
+            {"Kelompok": "Pra-penjualan", "Komponen": "Biaya lain sebelum penjualan", "Nilai": at.get("other_presale_cost_only")},
+            {"Kelompok": "TOTAL", "Komponen": "TOTAL MODAL PROYEK (sebelum biaya penjualan)", "Nilai": at.get("capital_before_sale")},
+        ]
         st.dataframe(pd.DataFrame(cost_rows), use_container_width=True, hide_index=True, column_config={"Nilai": st.column_config.NumberColumn(format="Rp %.0f")})
+        st.markdown("### Kebutuhan kas dan cadangan risiko")
+        cash_rows = [
+            {"Komponen": "Total modal proyek", "Nilai": at.get("capital_before_sale"), "Keterangan": "Biaya yang diperkirakan keluar sampai properti siap dijual."},
+            {"Komponen": "Cadangan risiko penguasaan", "Nilai": at.get("possession_risk_reserve"), "Keterangan": "Cadangan likuiditas; bukan biaya proyek sampai benar-benar terpakai."},
+            {"Komponen": "Cadangan risiko lain", "Nilai": at.get("general_risk_reserve"), "Keterangan": "Jumlah cadangan dari risk register yang belum ditutup."},
+            {"Komponen": "TOTAL KEBUTUHAN KAS + CADANGAN", "Nilai": at.get("cash_requirement_including_reserve"), "Keterangan": "Dibandingkan dengan kas siap investasi."},
+        ]
+        st.dataframe(pd.DataFrame(cash_rows), use_container_width=True, hide_index=True, column_config={"Nilai": st.column_config.NumberColumn(format="Rp %.0f")})
+        liquidity_rows = [
+            {"Komponen": "Real cash investor", "Nilai": snap.get("liquidity", {}).get("real_cash")},
+            {"Komponen": "Pengeluaran mendatang yang dikonfirmasi", "Nilai": snap.get("liquidity", {}).get("forecast_outflows")},
+            {"Komponen": "Komitmen aktif yang belum dibayar", "Nilai": snap.get("liquidity", {}).get("active_unpaid_commitments")},
+            {"Komponen": "Cadangan likuiditas investor", "Nilai": snap.get("liquidity", {}).get("liquidity_reserve")},
+            {"Komponen": "KAS SIAP INVESTASI", "Nilai": snap.get("liquidity", {}).get("cash_available_for_new_project")},
+        ]
+        st.dataframe(pd.DataFrame(liquidity_rows), use_container_width=True, hide_index=True, column_config={"Nilai": st.column_config.NumberColumn(format="Rp %.0f")})
+        st.caption("Uang jaminan ditampilkan terpisah sebagai kebutuhan kas di muka sesuai pengumuman lelang; jangan dijumlahkan lagi ke total modal bila sudah diperhitungkan sebagai bagian pelunasan.")
+        if at.get("selling_cost") is not None:
+            st.markdown("### Biaya penjualan dan hasil bersih")
+            selling_rows = [
+                {"Komponen": "PPh Final penjual", "Nilai": at.get("seller_final_tax")},
+                {"Komponen": "Komisi agen", "Nilai": at.get("seller_agent")},
+                {"Komponen": "AJB / PPAT penjual", "Nilai": at.get("seller_ajb_ppat")},
+                {"Komponen": "Biaya penjualan lain", "Nilai": at.get("seller_misc")},
+                {"Komponen": "TOTAL BIAYA PENJUALAN", "Nilai": at.get("selling_cost")},
+                {"Komponen": "Hasil penjualan setelah biaya penjualan", "Nilai": at.get("net_proceeds")},
+                {"Komponen": "PROFIT BERSIH PROYEK", "Nilai": at.get("net_profit")},
+            ]
+            st.dataframe(pd.DataFrame(selling_rows), use_container_width=True, hide_index=True, column_config={"Nilai": st.column_config.NumberColumn(format="Rp %.0f")})
+        with st.expander("Cara membaca angka keuangan", expanded=False):
+            st.markdown("""
+            - **Total modal proyek** adalah harga bid dan semua biaya sebelum penjualan, termasuk contingency dan holding.
+            - **Cadangan risiko** ditambahkan pada kebutuhan kas agar dana tersedia bila risiko terjadi. Cadangan tersebut tidak masuk profit sebagai biaya sampai benar-benar digunakan.
+            - **Biaya penjualan** dipotong dari hasil penjualan; tidak ditambahkan lagi ke modal sebelum penjualan.
+            - **Kebutuhan kas + cadangan** dibandingkan dengan **kas siap investasi**. Uang jaminan adalah kebutuhan waktu awal dan tidak boleh dihitung dua kali.
+            """)
+        with st.expander("Arti status keputusan", expanded=False):
+            st.markdown("""
+            - **GO:** seluruh hard gate yang ditetapkan sudah terpenuhi. Tetap lakukan pemeriksaan akhir sebelum bidding.
+            - **CONDITIONAL GO:** secara awal layak, tetapi masih ada pemeriksaan penting yang perlu diselesaikan.
+            - **HOLD:** data atau konfirmasi penting belum lengkap. Jangan bidding sebelum blocker diselesaikan.
+            - **DO NOT BID:** batas ekonomi atau risiko utama menunjukkan objek tidak layak dibeli pada nilai limit.
+            """)
         if decision.get("blockers"):
-            st.markdown("**Blockers**")
+            st.markdown("### Hal yang harus diselesaikan sebelum bidding")
             for x in decision["blockers"]: st.error(x)
         if decision.get("warnings"):
-            st.markdown("**Peringatan**")
+            st.markdown("### Catatan kualitas data dan risiko")
             for x in decision["warnings"]: st.warning(x)
         st.markdown("### Review AI (opsional, menggunakan kuota Gemini)")
         if st.button("Review asumsi dan risiko dengan Gemini", disabled=not GEMINI_KEY):
@@ -953,9 +1136,9 @@ elif page == "New Auction Analysis":
 
 # ============================ PAGE 3: CASHFLOW =============================
 elif page == "Investor Cashflow":
-    st.title("Investor Cashflow & Liquidity")
+    st.markdown("<div class='hero'><h1>Kas & Kemampuan Investasi</h1><p>Perbarui kas aktual dan catat pengeluaran yang benar-benar sudah Anda rencanakan atau konfirmasi.</p></div>", unsafe_allow_html=True)
     profile, events, liquidity = get_cash_data()
-    st.caption("User menginput real cash dan kemungkinan pengeluaran. Sistem menghitung kapasitas investasi; sistem tidak membuat asumsi pengeluaran sendiri.")
+    st.caption("Sistem tidak mengarang pengeluaran. Kas siap investasi dihitung dari kas aktual dikurangi pengeluaran terkonfirmasi, komitmen aktif, dan cadangan likuiditas.")
     with st.form("cash_profile_form"):
         real_cash = st.number_input("Real cash saat ini (Rp)", min_value=0, step=1_000_000, value=safe_int(profile.get("real_cash")))
         reserve_pct = st.slider("Cadangan likuiditas minimum (%)", min_value=10, max_value=20, value=int(to_float(profile.get("reserve_pct", 20))))
@@ -1028,7 +1211,7 @@ elif page == "Investor Cashflow":
 
 # ======================== PAGE 4: PORTFOLIO COMPARISON =====================
 elif page == "Portfolio Comparison":
-    st.title("Portfolio Decision Center")
+    st.markdown("<div class='hero'><h1>Bandingkan Peluang Investasi</h1><p>Bandingkan beberapa objek berdasarkan estimasi profit, ROI, risiko, dan kemampuan kas secara bersamaan.</p></div>", unsafe_allow_html=True)
     props = list_properties(); analyses = list_analyses(); _,_,liquidity = get_cash_data(); rules = get_rules()
     latest_by_pid = {}
     for a in analyses:
@@ -1160,7 +1343,7 @@ elif page == "Active Properties":
 
 # ============================ PAGE 6: CLOSED ===============================
 elif page == "Closed Projects & Track Record":
-    st.title("Closed Projects & Track Record")
+    st.markdown("<div class='hero'><h1>Proyek Selesai & Hasil Investasi</h1><p>Evaluasi harga jual, biaya aktual, laba, dan ROI yang benar-benar terealisasi.</p></div>", unsafe_allow_html=True)
     sold = [p for p in list_properties() if p.get("lifecycle_status") == "SOLD"]
     if not sold: st.info("Belum ada aset berstatus SOLD.")
     else:
@@ -1192,7 +1375,7 @@ elif page == "Closed Projects & Track Record":
 
 # ============================ PAGE 7: DATABASE =============================
 elif page == "Database & History":
-    st.title("Database & History")
+    st.markdown("<div class='hero'><h1>Database & Riwayat</h1><p>Telusuri seluruh prospek, analisis, status proyek, dan perubahan yang pernah dicatat.</p></div>", unsafe_allow_html=True)
     props = list_properties()
     if props:
         df = pd.DataFrame([{k:p.get(k) for k in ["property_id","lot_code","name","address","auction_date","auction_limit","decision_status","lifecycle_status","updated_at"]} for p in props])
@@ -1232,11 +1415,11 @@ elif page == "Database & History":
 
 # ============================ PAGE 8: SETTINGS =============================
 elif page == "Settings & Rules":
-    st.title("Settings & Rules")
-    st.caption("Default biaya adalah asumsi underwriting. Verifikasi regulasi dan quotation aktual sebelum mengambil keputusan.")
+    st.markdown("<div class='hero'><h1>Pengaturan Sistem & Asumsi</h1><p>Atur asumsi biaya dan ambang keputusan. Perubahan di sini dapat memengaruhi analisis berikutnya.</p></div>", unsafe_allow_html=True)
+    st.caption("Tarif dan biaya adalah asumsi underwriting yang harus diverifikasi untuk setiap wilayah dan transaksi.")
     rules = get_rules()
     with st.form("rules_form"):
-        st.subheader("Acquisition & regional tax assumptions")
+        st.subheader("Biaya akuisisi dan asumsi pajak daerah")
         c1,c2,c3 = st.columns(3)
         with c1:
             buyer_fee = st.number_input("Bea lelang pembeli (%)", min_value=0.0, max_value=20.0, value=to_float(rules["buyer_auction_fee_pct"]))
@@ -1249,13 +1432,13 @@ elif page == "Settings & Rules":
         with c3:
             other_admin = st.number_input("Administrasi akuisisi lain (Rp)", min_value=0, step=250_000, value=safe_int(rules["other_acquisition_admin"]))
             notary_buy = st.number_input("Jasa PPAT/notaris akuisisi (default 0) (Rp)", min_value=0, step=250_000, value=safe_int(rules["acquisition_notary_ppat_fee"]))
-        st.subheader("Selling costs")
+        st.subheader("Biaya penjualan")
         c1,c2,c3,c4 = st.columns(4)
         with c1: pph = st.number_input("PPh Final (%)", min_value=0.0, max_value=20.0, value=to_float(rules["seller_final_tax_pct"]))
         with c2: agent = st.number_input("Komisi agen (%)", min_value=0.0, max_value=20.0, value=to_float(rules["seller_agent_pct"]))
         with c3: ajb = st.number_input("Porsi AJB/PPAT penjual (%)", min_value=0.0, max_value=2.0, value=to_float(rules["seller_ajb_ppat_pct"]))
         with c4: misc = st.number_input("Misc selling cost (Rp)", min_value=0, step=250_000, value=safe_int(rules["seller_misc_fixed"]))
-        st.subheader("Project & market assumptions")
+        st.subheader("Asumsi proyek dan pasar")
         c1,c2,c3 = st.columns(3)
         with c1: holding = st.number_input("Holding cost / bulan (Rp)", min_value=0, step=250_000, value=safe_int(rules["monthly_holding_cost"]))
         with c2: contingency = st.number_input("Contingency renovasi (%)", min_value=0.0, max_value=100.0, value=to_float(rules["renovation_contingency_pct"]))
@@ -1264,9 +1447,10 @@ elif page == "Settings & Rules":
         with c1: quick_sale = st.number_input("Quick-sale discount (%)", min_value=0.0, max_value=50.0, value=to_float(rules["quick_sale_discount_pct"]))
         with c2: min_roi = st.number_input("Minimum ROI seluruh proyek (%)", min_value=0.0, max_value=200.0, value=to_float(rules["minimum_roi_pct"]))
         with c3: mid_roi = st.number_input("Target ROI batas tengah (%)", min_value=0.0, max_value=300.0, value=to_float(rules["mid_roi_pct"]))
-        save_rules = st.form_submit_button("Simpan rules")
+        njop_market_weight = st.number_input("Bobot referensi NJOP terkalibrasi (%)", min_value=0.0, max_value=25.0, value=to_float(rules.get("njop_market_weight_pct", 10.0)), help="Hanya aktif bila minimal 3 comparable memiliki data harga dan NJOP pembanding. NJOP tidak pernah diperlakukan sebagai harga pasar langsung.")
+        save_rules = st.form_submit_button("Simpan asumsi", use_container_width=True)
     if save_rules:
-        updated = {"buyer_auction_fee_pct":buyer_fee,"bphtb_rate_pct":bphtb_rate,"npoptkp":npoptkp,"bphtb_basis_mode":basis_mode,"bpn_pnbp_cost":bpn,"roya_cost":roya,"other_acquisition_admin":other_admin,"acquisition_notary_ppat_fee":notary_buy,"seller_final_tax_pct":pph,"seller_agent_pct":agent,"seller_ajb_ppat_pct":ajb,"seller_misc_fixed":misc,"monthly_holding_cost":holding,"renovation_contingency_pct":contingency,"negotiation_discount_pct":negotiation,"quick_sale_discount_pct":quick_sale,"minimum_roi_pct":min_roi,"mid_roi_pct":mid_roi}
+        updated = {"buyer_auction_fee_pct":buyer_fee,"bphtb_rate_pct":bphtb_rate,"npoptkp":npoptkp,"bphtb_basis_mode":basis_mode,"bpn_pnbp_cost":bpn,"roya_cost":roya,"other_acquisition_admin":other_admin,"acquisition_notary_ppat_fee":notary_buy,"seller_final_tax_pct":pph,"seller_agent_pct":agent,"seller_ajb_ppat_pct":ajb,"seller_misc_fixed":misc,"monthly_holding_cost":holding,"renovation_contingency_pct":contingency,"negotiation_discount_pct":negotiation,"quick_sale_discount_pct":quick_sale,"minimum_roi_pct":min_roi,"mid_roi_pct":mid_roi,"njop_market_weight_pct":njop_market_weight}
         st.session_state.rules_local.update(updated)
         upsert_record("RULES_CONFIG", "rule_key", {"rule_key":"GLOBAL","value":updated,"updated_at":iso_now(),"source_note":"User-configured assumptions; verify by property jurisdiction/transaction."})
         log_event("RULES", "GLOBAL", "UPDATED", updated); st.success("Rules tersimpan."); st.rerun()

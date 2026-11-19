@@ -68,3 +68,44 @@ def test_source_platform_without_direct_url_is_accepted_as_provenance():
     ok, errors = validate_comparable(row)
     assert ok, errors
 
+
+
+def test_five_direct_listings_with_capture_date_can_be_ready_without_publication_dates():
+    rows = [comp(i) for i in range(5)]
+    for row in rows:
+        row["source_url_scope"] = "Listing individual"
+        row["listing_date"] = ""
+    market = assess_comparables(rows, {"land_area": 100, "building_area": 90})
+    assert market["valid_count"] == 5
+    assert market["go_grade_count"] == 5
+    assert market["listing_date_missing_count"] == 5
+    assert market["status"] == "READY"
+
+
+def test_njop_reference_is_calibrated_from_at_least_three_local_pairs():
+    rows = [comp(i) for i in range(5)]
+    for row in rows:
+        row["source_url_scope"] = "Listing individual"
+        row["njop"] = 200_000_000
+        row["listing_date"] = ""
+    market = assess_comparables(
+        rows,
+        {"land_area": 100, "building_area": 90, "njop": 250_000_000},
+        njop_market_weight_pct=10,
+    )
+    assert market["njop_comparable_count"] == 5
+    assert market["njop_indicated_exit"] is not None
+    assert market["njop_weight_pct_used"] == 10
+    assert market["base_exit"] != market["comparable_base_exit"]
+
+
+def test_subject_njop_is_not_applied_without_three_comparable_njop_pairs():
+    rows = [comp(i) for i in range(5)]
+    for row in rows:
+        row["source_url_scope"] = "Listing individual"
+    rows[0]["njop"] = 180_000_000
+    rows[1]["njop"] = 190_000_000
+    market = assess_comparables(rows, {"land_area": 100, "building_area": 90, "njop": 250_000_000})
+    assert market["njop_indicated_exit"] is None
+    assert market["njop_weight_pct_used"] == 0
+    assert market["base_exit"] == market["comparable_base_exit"]

@@ -83,6 +83,7 @@ def parse_comparable_paste(text: str) -> list[dict[str, Any]]:
             "name": name, "address": get("address", name), "price": _money(get("price")),
             "land_area": to_float(get("land_area"), 0) or None,
             "building_area": to_float(get("building_area"), 0) or None,
+            "njop": _money(get("njop")) or None,
             "condition": condition_map.get(_norm(condition), condition), "access": access_map.get(_norm(access), access),
             "price_type": pt_map.get(_norm(pt), pt), "certificate": get("certificate"),
             "source_url": get("source_url"), "source_platforms": get("source_platforms"),

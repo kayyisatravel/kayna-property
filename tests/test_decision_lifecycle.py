@@ -97,3 +97,20 @@ def test_risk_editor_nan_values_are_reported_as_missing_not_crash():
     result = summarize_risks([{"risk_description":"Risiko kosong","probability_1_5":float("nan"),"impact_1_5":float("nan"),"cost_reserve":float("nan")}])
     assert result["invalid"]
     assert result["total_cash_reserve"] == 0
+
+
+def test_market_confidence_between_55_and_69_is_a_warning_not_a_hard_blocker():
+    inputs = {
+        "property": {"lot_code": "L1", "address": "Alamat", "auction_limit": 100, "land_area": 90, "building_area": 70},
+        "survey": {"survey_status": "Sudah Survei - Kosong/Tidak Dihuni", "interior_inspected": True},
+        "legal": {"identity_verified": True, "dispute_detected": False, "tax_rules_verified": True},
+        "rules": {"minimum_roi_pct": 25},
+        "costs": {"cost_estimates_reviewed": True},
+        "finance": {"cash_confirmed": True, "cash_available_for_new_project": 1_000_000},
+        "risk_reviewed": True,
+    }
+    market = {"valid_count": 5, "go_grade_count": 5, "confidence": 62, "listing_date_missing_count": 5, "unconfirmed_url_count": 0, "date_found_missing_count": 0}
+    tiers = {"increment_confirmed": True, "max_bid": 150}
+    result = evaluate_decision(inputs, market, tiers, {"roi_pct": 35, "net_profit": 35, "capital_before_sale": 100, "cash_requirement_including_reserve": 100})
+    assert result["status"] == "GO"
+    assert result["warnings"]

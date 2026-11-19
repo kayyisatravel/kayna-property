@@ -12,7 +12,12 @@ from .utils import to_float
 def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:
     prop = data.get("property", {}); survey = data.get("survey", {}); legal = data.get("legal", {}); costs = data.get("costs", {})
     market_subject = {**prop, "access": survey.get("access"), "physical_condition": survey.get("physical_condition")}
-    market = assess_comparables(data.get("comparables", []), market_subject, to_float(rules.get("negotiation_discount_pct", 10)), to_float(rules.get("quick_sale_discount_pct", 5)))
+    market = assess_comparables(
+        data.get("comparables", []), market_subject,
+        to_float(rules.get("negotiation_discount_pct", 10)),
+        to_float(rules.get("quick_sale_discount_pct", 5)),
+        to_float(rules.get("njop_market_weight_pct", 10)),
+    )
     risk_summary = summarize_risks(data.get("risk_register", []))
     survey_for_calculation = {**survey, "general_risk_reserve": risk_summary["total_cash_reserve"]}
     calculation_inputs = {"property": prop, "survey": survey_for_calculation, "legal": legal, "costs": costs, "rules": rules, "finance": liquidity}

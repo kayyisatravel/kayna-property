@@ -87,8 +87,15 @@ def _weighted_median(values: list[tuple[float, float]]) -> float:
     return ordered[-1][0]
 
 
-def assess_comparables(comparables: list[dict[str, Any]], subject: dict[str, Any], negotiation_discount_pct: float = 10.0, quick_sale_discount_pct: float = 5.0) -> dict[str, Any]:
+def assess_comparables(
+    comparables: list[dict[str, Any]],
+    subject: dict[str, Any],
+    negotiation_discount_pct: float = 10.0,
+    quick_sale_discount_pct: float = 5.0,
+    njop_market_weight_pct: float = 10.0,
+) -> dict[str, Any]:
     subject_lt = to_float(subject.get("land_area")); subject_lb = to_float(subject.get("building_area"))
+    subject_njop = to_float(subject.get("njop"))
     rows, invalid, seen = [], [], set()
     for original in comparables:
         row = dict(original)
@@ -128,11 +135,12 @@ def assess_comparables(comparables: list[dict[str, Any]], subject: dict[str, Any
         if not preds:
             invalid.append({"name": row.get("name"), "errors": ["LT/LB pembanding tidak cukup untuk normalisasi"]}); continue
         predicted_total = sum(preds) / len(preds)
-        # Do not mistake the date the user copied/imported a listing for its publication
-        # date. If listing_date is unknown, freshness remains uncertain and receives a
-        # conservative default score; date_found is retained for audit only.
+        # date_found proves when the user collected the evidence; it is not the
+        # listing publication date. When publication date is unavailable, retain a
+        # moderate freshness score and a modest uncertainty penalty rather than
+        # treating the listing as very old. This keeps genuine current research usable.
         recency_value = _recency_score(row.get("listing_date"))
-        recency = recency_value if recency_value is not None else 35
+        recency = recency_value if recency_value is not None else 55
         recency_penalty = (100 - recency) * 0.20
         missing_penalty = 0
         missing_fields = []
@@ -140,7 +148,7 @@ def assess_comparables(comparables: list[dict[str, Any]], subject: dict[str, Any
             ("condition", 7, "kondisi"), ("access", 5, "akses"),
             ("certificate", 3, "sertifikat"), ("building_area", 7, "LB"),
             ("source_url", 6, "URL sumber"), ("date_found", 3, "tanggal ditemukan"),
-            ("listing_date", 4, "tanggal publikasi iklan"),
+            ("listing_date", 2, "tanggal publikasi iklan (tidak diketahui)"),
         ]:
             if is_blank(row.get(key)):
                 missing_penalty += penalty
@@ -155,15 +163,49 @@ def assess_comparables(comparables: list[dict[str, Any]], subject: dict[str, Any
         weight = row_score / 100 * source_weight
         parsed_date = _parse_listing_date(row.get("date_found"))
         age_days = max(0, (date.today() - parsed_date).days) if parsed_date else None
-        row.update({"similarity_score": round(row_score, 1), "recency_score": recency, "age_days": age_days, "source_weight": source_weight, "missing_quality_fields": missing_fields, "negotiated_price": round(negotiated), "adjusted_price": round(adjusted), "land_unit_price": round(adjusted / lt) if lt > 0 else None, "building_unit_price": round(adjusted / lb) if lb > 0 else None, "land_normalized_value": round(land_prediction) if land_prediction else None, "building_normalized_value": round(building_prediction) if building_prediction else None, "subject_normalized_value": round(predicted_total), "weight": round(weight, 3)})
+        comparable_njop = to_float(row.get("njop"))
+        row.update({
+            "similarity_score": round(row_score, 1), "recency_score": recency, "age_days": age_days,
+            "source_weight": source_weight, "missing_quality_fields": missing_fields,
+            "negotiated_price": round(negotiated), "adjusted_price": round(adjusted),
+            "land_unit_price": round(adjusted / lt) if lt > 0 else None,
+            "building_unit_price": round(adjusted / lb) if lb > 0 else None,
+            "land_normalized_value": round(land_prediction) if land_prediction else None,
+            "building_normalized_value": round(building_prediction) if building_prediction else None,
+            "subject_normalized_value": round(predicted_total), "weight": round(weight, 3),
+            "market_to_njop_ratio": round(adjusted / comparable_njop, 4) if comparable_njop > 0 else None,
+        })
         rows.append(row)
     count = len(rows)
     if count == 0:
-        return {"valid_count": 0, "go_grade_count": 0, "valid": [], "invalid": invalid, "base_exit": None, "conservative_exit": None, "optimistic_exit": None, "confidence": 0, "status": "INSUFFICIENT_DATA", "median_adjusted": None, "direct_url_count": 0}
+        return {
+            "valid_count": 0, "go_grade_count": 0, "valid": [], "invalid": invalid,
+            "base_exit": None, "comparable_base_exit": None, "njop_indicated_exit": None,
+            "njop_comparable_count": 0, "njop_market_ratio": None, "subject_njop": subject_njop or None,
+            "njop_weight_pct_used": 0.0, "conservative_exit": None, "optimistic_exit": None,
+            "confidence": 0, "status": "INSUFFICIENT_DATA", "median_adjusted": None,
+            "direct_url_count": 0, "individual_listing_url_count": 0,
+            "listing_date_missing_count": 0, "date_found_missing_count": 0,
+            "unconfirmed_url_count": 0, "quality_notes": [],
+        }
     weighted = [(r["subject_normalized_value"], r["weight"]) for r in rows]
-    base = _weighted_median(weighted)
+    comparable_base = _weighted_median(weighted)
     simple_median = median([r["subject_normalized_value"] for r in rows])
-    dispersion = (max(r["subject_normalized_value"] for r in rows) - min(r["subject_normalized_value"] for r in rows)) / max(base, 1)
+
+    # NJOP is not market value and is never converted using an arbitrary national
+    # multiplier. It is used as a secondary calibrated reference only when at least
+    # three comparable properties also have their own NJOP values. The local
+    # market-to-NJOP ratio is learned from those paired observations.
+    njop_pairs = [
+        (r["market_to_njop_ratio"], r["weight"])
+        for r in rows
+        if r.get("market_to_njop_ratio") is not None and r["market_to_njop_ratio"] > 0
+    ]
+    njop_market_ratio = _weighted_median(njop_pairs) if len(njop_pairs) >= 3 else None
+    njop_indicated = subject_njop * njop_market_ratio if subject_njop > 0 and njop_market_ratio else None
+    njop_weight_used = max(0.0, min(25.0, to_float(njop_market_weight_pct))) if njop_indicated is not None else 0.0
+    base = comparable_base * (1 - njop_weight_used / 100) + (njop_indicated or 0) * (njop_weight_used / 100)
+    dispersion = (max(r["subject_normalized_value"] for r in rows) - min(r["subject_normalized_value"] for r in rows)) / max(comparable_base, 1)
     avg_score = sum(r["similarity_score"] for r in rows) / count
     confidence = max(0, min(100, avg_score - max(0, dispersion - 0.25) * 40 + min(10, count)))
     land_unit_median = median([r["land_unit_price"] for r in rows if r.get("land_unit_price")]) if any(r.get("land_unit_price") for r in rows) else None
@@ -182,4 +224,36 @@ def assess_comparables(comparables: list[dict[str, Any]], subject: dict[str, Any
         and not is_blank(r.get("date_found"))
     )
     status = "READY" if count >= 5 and go_grade_count >= 5 and confidence >= 55 else "PRELIMINARY"
-    return {"valid_count": count, "go_grade_count": go_grade_count, "valid": rows, "invalid": invalid, "base_exit": round(base), "conservative_exit": round(conservative), "optimistic_exit": round(optimistic), "confidence": round(confidence, 1), "simple_median": round(simple_median), "land_unit_price_median": round(land_unit_median) if land_unit_median else None, "building_unit_price_median": round(building_unit_median) if building_unit_median else None, "dispersion_pct": round(dispersion * 100, 1), "direct_url_count": direct_url_count, "individual_listing_url_count": individual_listing_url_count, "status": status, "negotiation_discount_pct": negotiation_discount_pct, "quick_sale_discount_pct": quick_sale_discount_pct}
+    listing_date_missing_count = sum(1 for r in rows if is_blank(r.get("listing_date")))
+    date_found_missing_count = sum(1 for r in rows if is_blank(r.get("date_found")))
+    unconfirmed_url_count = sum(
+        1 for r in rows
+        if str(r.get("source_url") or "").startswith(("http://", "https://"))
+        and str(r.get("source_url_scope") or "") != "Listing individual"
+    )
+    quality_notes = []
+    if listing_date_missing_count:
+        quality_notes.append(f"{listing_date_missing_count} listing tidak mencantumkan tanggal publikasi; ini mengurangi kepastian umur iklan, tetapi bukan syarat GO.")
+    if date_found_missing_count:
+        quality_notes.append(f"{date_found_missing_count} listing belum memiliki tanggal ditemukan/dikumpulkan.")
+    if unconfirmed_url_count:
+        quality_notes.append(f"{unconfirmed_url_count} URL belum dikonfirmasi sebagai halaman listing individual.")
+
+    return {
+        "valid_count": count, "go_grade_count": go_grade_count, "valid": rows, "invalid": invalid,
+        "base_exit": round(base), "comparable_base_exit": round(comparable_base),
+        "njop_indicated_exit": round(njop_indicated) if njop_indicated is not None else None,
+        "njop_comparable_count": len(njop_pairs), "njop_market_ratio": round(njop_market_ratio, 4) if njop_market_ratio is not None else None,
+        "subject_njop": subject_njop or None, "njop_weight_pct_used": njop_weight_used,
+        "conservative_exit": round(conservative), "optimistic_exit": round(optimistic),
+        "confidence": round(confidence, 1), "simple_median": round(simple_median),
+        "land_unit_price_median": round(land_unit_median) if land_unit_median else None,
+        "building_unit_price_median": round(building_unit_median) if building_unit_median else None,
+        "dispersion_pct": round(dispersion * 100, 1), "direct_url_count": direct_url_count,
+        "individual_listing_url_count": individual_listing_url_count,
+        "listing_date_missing_count": listing_date_missing_count,
+        "date_found_missing_count": date_found_missing_count,
+        "unconfirmed_url_count": unconfirmed_url_count, "quality_notes": quality_notes,
+        "status": status, "negotiation_discount_pct": negotiation_discount_pct,
+        "quick_sale_discount_pct": quick_sale_discount_pct,
+    }

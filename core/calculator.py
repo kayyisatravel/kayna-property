@@ -29,8 +29,14 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
     # BPN PNBP, roya and admin defaults are stored in RULES_CONFIG; a per-property
     # value can override them. Acquisition notary/PPAT is zero by default because
     # the investor handles the BPN process independently.
-    legal = sum(configured_cost(k) for k in ["bpn_pnbp_cost", "roya_cost", "other_acquisition_admin", "other_legal_cost"])
-    legal += configured_cost("acquisition_notary_ppat_fee", 0.0)
+    legal_breakdown = {
+        "bpn_pnbp_cost": configured_cost("bpn_pnbp_cost"),
+        "roya_cost": configured_cost("roya_cost"),
+        "other_acquisition_admin": configured_cost("other_acquisition_admin"),
+        "other_legal_cost": configured_cost("other_legal_cost"),
+        "acquisition_notary_ppat_fee": configured_cost("acquisition_notary_ppat_fee", 0.0),
+    }
+    legal = sum(legal_breakdown.values())
     possession = to_float(survey.get("possession_cost"))
     renovation = to_float(costs.get("renovation_cost"))
     contingency = renovation * to_float(rules.get("renovation_contingency_pct", 15)) / 100
@@ -56,7 +62,8 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
         annualized = ((1 + roi / 100) ** (12 / hold_months) - 1) * 100 if roi is not None and roi > -100 and hold_months > 0 else None
     return {
         "bid_price": p, "exit_price": sale, "buyer_auction_fee": buyer_fee, "bphtb_basis": bphtb_base, "bphtb": bphtb,
-        "legal_bpn_cost": legal, "acquisition_cost": acquisition, "possession_cost": possession, "renovation_cost": renovation,
+        "legal_bpn_cost": legal, **legal_breakdown,
+        "acquisition_cost": acquisition, "possession_cost": possession, "renovation_cost": renovation,
         "renovation_contingency": contingency, "holding_months": hold_months, "holding_cost": holding,
         "other_presale_cost": other_before_sale, "capital_before_sale": capital_before_sale,
         "possession_risk_reserve": possession_risk_reserve, "general_risk_reserve": general_risk_reserve,
@@ -64,4 +71,8 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
         "seller_final_tax": pph, "seller_agent": agent, "seller_ajb_ppat": ajb, "seller_misc": misc,
         "selling_cost": selling, "net_proceeds": net_proceeds, "net_profit": profit, "roi_pct": roi,
         "annualized_roi_pct": annualized, "total_cost_including_selling": capital_before_sale + selling if selling is not None else None,
+        "marketing_cost": max(0.0, to_float(costs.get("marketing_cost"))),
+        "other_presale_cost_only": max(0.0, to_float(costs.get("other_presale_cost"))),
+        "possession_risk_reserve": possession_risk_reserve,
+        "general_risk_reserve": general_risk_reserve,
     }

@@ -63,8 +63,17 @@ def evaluate_decision(inputs: dict[str, Any], market: dict[str, Any], tiers: dic
     else:
         status = "GO"
     if market.get("valid_count", 0) >= min_comps and market.get("confidence", 0) < 70:
-        warnings.append("Pasar memenuhi jumlah minimum, tetapi kualitas pembanding masih perlu ditinjau.")
+        reasons = []
+        if market.get("listing_date_missing_count", 0):
+            reasons.append(f"{market.get('listing_date_missing_count')} listing tidak mencantumkan tanggal terbit")
+        if market.get("unconfirmed_url_count", 0):
+            reasons.append(f"{market.get('unconfirmed_url_count')} URL belum dikonfirmasi sebagai listing individual")
+        if market.get("date_found_missing_count", 0):
+            reasons.append(f"{market.get('date_found_missing_count')} listing belum memiliki tanggal ditemukan")
+        suffix = (" Penyebab utama: " + "; ".join(reasons) + ".") if reasons else " Periksa kemiripan lokasi/luas, kondisi, akses, serta sebaran harga pembanding."
+        warnings.append(f"Jumlah comparable telah memenuhi minimum, tetapi confidence pasar {market.get('confidence', 0)}/100 masih di bawah 70/100.{suffix}")
     if survey.get("interior_inspected") is False:
         warnings.append("Interior belum diperiksa; risiko renovasi dapat berubah.")
-    if status == "GO" and warnings: status = "CONDITIONAL GO"
+        if status == "GO":
+            status = "CONDITIONAL GO"
     return {"status": status, "blockers": blockers, "warnings": warnings, "summary": "Memenuhi seluruh gate utama." if status == "GO" else ("Tidak layak mengikuti bidding berdasarkan batas finansial/hard stop." if status == "DO NOT BID" else "Data atau syarat kritis belum terpenuhi; jangan bidding dulu.")}

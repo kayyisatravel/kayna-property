@@ -75,6 +75,7 @@ class ComparableItem(BaseModel):
     address: Optional[str] = Field(default=None, alias="a")
     complex_name: Optional[str] = Field(default=None, alias="cx")
     price: Optional[int] = Field(default=None, alias="p")
+    njop: Optional[int] = Field(default=None, alias="nj")
     land_area: Optional[float] = Field(default=None, alias="lt")
     building_area: Optional[float] = Field(default=None, alias="lb")
     bedrooms: Optional[int] = Field(default=None, alias="kt")
@@ -561,7 +562,7 @@ def _comparable_prompt(sections: list[str], start_index: int) -> str:
         f"Jumlah item wajib {len(sections)} dengan indeks global: {', '.join(str(start_index+i) for i in range(len(sections)))}. "
         "Gunakan indeks i persis sesuai [LISTING]. Jangan memecah bullet atau menggabungkan listing. "
         "Ekstrak hanya fakta tertulis. Tidak ada/ambigu = null; array sumber kosong bila tidak disebut. "
-        "p=harga rupiah integer; lt/lb=m2; kt/km=jumlah kamar. LT dan LB jangan tertukar. "
+        "p=harga penawaran/transaksi rupiah integer; nj=NJOP total pembanding rupiah integer hanya bila tertulis; lt/lb=m2; kt/km=jumlah kamar. LT dan LB jangan tertukar. "
         "c hanya Siap Huni, Butuh Renovasi, Hitung Tanah jika eksplisit; frasa 'full renovasi' masuk cd/nt dan bukan otomatis siap huni. "
         "ac hanya 2 Mobil, 1 Mobil, Gang jika eksplisit; lebar jalan tulis di ad. Hook/carport tidak membuktikan akses. "
         "Sumber platform masuk src. Jangan membuat URL/tanggal publikasi; URL dipasangkan Python dari teks asli. "
@@ -657,6 +658,7 @@ def parse_comparable_narrative(api_key: str, narrative: str, model: str = DEFAUL
             row["electricity_watt"] = item.electricity_watt
             row["water_source"] = item.water_source or ""
             row["price_type"] = _standard_price_type(item.price_type)
+            row["njop"] = item.njop
             row["listing_date"] = _standard_optional_date(item.listing_date)
             from datetime import date
             row["date_found"] = date.today().isoformat()

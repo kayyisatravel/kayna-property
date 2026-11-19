@@ -1,6 +1,6 @@
 """Central application defaults. Tax/legal rates are editable assumptions, not legal advice."""
 APP_NAME = "Property Flipper Management System"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 MIN_ROI_PCT = 25.0
 MID_ROI_PCT = 35.0
@@ -30,6 +30,9 @@ DEFAULT_RULES = {
     "mid_roi_pct": MID_ROI_PCT,
     "negotiation_discount_pct": DEFAULT_NEGOTIATION_DISCOUNT_PCT,
     "quick_sale_discount_pct": DEFAULT_QUICK_SALE_DISCOUNT_PCT,
+    # Used only when >=3 comparable properties also have paired NJOP values.
+    # NJOP is never treated as market price on its own.
+    "njop_market_weight_pct": 10.0,
     "liquidity_reserve_pct": DEFAULT_LIQUIDITY_RESERVE_PCT,
 }
 
