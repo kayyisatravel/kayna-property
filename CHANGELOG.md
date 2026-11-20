@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.10] - 2026-11-20
+
+### Added
+- Guided category → subcategory → item/scope forms for historical and ongoing paid transactions and project budgets.
+- Date pickers for transaction dates and optional budget due dates.
+- Budget item edit form; existing dataframes are read-only views.
+- Property name/address/lot-aware selector in Database & History.
+- Explicit auction-win transition that preserves previous underwriting snapshots and stores winning price/date/deposit.
+
+### Changed
+- Project Onboarding now creates the project record first; historical expenses and budget lines are added through the same guided forms in Active Properties.
+- WON and ACTIVE lifecycle statuses are described as separate steps; both remain visible in Active Properties.
+
+### Compatibility
+- No existing Google Sheets tab names or existing column order changed.
+- Existing ledger fields are reused; no destructive migration.
+
+### Verification
+- `python -m compileall -q .`: passed.
+- `pytest -q`: 96 passed.
+- Live Google Sheets / Streamlit Cloud integration not run.
+
 ## [1.0.9] - 2026-11-20
 
 ### Added

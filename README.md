@@ -1,8 +1,17 @@
-# Property Flipper Management System (PFMS) — V1.0.9
+# Property Flipper Management System (PFMS) — V1.0.10
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.10 — Guided Project Finance Input & Auction-Win Conversion
+
+- Realisasi historis dan budget tidak lagi diisi melalui dataframe editor. Pengguna memilih Kategori → Subkategori → Item/Lingkup, lalu mengisi nominal dan tanggal melalui formulir.
+- Tabel realisasi dan budget di Properti Aktif menjadi tampilan saja; budget yang ada tetap dapat dipilih dan diubah melalui formulir khusus.
+- Tanggal pembayaran dan jatuh tempo menggunakan date picker.
+- Database & History menampilkan nama properti, alamat, kode lot, dan Property ID pada pilihan objek.
+- Prospect yang berhasil dimenangkan dapat dipindahkan menjadi WON dengan mencatat harga menang, tanggal, dan deposit. Snapshot analisis sebelumnya tetap dipertahankan dan objek muncul pada Properti Aktif.
+- WON menandakan berhasil menang lelang; setelah mulai dikelola melalui halaman Properti Aktif, status dapat berubah menjadi ACTIVE.
 
 ## V1.0.9 — Project Onboarding, Ledger & AI-Assisted Market Review
 
@@ -189,7 +198,7 @@ Jangan pernah menaruh API key/private key pada `app.py`, GitHub, screenshot atau
 - Deposit adalah kebutuhan likuiditas pra-lelang dan dikreditkan terhadap pelunasan bila aturan lot menyatakan demikian; jangan mencatatnya dua kali dalam biaya aktual.
 - Max bid dicari dengan numerical search dan pembulatan increment. Walk-away dimulai satu increment di atas maximum bid.
 
-Lihat `docs/CALCULATION_RULES.md` untuk uraian formula, `docs/DATA_DICTIONARY.md` untuk struktur database, `docs/USER_GUIDE.md` untuk alur penggunaan, `docs/COMPARABLE_AI_PARSER.md` untuk cara memasukkan narasi listing, dan `docs/DEPLOYMENT_SMOKE_TEST.md` untuk pengujian deployment. Riwayat perubahan ada di `CHANGELOG.md`. Panduan Project Onboarding dan Ledger: `docs/PROJECT_ONBOARDING_AND_LEDGER_V1.0.9.md`; kebijakan valuasi berbantuan AI: `docs/ARV_AI_ASSISTED_VALUATION_V1.0.9.md`.
+Lihat `docs/CALCULATION_RULES.md` untuk uraian formula, `docs/DATA_DICTIONARY.md` untuk struktur database, `docs/USER_GUIDE.md` untuk alur penggunaan, `docs/COMPARABLE_AI_PARSER.md` untuk cara memasukkan narasi listing, dan `docs/DEPLOYMENT_SMOKE_TEST.md` untuk pengujian deployment. Riwayat perubahan ada di `CHANGELOG.md`. Panduan Project Onboarding dan Ledger: `docs/PROJECT_ONBOARDING_AND_LEDGER_V1.0.9.md`; panduan input ledger bertahap: `docs/GUIDED_PROJECT_FINANCE_INPUT_V1.0.10.md`; kebijakan valuasi berbantuan AI: `docs/ARV_AI_ASSISTED_VALUATION_V1.0.9.md`.
 
 ## H. Pengujian
 
@@ -200,7 +209,7 @@ pytest -q
 python -m compileall -q .
 ```
 
-Suite pengujian V1.0.9 mencakup 92 unit test, termasuk kompresi/dekompresi payload JSON Google Sheets, diagnostik API write, pemulihan field form, estimator RAB, schema Gemini, ROI, maximum bid dan decision gate. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
+Suite pengujian V1.0.10 mencakup 96 unit test, termasuk kompresi/dekompresi payload JSON Google Sheets, diagnostik API write, pemulihan field form, estimator RAB, schema Gemini, ROI, maximum bid dan decision gate. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
 
 ## I. Catatan V1.0.4 — parser comparable
 

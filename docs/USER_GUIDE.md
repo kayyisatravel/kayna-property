@@ -108,17 +108,34 @@ Kategori Auto dengan kondisi yang belum diketahui hanya menampilkan inspeksi/per
 PFMS mengompresi JSON panjang pada kolom `*_json` agar satu sel tidak melewati batas Google Sheets sekitar 50.000 karakter. Aplikasi membaca/dekompresi otomatis; jangan mengedit isi marker `__PFMS_GZIP_JSON_V1__:` secara manual. Jika penulisan tetap gagal, baca HTTP status dan pesan Google yang ditampilkan aplikasi. Untuk 403, periksa akses Editor Service Account dan proteksi sheet; untuk 400/range, periksa tab/header; untuk grid limit, tambahkan baris worksheet. Setelah kegagalan simpan multi-tab, periksa Database & History sebelum mencoba ulang karena sebagian tab mungkin sudah berhasil ditulis.
 
 
-## Mendaftarkan proyek yang sudah berjalan (V1.0.9)
+## Mendaftarkan proyek yang sudah berjalan (V1.0.10)
 
 Gunakan menu **Daftarkan proyek berjalan** untuk properti yang sudah dimenangkan/diperoleh, termasuk sebelum PFMS dipakai. Isi identitas objek, harga perolehan, tanggal, tahap saat ini, dan kondisi/progres. Jangan memasukkannya kembali sebagai objek lelang baru hanya untuk membuat record proyek. Jika sebuah prospect sudah ada di PFMS, gunakan kode lot yang sama agar Project Onboarding dapat menggabungkannya dan mempertahankan snapshot analisis lama.
 
-Pada tabel **Realisasi biaya historis**, masukkan hanya uang yang benar-benar sudah dibayar. Harga menang/perolehan adalah informasi; pembayaran pembeliannya dimasukkan sekali pada ledger aktual. Jika deposit menjadi bagian harga menang, total deposit + pelunasan harus sama dengan harga menang, bukan harga menang ditambah deposit.
+Setelah proyek didaftarkan, buka **Properti Aktif** untuk memasukkan biaya historis dan item budget. Pengisian dilakukan melalui formulir bertahap, bukan dengan mengetik di dataframe.
 
-Pada tabel **Anggaran dan biaya yang masih harus diselesaikan**, masukkan per item: budget total, komitmen belum dibayar (sudah disepakati), dan forecast belum dikomitmen. Jangan masukkan pengeluaran yang sudah dibayar ke dua kolom outstanding.
+### Input realisasi pembayaran
 
-Setelah proyek tersimpan, buka **Properti aktif**. Catat pembayaran satu per satu dan hubungkan ke item budget bila sesuai. Pilih apakah pembayaran mengurangi komitmen, forecast, atau merupakan pengeluaran di luar budget. Periksa riwayat pembayaran, item yang belum tertaut, total aktual, komitmen, forecast, dan proyeksi biaya sampai siap dipasarkan. Komitmen proyek aktif secara otomatis mengurangi kas siap investasi; jangan mencatat komitmen yang sama lagi sebagai Cashflow Event.
+1. Pilih **Kategori biaya**.
+2. Pilih **Subkategori** yang sesuai dengan kategori tersebut.
+3. Pilih **Item / lingkup biaya**. Pilih Lainnya untuk mengetik item sendiri.
+4. Isi tanggal pembayaran melalui kalender, nominal yang benar-benar dibayar, penerima/vendor, metode pembayaran, dan bukti jika tersedia.
+5. Bila transaksi mengurangi komitmen atau forecast tertentu, tautkan transaksi ke item anggaran tersebut dan pilih sumber pengurangan yang sesuai.
+6. Klik **Simpan pembayaran**. Riwayat tampil di tabel yang hanya untuk dibaca.
 
-Lihat juga `PROJECT_ONBOARDING_AND_LEDGER_V1.0.9.md` untuk definisi data dan cara menghindari penghitungan ganda.
+Harga menang/perolehan dicatat satu kali. Jika deposit menjadi bagian harga menang, catat deposit + sisa pelunasan sehingga totalnya sama dengan harga menang; jangan mencatat deposit dan harga menang penuh sekaligus.
+
+### Input dan perubahan budget
+
+Untuk item baru, pilih Kategori → Subkategori → Item/Lingkup. Masukkan anggaran total, komitmen yang sudah disepakati tetapi belum dibayar, forecast tersisa yang belum dikomitmen, vendor, dan tanggal jatuh tempo jika ada. Untuk mengubah item lama, pilih item dari daftar kemudian gunakan formulir **Simpan perubahan item anggaran**. Tabel Budget vs Actual hanya menampilkan hasil dan tidak digunakan untuk mengetik.
+
+Budget bukan pembayaran aktual. Komitmen belum dibayar dan forecast tidak boleh memuat kembali pembayaran yang sudah dicatat. Komitmen proyek aktif secara otomatis mengurangi kas siap investasi; jangan mencatat komitmen yang sama lagi sebagai Cashflow Event.
+
+### Mengubah hasil lelang menjadi proyek berjalan
+
+Jika properti sudah dianalisis di PFMS dan kemudian berhasil dimenangkan, jangan daftarkan ulang melalui Project Onboarding. Buka **Database & Riwayat**, cari objek berdasarkan nama, alamat, kode lot dan ID, lalu pilih lifecycle **WON**. Masukkan harga menang, tanggal menang, dan deposit yang menjadi bagian harga menang. Snapshot analisis, comparable dan keputusan sebelumnya tetap disimpan. Objek akan muncul di **Properti Aktif**. Saat proses pengelolaan/penyelesaian dimulai, simpan progres melalui halaman Properti Aktif; lifecycle berubah menjadi **ACTIVE**.
+
+Lihat `PROJECT_ONBOARDING_AND_LEDGER_V1.0.9.md` untuk definisi keuangan dan cara menghindari penghitungan ganda, serta `GUIDED_PROJECT_FINANCE_INPUT_V1.0.10.md` untuk panduan field lebih rinci.
 
 ## Review pasar dengan Gemini (V1.0.9)
 

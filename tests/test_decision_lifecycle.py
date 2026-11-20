@@ -114,3 +114,42 @@ def test_market_confidence_between_55_and_69_is_a_warning_not_a_hard_blocker():
     result = evaluate_decision(inputs, market, tiers, {"roi_pct": 35, "net_profit": 35, "capital_before_sale": 100, "cash_requirement_including_reserve": 100})
     assert result["status"] == "GO"
     assert result["warnings"]
+
+
+def test_mark_property_won_preserves_original_analysis_snapshot():
+    from core.lifecycle import mark_property_won
+
+    original_snapshot = {"analysis_id": "ANL-OLD", "market": {"conservative_exit": 380_000_000}}
+    existing = {
+        "property_id": "PROP-OLD",
+        "decision_status": "GO",
+        "lifecycle_status": "PROSPECT",
+        "payload": {"latest_analysis": original_snapshot, "input_data": {"property": {"name": "Rumah Uji"}}},
+    }
+    updated = mark_property_won(existing, {
+        "win_price": 170_000_000,
+        "win_date": "2026-11-20",
+        "deposit_amount": 20_000_000,
+    })
+    assert updated["property_id"] == "PROP-OLD"
+    assert updated["lifecycle_status"] == "WON"
+    assert updated["decision_status"] == "GO"
+    assert updated["payload"]["latest_analysis"] == original_snapshot
+    assert updated["payload"]["win_details"]["win_price"] == 170_000_000
+    assert updated["payload"]["win_details"]["deposit_amount"] == 20_000_000
+
+
+def test_mark_property_won_reads_existing_payload_json_when_payload_not_materialized():
+    import json
+    from core.lifecycle import mark_property_won
+
+    snapshot = {"analysis_id": "ANL-JSON", "market": {"base_exit": 410_000_000}}
+    existing = {
+        "property_id": "PROP-JSON",
+        "lifecycle_status": "BID SUBMITTED",
+        "payload_json": json.dumps({"latest_analysis": snapshot, "custom_history": {"kept": True}}),
+    }
+    updated = mark_property_won(existing, {"win_price": 180_000_000, "win_date": "2026-11-20"})
+    assert updated["payload"]["latest_analysis"] == snapshot
+    assert updated["payload"]["custom_history"] == {"kept": True}
+    assert updated["lifecycle_status"] == "WON"
