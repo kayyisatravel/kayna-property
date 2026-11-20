@@ -88,3 +88,17 @@ Gunakan hanya angka dan dokumen yang sudah diverifikasi. Jangan mengisi biaya le
 - [ ] Pastikan snapshot ANALYSIS_HISTORY dapat dibuka kembali tanpa terlihat marker kompresi pada UI.
 - [ ] Ubah satu field dan lakukan update; pastikan satu baris PROPERTIES diperbarui dan snapshot analisis baru tercatat.
 - [ ] Jika gagal, catat HTTP status/pesan Google yang ditampilkan; jangan menekan simpan berulang kali tanpa memeriksa baris yang mungkin sudah berhasil.
+
+
+## 10. Smoke test UX, actual ledger correction and visual RAB (V1.0.11)
+- [ ] Buka Dashboard Utama; pastikan anggaran aset berjalan, aktual dibayar, komitmen belum dibayar, dan forecast tersisa tampil terpisah untuk seluruh proyek WON/ACTIVE.
+- [ ] Buka Properti Aktif; pastikan tabel riwayat transaksi dan budget hanya-baca. Form input pembayaran, tambah budget dan edit budget berada pada expander/form yang jelas.
+- [ ] Tambahkan satu transaksi historis bernilai kecil untuk uji; wajib centang konfirmasi, tanggal memakai date picker, dan setelah sukses field teks/nominal kembali kosong.
+- [ ] Koreksi transaksi uji (ubah nominal/tanggal/kategori); pastikan `actual_id` tetap sama, nilai sebelum/sesudah tercatat di HISTORY, dan saldo commitment/forecast ditarik balik lalu diterapkan sesuai tautan baru.
+- [ ] Uji koreksi yang melebihi saldo komitmen/forecast; aplikasi harus menolak sebelum mengubah transaksi atau budget.
+- [ ] Pastikan item budget hanya dapat diedit setelah expander Edit dibuka secara sengaja; perubahan membutuhkan konfirmasi.
+- [ ] Pastikan tanggal listing dan tanggal ditemukan pada comparable memakai DateColumn/date picker; tanggal kosong tetap kosong, dan tanggal `DD/MM/YYYY` lama tidak tertukar bulan/hari.
+- [ ] Jalankan RAB dengan deskripsi contoh: kanopi depan galvalum jebol, dinding carport lembap/jamur, rabat beton retak, pagar besi kusam, peti kayu di depan, interior belum diperiksa.
+- [ ] Pastikan AI/Python memunculkan scope lokal untuk atap depan, pemeriksaan plafon terdampak, dinding lembap, lantai carport, cat pagar dan pembersihan area depan; area yang harus diukur tidak diberi quantity seolah-olah sudah diketahui.
+- [ ] Pastikan interior yang tidak terlihat ditampilkan sebagai unknown + inspection plan + skenario sensitivitas terpisah; jangan otomatis dimasukkan sebagai kerusakan atau biaya dasar.
+- [ ] Periksa PATCH_NOTES V1.0.11 dan catat setiap perbedaan hasil sebelum penggunaan rutin.

@@ -1,4 +1,4 @@
-# Renovation Estimator — PFMS V1.0.6
+# Renovation Estimator — PFMS V1.0.11
 
 Dokumen ini menjelaskan cara PFMS menggunakan profil objek dan kondisi bangunan untuk menyiapkan **draft RAB awal**. Ini bukan AHSP final, appraisal teknis, atau penawaran kontraktor.
 
@@ -56,7 +56,9 @@ Perbaikan lokal, bukan penggantian seluruh sistem. Katalog Python memberi allowa
 Allowance persentase tersebut adalah heuristic internal untuk estimasi awal, **bukan koefisien resmi**. Jika tidak ada bukti kerusakan, AI seharusnya tidak memasukkan item tersebut sebagai pekerjaan yang pasti.
 
 ### Renovasi Sedang
-Menggunakan scope penggantian komponen utama sesuai kategori: pembongkaran/pembaruan atap, plafon dan lantai, kamar mandi, serta allowance instalasi listrik. Pipa hanya dihitung bila jalurnya dapat diukur. Struktur dan denah dianggap dipertahankan.
+Label Renovasi Sedang menunjukkan tingkat kompleksitas, bukan instruksi untuk mengganti semua elemen secara penuh. AI harus membaca temuan spesifik dari deskripsi/foto dan hanya memasukkan pekerjaan yang didukung bukti. Sebagai contoh, atap kanopi depan yang jebol dapat menghasilkan pekerjaan lokal atap/rangka/flashing, bukan otomatis penggantian seluruh atap utama. Dinding lembap menghasilkan pekerjaan mencari sumber rembes, pengeringan, treatment jamur, perbaikan plester/waterproofing dan finishing pada bidang yang diukur. Plafon, lantai, kamar mandi, listrik dan pipa dibuat kondisional sampai inspeksi mendukung scope tersebut.
+
+V1.0.11 menambahkan item visual-spesifik jika deskripsi mengandung indikasi terkait: kerusakan atap depan/kanopi, dinding lembap/jamur, lantai carport retak, pagar kusam, serta pembersihan area depan. Untuk item lokal yang ukurannya tidak diketahui, quantity dibiarkan kosong dan pengguna harus mengisi hasil pengukuran. Jika kerusakan atap hanya lokal di depan, formula luas atap keseluruhan tidak diterapkan ke item perbaikan lokal.
 
 ### Renovasi Berat
 Pekerjaan struktur, pondasi, kolom, balok, dak, perubahan denah dan penambahan lantai tidak dapat diestimasi aman hanya dari LT/LB atau foto. Volume/harga item struktur dibiarkan kosong sampai ada pemeriksaan engineer, desain dan RAB penyedia jasa. Item struktur wajib yang belum dikuantifikasi akan membuat keputusan tetap HOLD.
@@ -86,12 +88,15 @@ Menggunakan scope pemutusan utilitas, demolisi, pembuangan puing dan land cleari
 ## 5. Status RAB dan persetujuan pengguna
 
 - Harga satuan dari Gemini adalah estimasi konservatif indikatif, bukan harga vendor real-time, bukan HSPK/HSP resmi, dan bukan penawaran kontraktor.
-- Volume item yang memiliki katalog Python memakai quantity hint/rentang dari Python; volume item tersembunyi/tidak terukur tetap kosong.
+- Volume item yang memiliki katalog Python memakai quantity hint/rentang dari Python; volume item tersembunyi/tidak terukur tetap kosong. Untuk pekerjaan lokal tanpa ukuran, AI tidak menebak skala dari foto.
 - Scope wajib yang terlewat AI muncul sebagai placeholder tanpa harga.
 - Baris dengan prioritas `Tidak diperlukan setelah ditinjau` tidak dihitung ke total RAB.
 - Item wajib tanpa volume atau harga konservatif memblokir GO. Item opsional dapat tetap kosong jika memang tidak diperlukan dan telah ditinjau.
 - Contingency dihitung terpisah oleh Python; jangan memasukkannya lagi dalam unit price AI.
 - Semua volume dan harga harus diperiksa, dikoreksi, dan ditinjau pengguna sebelum analisis dianggap final.
+- Output Gemini V1.0.11 memisahkan `visual_findings`, `likely_causes_to_verify`, `interior_unknowns`, `inspection_plan`, dan `interior_scenarios`. Dugaan penyebab bukan fakta.
+- Skenario interior (misalnya kondisi relatif normal vs temuan kebocoran merembet) disajikan terpisah dari total RAB dasar. Nominal skenario tidak otomatis menjadi pengeluaran, budget, atau risiko terkonfirmasi. Setelah interior diperiksa, pengguna memilih pekerjaan mana yang benar-benar diperlukan lalu membuat budget per item.
+- Jika foto hanya tampak depan, Gemini tidak boleh menyatakan interior, struktur, instalasi listrik atau plumbing rusak. Sistem dapat mengusulkan daftar pemeriksaan dan skenario risiko, bukan mengarang kerusakan.
 
 ## 6. Referensi teknis
 

@@ -1,8 +1,18 @@
-# Property Flipper Management System (PFMS) — V1.0.10
+# Property Flipper Management System (PFMS) — V1.0.11
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.11 — Financial Ledger Safety & Condition-Driven Renovation RAB
+
+- Dashboard now shows total active-project budget, paid actual, unpaid commitment and remaining forecast, including a per-property budget breakdown.
+- Paid transaction history can be corrected through a dedicated form. The same transaction is updated, the before/after state is audited, and linked commitment/forecast balances are reconciled.
+- New/edit transaction, budget, milestone, progress and closing operations require a clear user confirmation before saving.
+- Budget and commitment/forecast editing sections are collapsed by default; visible tables are read-only unless the user intentionally opens an edit/add section.
+- Date fields for auction, deposit/payment deadlines, SHGB expiry, survey, milestones, comparable publication dates and date found use date pickers; unknown dates remain empty rather than guessed.
+- Renovation RAB is selected from described defects and visual evidence, not just the category label. Local canopy/roof damage, damp walls, carport cracks, fence and cleanup may produce specific line items.
+- Interior unknowns are shown as inspection priorities and separate scenario ranges; they are not claimed as visible damage or silently added to base RAB.
 
 ## V1.0.10 — Guided Project Finance Input & Auction-Win Conversion
 
@@ -209,7 +219,7 @@ pytest -q
 python -m compileall -q .
 ```
 
-Suite pengujian V1.0.10 mencakup 96 unit test, termasuk kompresi/dekompresi payload JSON Google Sheets, diagnostik API write, pemulihan field form, estimator RAB, schema Gemini, ROI, maximum bid dan decision gate. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
+Suite pengujian V1.0.11 mencakup 103 unit test, termasuk kompresi/dekompresi payload JSON Google Sheets, diagnostik API write, pemulihan field form, estimator RAB, schema Gemini, ROI, maximum bid dan decision gate. Ikuti `docs/DEPLOYMENT_SMOKE_TEST.md` untuk verifikasi integrasi akun setelah deploy.
 
 ## I. Catatan V1.0.4 — parser comparable
 

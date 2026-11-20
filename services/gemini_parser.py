@@ -135,8 +135,24 @@ class RenovationRabItem(BaseModel):
     notes: Optional[str] = None
 
 
+class RenovationInteriorScenario(BaseModel):
+    """Unverified interior scenario kept separate from the measured base RAB."""
+    scenario_name: str
+    assumptions: list[str] = Field(default_factory=list)
+    potential_work_items: list[str] = Field(default_factory=list)
+    cost_low: Optional[int] = None
+    cost_high: Optional[int] = None
+    confidence: str = "Rendah"
+    inspection_required: bool = True
+
+
 class RenovationRabExtraction(BaseModel):
     items: list[RenovationRabItem] = Field(default_factory=list)
+    visual_findings: list[str] = Field(default_factory=list)
+    likely_causes_to_verify: list[str] = Field(default_factory=list)
+    interior_unknowns: list[str] = Field(default_factory=list)
+    interior_scenarios: list[RenovationInteriorScenario] = Field(default_factory=list)
+    inspection_plan: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     items_to_inspect: list[str] = Field(default_factory=list)
     overall_note: Optional[str] = None
@@ -354,19 +370,19 @@ def estimate_renovation_rab(
     }
     prompt_parts = [
         "Anda adalah estimator awal renovasi rumah tapak di Indonesia. Buat DRAFT RAB berdasarkan kategori renovasi, data rumah, foto dan deskripsi pengguna. Keluaran JSON mengikuti schema; tanpa markdown.",
-        "ATURAN KERAS: pilih item hanya dari katalog item_code di bawah; satu baris per pekerjaan; jangan mengarang kerusakan tersembunyi. Gunakan kondisi fisik umum, tipe properti, jumlah lantai, luas LT/LB, jumlah kamar tidur dan kamar mandi untuk memilih scope yang masuk akal. Jumlah kamar tidur hanya konteks kompleksitas ruang dan tidak boleh dianggap jumlah pintu; jumlah kamar mandi boleh menjadi jumlah paket area basah jika kategori memerlukan. Jika volume tidak punya petunjuk dari Python dan tidak terukur, quantity=null; Python akan mengisi volume dari quantity_catalog, jangan mengganti quantity hint dengan tebakan.",
-        "Harga satuan berikan rentang rendah dan konservatif dalam rupiah, bahan+upah bila relevan. Jika tidak yakin atau tidak ada basis harga yang layak, isi harga null dan beri catatan. Harga AI bukan harga real-time, bukan HSPK/HSP resmi, bukan quotation kontraktor. Jangan masukkan contingency; Python menghitungnya terpisah.",
+        "ATURAN ESTIMASI BERBASIS BUKTI: pahami keseluruhan deskripsi pengguna dan setiap foto sebagai satu rangkaian kondisi, bukan sekadar memilih paket berdasarkan label kosmetik/ringan/sedang/berat. Kategori menunjukkan tingkat kompleksitas, bukan perintah mengganti seluruh elemen bangunan. Buat satu baris untuk setiap pekerjaan yang benar-benar didukung bukti. Anda boleh memakai item_code katalog atau item custom dengan item_code=null jika lingkup spesifik tidak ada di katalog; jangan menghapus pekerjaan spesifik yang disebut pengguna. Bedakan temuan yang terlihat, dugaan penyebab yang harus diverifikasi, serta kondisi interior/struktur/MEP yang belum terlihat. Untuk foto fasad saja, jangan menyatakan interior rusak. Jika rembesan/atap bocor tampak, jelaskan kemungkinan area terdampak sebagai skenario inspeksi, bukan fakta. Jumlah kamar tidur bukan jumlah pintu; jumlah kamar mandi bukan bukti seluruh kamar mandi perlu direnovasi. Jika volume tidak punya petunjuk pengukuran dari input user atau katalog Python, quantity=null dan tuliskan cara mengukurnya. Jangan mengubah quantity hint Python berdasarkan perkiraan skala foto.",
+        "Harga satuan berikan rentang rendah dan konservatif dalam rupiah untuk pasar konstruksi rumah di Indonesia, dengan memperhatikan lokasi, akses jalan, mobilisasi, bahan dan upah. Nyatakan apakah harga all-in bahan+upah atau belum. Jangan menampilkan satu angka seolah-olah penawaran kontraktor. Jika harga regional tidak dapat diperkirakan dengan basis memadai, isi null dan jelaskan verifikasi yang diperlukan. Harga AI bukan harga real-time, bukan HSPK/HSP resmi, dan bukan quotation kontraktor. Jangan masukkan contingency; Python menghitungnya terpisah.",
         "KATEGORI DAN SCOPE:",
         "Renovasi Kosmetik: persiapan/proteksi, dinding dan plafon merupakan scope utama saat kategori ini dipilih eksplisit; lantai pilih poles ATAU vinyl/SPC (jangan keduanya); kusen/pintu/aksesori hanya bila dibutuhkan. Jika kondisi hanya disebut siap huni dan kategori Auto, jangan memaksakan pengecatan penuh; cukup rekomendasikan persiapan/inspeksi dan item kosmetik opsional.",
         "Renovasi Ringan: perbaikan lokal atap/nok/talang/lisplang; plafon lokal; keramik lokal; sanitair minor sesuai jumlah kamar mandi bila ada bukti; saklar/stopkontak/lampu lokal; daun pintu/jendela lokal. Python memberi allowance area lokal low-confidence (atap 5–15%, plafon 3–10%, keramik 2–6%); pakai hanya bila kondisi/deskripsi/foto mendukung. Jangan menganggap seluruh atap/MEP diganti.",
-        "Renovasi Sedang: pembongkaran/pembaruan atap dan rangka/foil/penutup; plafon dan lantai menyeluruh; renovasi kamar mandi; allowance instalasi listrik; pipa hanya bila jalur diketahui. Struktur dan denah dipertahankan.",
+        "Renovasi Sedang: perlakukan sebagai beberapa pekerjaan menengah yang bisa lokal maupun menyeluruh. Jangan otomatis membongkar seluruh atap, plafon, lantai, semua kamar mandi, atau seluruh instalasi hanya karena kategori ini dipilih. Jika deskripsi menyebut atap teras/kanopi yang jebol, prioritaskan pekerjaan lokal penutup atap/rangka/flashing dan pemeriksaan sambungan; jangan menghitung atap utama penuh kecuali ada bukti. Jika dinding carport lembap, susun tahapan mencari sumber rembes, mengeringkan, membersihkan jamur, perbaikan plester/waterproofing dan pengecatan ulang; luas harus diukur. Plafon yang mungkin terdampak dibuat kondisional sampai dibuka/diinspeksi. Struktur dan denah dipertahankan kecuali ada temuan tenaga ahli.",
         "Renovasi Berat: pembongkaran/perubahan ruang, dinding/fasad, atap/lantai/plafon/MEP. Item struktur harus ditandai perlu engineer dan volume/harga null sampai ada desain/perhitungan. Jangan menebak pondasi/kolom/balok/dak dari LT/LB.",
         "Hitung Tanah: pemutusan utilitas, demolisi bangunan, pemuatan/pembuangan puing, land clearing; bukan RAB renovasi. Volume puing sangat kasar dan harus dicek kontraktor.",
         "KONTEKS PROPERTI:", json.dumps(context_payload, ensure_ascii=False, default=str),
         "KATALOG KUANTITAS PYTHON (gunakan item_code persis, jangan menghitung ulang quantity):",
         json.dumps(guidance, ensure_ascii=False, default=str, separators=(",", ":")),
         "DESKRIPSI KONDISI TERKINI:", description or "Tidak ada deskripsi; gunakan hanya hal yang terlihat dari foto.",
-        "Bukti visual harus dipisahkan dari asumsi. Jika foto hanya fasad, jangan mengklaim interior/struktur/MEP rusak. Untuk pekerjaan yang butuh inspeksi, masukkan ke items_to_inspect. Sertakan assumptions dan overall_note.",
+        "KELUARAN TAMBAHAN WAJIB: visual_findings memuat elemen dan kerusakan yang benar-benar tampak; likely_causes_to_verify berisi kemungkinan penyebab dengan bahasa dugaan; interior_unknowns memuat hal yang tidak terlihat; inspection_plan berupa urutan pemeriksaan praktis. interior_scenarios maksimal 2 skenario biaya (misalnya interior relatif normal dan ditemukan kerusakan sedang/air merembes), biaya skenario harus dipisahkan dari total RAB dasar dan tidak otomatis dianggap biaya aktual/pekerjaan wajib. Untuk foto fasad saja confidence skenario interior maksimal Rendah. Sertakan assumptions dan overall_note.",
     ]
     prompt = "\n\n".join(prompt_parts)
     raw = _client_call(api_key, model or DEFAULT_MODEL, prompt, schema=RenovationRabExtraction, max_output_tokens=4096, extra_files=prepared_files)
@@ -403,7 +419,8 @@ def estimate_renovation_rab(
     data["unpriced_items"] = [r.get("work_item", "Pekerjaan tanpa nama") for r in data["editor_rows"] if r.get("quantity") is None or r.get("unit_cost") is None]
     data["total_conservative_complete"] = len(data["unpriced_items"]) == 0 and bool(data["editor_rows"])
     data["files_used"] = file_labels
-    data["estimation_basis"] = "Draft AI berbasis foto/deskripsi dan katalog kuantitas Python. Volume/koefisien adalah allowance awal, harga satuan bukan penawaran vendor; wajib diverifikasi."
+    data["interior_scenario_cost_is_separate"] = True
+    data["estimation_basis"] = "Draft AI berbasis foto/deskripsi dan katalog kuantitas Python. Lingkup spesifik dipilih dari bukti; volume/koefisien adalah allowance awal, harga satuan bukan penawaran vendor; skenario interior tidak masuk total RAB dasar dan wajib diverifikasi."
     data["assumptions"] = list(data.get("assumptions", [])) + guidance.get("warnings", []) + [guidance.get("method_note", "")]
     return data
 

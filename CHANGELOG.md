@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.0.11] - 2026-11-21
+
+### Added
+- Dashboard portfolio budget visibility: active-project budget total, paid actual, unpaid commitment and remaining forecast by property.
+- Paid-cost transaction correction form with explicit user confirmation, same transaction ID, before/after audit log, and safe reversal/reapplication of linked commitment/forecast balances.
+- Confirmation checkboxes before saving project progress, new/edit budget items, paid transactions, milestones and closing lifecycle changes.
+- Date picker controls cover auction date, deposit deadline, payment deadline, SHGB expiry, milestones, comparable publication date and date found; missing dates remain blank and day/month parsing is preserved.
+- Condition-driven renovation RAB metadata: observed visual findings, causes to verify, interior unknowns, inspection plan and separate interior scenarios.
+- Description-triggered RAB tasks for localized front canopy/roof damage, damp walls, carport floor cracks, fence repaint and front-area cleanup.
+
+### Changed
+- Active project budget editing and budget creation are collapsed by default; tables remain read-only unless the user explicitly opens an edit/add section.
+- Successful paid-transaction, budget-add and milestone saves clear relevant form fields for the next entry.
+- Renovation category is treated as a complexity label, not an instruction to replace every roof/floor/ceiling/bathroom in full. Medium renovation no longer forces whole-house scope by default.
+- When localized front-roof damage is described, whole-roof quantity hints are disabled; local area must be measured.
+- Interior conditions not visible in photos remain unknown. AI may describe separate interior scenarios/allowances, but those are excluded from the base RAB until inspected.
+- Corrections to a paid transaction reconcile previously deducted commitment/forecast balances and reject deductions above the available balance rather than silently clipping to zero.
+
+### Compatibility
+- No Google Sheets tab names, column headers or existing column order changed.
+- Existing COST_ACTUALS and PROJECT_BUDGETS fields are reused; no destructive migration.
+- Existing RAB item rows and underwriting snapshots remain readable. New Gemini RAB fields are additive JSON payload fields.
+
+### Verification
+- `python -m compileall -q .`: passed.
+- `pytest -q`: 103 passed.
+- Live Google Sheets, Streamlit Cloud and live Gemini calls not run in this environment.
+
 ## [1.0.10] - 2026-11-20
 
 ### Added

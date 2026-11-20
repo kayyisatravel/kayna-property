@@ -137,15 +137,17 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
             _item("LGT_JOINERY", "Penggantian lokal daun pintu/jendela/aksesori", "unit", None, None, None, "Jumlah unit rusak harus dihitung", "Rendah", "Tidak dapat ditentukan dari LT/LB atau jumlah kamar saja.", conditional=True),
         ]
     elif category == "Renovasi Sedang":
+        # A medium category describes complexity, not automatic whole-house replacement.
+        # Full-area packages stay optional unless the description explicitly confirms them.
         items += [
-            _item("MED_DEM_ROOF", "Pembongkaran penutup/rangka atap eksisting", "m2", roof_low, roof_base, roof_high, "Luas tapak bangunan (LB ÷ jumlah lantai) × faktor atap 1,25–1,35", "Sedang", "Asumsi bentuk atap sederhana dan overhang umum; verifikasi bentuk, jurai, talang dan overhang.", "Wajib"),
-            _item("MED_NEW_ROOF", "Rangka atap baja ringan, foil, penutup atap dan lisplang", "m2", roof_low, roof_base, roof_high, "Luas tapak bangunan × faktor geometri atap 1,25–1,35", "Sedang", "Faktor geometri bukan koefisien AHSP universal; ukur desain atap aktual.", "Wajib"),
-            _item("MED_CEILING", "Pembongkaran dan pemasangan rangka/penutup plafon baru", "m2", floor_ceiling, floor_ceiling, floor_ceiling, "LB × 1,0 untuk seluruh plafon", "Sedang", "Kurangi area void/area tanpa plafon.", "Wajib"),
-            _item("MED_FLOOR", "Pembongkaran dan pemasangan keramik/granit lantai baru", "m2", floor_ceiling, floor_ceiling, floor_ceiling, "LB × 1,0 untuk seluruh lantai", "Sedang", "Gunakan luas bersih area yang benar-benar diganti; keluarkan carport/teras bila berbeda.", "Wajib"),
-            _item("MED_WALL", "Persiapan permukaan dan pengecatan dinding interior-eksterior", "m2", wall_low, wall_base, wall_high, "LB × 2,5–3,0 sebagai estimasi luas bidang cat gabungan", "Rendah", "Koefisien kasar; ukur bidang dinding aktual sebelum kontrak."),
-            _item("MED_BATH", "Renovasi area basah lengkap per kamar mandi", "unit", bathrooms if bathrooms else None, bathrooms if bathrooms else None, bathrooms if bathrooms else None, "Satu unit per kamar mandi yang direnovasi", "Sedang", "Jumlah kamar mandi dari input pengguna; ukuran dan spesifikasi per unit perlu dicek.", "Wajib"),
-            _item("MED_ELEC", "Penarikan ulang instalasi/titik listrik sebagai allowance awal", "titik", electrical_points, electrical_points, electrical_points, "LB ÷ 6 m², dibulatkan ke atas", "Rendah", "Hanya allowance screening. Bukan standar jumlah titik; final berdasarkan denah dan perhitungan teknisi listrik."),
-            _item("MED_PLUMB", "Penggantian pipa air bersih/kotor", "m'", None, None, None, "Panjang jalur pipa harus diukur", "Rendah", "Tidak boleh dihitung dari LT/LB saja; perlu jalur dan titik plumbing.", conditional=True),
+            _item("MED_DEM_ROOF", "Pembongkaran penutup/rangka atap eksisting (hanya area yang dikonfirmasi rusak)", "m2", roof_low, roof_base, roof_high, "Tapak bangunan × faktor atap 1,25–1,35 hanya sebagai pembanding luas atap keseluruhan; area bongkar wajib diukur", "Rendah", "Jangan gunakan luas seluruh atap untuk kerusakan kanopi/teras lokal. Wajib inspeksi rangka dan sambungan.", "Bersyarat", True),
+            _item("MED_NEW_ROOF", "Pemasangan rangka/penutup atap dan flashing pada area yang diperbaiki", "m2", roof_low, roof_base, roof_high, "Tapak bangunan × faktor atap sebagai konteks luasan keseluruhan; area perbaikan lokal harus diukur", "Rendah", "Pilih material dan hitung luas setelah pengukuran. Penggantian atap utama hanya jika inspeksi membuktikan kerusakan meluas.", "Bersyarat", True),
+            _item("MED_CEILING", "Perbaikan/penggantian plafon pada area terdampak kebocoran", "m2", None, None, None, "Ukur luasan plafon yang lapuk/berjamur setelah sumber bocor diperbaiki", "Rendah", "Tidak otomatis seluruh LB; buka/inspeksi bagian yang berubah warna atau melendut.", "Bersyarat", True),
+            _item("MED_FLOOR", "Perbaikan atau penggantian lantai/keramik pada area yang rusak", "m2", None, None, None, "Ukur area lantai rusak, bukan otomatis seluruh LB", "Rendah", "Pilih perbaikan lokal atau penggantian penuh berdasarkan kondisi keramik dan elevasi.", "Bersyarat", True),
+            _item("MED_WALL", "Perbaikan plester, waterproofing dan finishing dinding yang lembap", "m2", None, None, None, "Ukur bidang dinding yang terkena lembap setelah sumber air ditemukan", "Rendah", "Jangan hanya mengecat sebelum sumber rembes ditemukan dan bidang cukup kering.", "Bersyarat", True),
+            _item("MED_BATH", "Perbaikan/renovasi kamar mandi sesuai temuan inspeksi", "unit", None, None, None, "Isi hanya kamar mandi yang benar-benar memerlukan pekerjaan", "Rendah", "Jumlah kamar mandi di rumah bukan bukti semua unit harus direnovasi.", "Bersyarat", True),
+            _item("MED_ELEC", "Pemeriksaan dan perbaikan instalasi listrik sesuai temuan", "titik", None, None, None, "Inventarisasi titik, panel dan jalur oleh teknisi", "Rendah", "Jangan menganggap seluruh instalasi perlu ditarik ulang tanpa pemeriksaan.", "Bersyarat", True),
+            _item("MED_PLUMB", "Perbaikan pipa air bersih/kotor sesuai jalur yang bermasalah", "m'", None, None, None, "Panjang jalur pipa harus diukur", "Rendah", "Tidak boleh dihitung dari LT/LB saja; perlu jalur dan titik plumbing.", "Bersyarat", True),
         ]
     elif category == "Renovasi Berat":
         items += [
@@ -175,6 +177,53 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
             _item("AUTO_INSPECT", "Inspeksi kondisi atap, plafon, dinding, lantai, utilitas dan area basah", "ls", 1, 1, 1, "1 paket inspeksi", "Sedang", "RAB konstruksi belum bisa dipastikan sebelum survei kondisi.", "Wajib"),
             _item("AUTO_CLEAN", "Pembersihan awal dan pengamanan area", "ls", 1, 1, 1, "1 paket", "Sedang", "Biaya persiapan minimal; belum termasuk renovasi yang belum diketahui.", "Disarankan"),
         ]
+
+
+    # Add narrowly scoped line items when the narrative describes localized defects.
+    # These have no inferred area: user/contractor must measure before approving budget.
+    desc = f"{physical_text} {description}".lower()
+    def add_custom_hint(code: str, name: str, unit: str, basis: str, note: str, priority: str = "Wajib", conditional: bool = False):
+        if not any(str(existing.get("item_code")) == code for existing in items):
+            items.append(_item(code, name, unit, None, None, None, basis, "Rendah", note, priority, conditional))
+
+    roof_front_terms = any(x in desc for x in ["atap teras", "kanopi", "atap depan", "galvalum", "spandek", "atap seng"])
+    roof_damage_terms = any(x in desc for x in ["jebol", "rusak", "terangkat", "keropos", "bocor", "retak", "hilang"])
+    if roof_front_terms and roof_damage_terms:
+        for existing in items:
+            if str(existing.get("item_code")) in {"MED_DEM_ROOF", "MED_NEW_ROOF"}:
+                existing["quantity_low"] = None
+                existing["quantity_base"] = None
+                existing["quantity_high"] = None
+                existing["quantity_basis"] = "Kerusakan yang disebut hanya lokal pada teras/kanopi depan; ukur panjang × lebar area rusak, jangan gunakan luas seluruh atap."
+                existing["notes"] = str(existing.get("notes") or "") + " Estimasi seluruh atap dinonaktifkan karena deskripsi menunjukkan kerusakan lokal."
+        add_custom_hint("VIS_FRONT_ROOF", "Perbaikan lokal atap teras/kanopi depan, rangka dan flashing", "m2", "Ukur panjang × lebar area kanopi/teras yang rusak di lapangan", "Scope dibatasi pada sisi/area depan yang dijelaskan. Jangan hitung seluruh atap rumah kecuali inspeksi menunjukkan kerusakan menyebar. Periksa tumpuan rangka, sambungan ke dinding dan aliran talang.")
+        add_custom_hint("VIS_ROOF_WATERPROOF", "Flashing, sealant dan detail waterproofing sambungan atap depan", "m'", "Ukur panjang sambungan dinding/atap dan tepi rawan bocor", "Volume panjang sambungan tidak dapat diukur akurat dari foto; ukur saat survei.", "Disarankan", True)
+        add_custom_hint("VIS_CEILING_CHECK", "Inspeksi plafon dan rangka area teras/carport yang mungkin terkena bocor", "ls", "1 paket inspeksi area terdampak", "Pemeriksaan wajib sebelum memutuskan bongkar/ganti plafon; penggantian plafon hanya jika ditemukan kerusakan.", "Disarankan", True)
+        for inspection_item in items:
+            if inspection_item.get("item_code") == "VIS_CEILING_CHECK":
+                inspection_item["quantity_low"] = inspection_item["quantity_base"] = inspection_item["quantity_high"] = 1
+
+    damp_terms = any(x in desc for x in ["rembes", "lembap", "lembab", "jamur", "bercak putih", "cat mengelupas", "mengelupas parah"])
+    if damp_terms:
+        add_custom_hint("VIS_DAMP_WALL", "Penanganan dinding lembap: telusuri sumber, kupas bagian rusak, treatment jamur, perbaikan plester, waterproofing dan cat ulang", "m2", "Ukur bidang terdampak per sisi/tinggi; pisahkan bidang luar dan dalam", "Jangan menutup kelembapan dengan cat saja. Periksa talang, sambungan atap, pipa dan dinding tetangga. Harga treatment dapat berbeda dari pengecatan biasa.")
+
+    if any(x in desc for x in ["rabat beton", "lantai carport", "carport retak", "beton retak", "jalan masuk retak"]):
+        add_custom_hint("VIS_CARPORT_FLOOR", "Perbaikan rabat beton/lantai carport retak dan finishing", "m2", "Ukur bidang retak; tentukan apakah tambal lokal atau bongkar-pasang", "Periksa retak permukaan vs penurunan dasar. Jangan otomatis memasang keramik di seluruh area tanpa keputusan finishing.", "Disarankan", True)
+
+    if any(x in desc for x in ["pagar besi", "cat pagar", "pagar kusam"]):
+        add_custom_hint("VIS_FENCE_PAINT", "Pembersihan karat ringan, primer dan pengecatan ulang pagar besi", "m2", "Ukur bidang pagar/teralis atau hitung paket setelah survei", "Pagar terlihat masih terpasang; verifikasi karat, engsel, rel dan mekanisme pintu sebelum menghitung perbaikan besar.", "Disarankan", True)
+
+    if any(x in desc for x in ["tumpukan", "puing", "sampah", "peti kayu", "barang bekas"]):
+        add_custom_hint("VIS_FRONT_CLEAN", "Pembersihan dan pengangkutan barang/material bekas di area depan", "ls", "1 paket sesuai volume dan jenis barang", "Pisahkan barang milik pihak lain dari sampah; pastikan izin pengangkutan sebelum dibuang.", "Disarankan", True)
+        for cleaning_item in items:
+            if cleaning_item.get("item_code") == "VIS_FRONT_CLEAN":
+                cleaning_item["quantity_low"] = cleaning_item["quantity_base"] = cleaning_item["quantity_high"] = 1
+
+    if not bool(context.get("interior_inspected", False)) and category != "Auto sesuai kondisi umum":
+        add_custom_hint("INSPECT_INTERIOR", "Inspeksi interior: atap bagian dalam, plafon, dinding, lantai, listrik, pipa dan kamar mandi", "ls", "1 paket inspeksi sebelum finalisasi RAB interior", "Interior tidak terlihat dari foto fasad. Ini adalah biaya/pekerjaan inspeksi, bukan asumsi semua elemen rusak.", "Disarankan", True)
+        for inspection_item in items:
+            if inspection_item.get("item_code") == "INSPECT_INTERIOR":
+                inspection_item["quantity_low"] = inspection_item["quantity_base"] = inspection_item["quantity_high"] = 1
 
     return {
         "category": category, "category_selected_by_user": selected_category,

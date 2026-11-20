@@ -12,6 +12,7 @@ from core.underwriting import run_underwriting
 from core.liquidity import compute_liquidity
 from core.lifecycle import actual_project_summary, mark_property_won
 from core.project_ledger import summarize_project_ledger
+from core.ledger_transactions import reconcile_budget_payment_change
 from core.project_form_options import ACTUAL_CATEGORIES, BUDGET_CATEGORIES, subcategory_options, scope_options
 from core.onboarding import build_project_onboarding_records
 from core.market_engine import assess_comparables
@@ -32,7 +33,6 @@ st.markdown("""
 .block-container{max-width:1480px;padding-top:1.05rem;padding-bottom:3rem}
 [data-testid="stMetric"]{background:#F7FAFC;border:1px solid #E5EAF0;padding:.8rem 1rem;border-radius:14px;min-height:112px}
 [data-testid="stMetricLabel"]{color:#526174;font-weight:600}
-[data-testid="stMetricValue"]{color:var(--pfms-ink)}
 .hero{padding:1.35rem 1.5rem;border:1px solid #DCE8E7;border-radius:18px;background:linear-gradient(115deg,#F0F8F7,#F7FAFC);margin-bottom:1rem}
 .hero h1,.hero h2{color:var(--pfms-ink);margin-bottom:.3rem}
 .hero p{color:#526174;margin-bottom:0}
@@ -241,6 +241,54 @@ def set_default(key: str, value: Any):
     if key not in st.session_state: st.session_state[key] = value
 
 
+def as_date(value: Any, fallback: date | None = None) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except (TypeError, ValueError):
+        return fallback or date.today()
+
+
+def optional_date_picker(label: str, value: Any, key: str) -> str:
+    """Date picker with an explicit empty state; never invent a missing date."""
+    existing = str(value or "").strip()
+    has_value = st.checkbox(f"{label} sudah diketahui", value=bool(existing), key=f"{key}_has_value")
+    selected = st.date_input(label, value=as_date(existing), disabled=not has_value, key=f"{key}_picker")
+    return selected.isoformat() if has_value else ""
+
+
+def comparable_date_for_editor(value: Any) -> date | None:
+    """Parse stored comparable dates without confusing day/month order."""
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    raw = str(value).strip()[:10]
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def comparable_date_to_iso(value: Any) -> str | None:
+    """Normalize DateColumn return values for JSON/Sheets persistence."""
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    raw = str(value).strip()
+    return raw or None
+
+
 # ------------------------------- Sidebar -----------------------------------
 st.sidebar.markdown(f"## 🏠 {APP_NAME}")
 st.sidebar.caption(f"Version {APP_VERSION}")
@@ -282,11 +330,18 @@ if page == "Executive Dashboard":
         realized.append(actual_project_summary(costs, closing))
     total_realized_profit = sum(x.get("net_profit_actual", 0) for x in realized)
     active_actual_cost = sum(to_float(x.get("amount")) for x in read_table("COST_ACTUALS") if any(p.get("property_id") == x.get("property_id") for p in active))
-    k1, k2, k3, k4 = st.columns(4)
+    active_ids = {str(p.get("property_id")) for p in active}
+    active_budget_rows = [b for b in read_table("PROJECT_BUDGETS") if str(b.get("property_id")) in active_ids and str(b.get("status") or "Active") not in {"Cancelled", "Archived"}]
+    active_budget_total = sum(max(0.0, to_float(b.get("budget_amount"))) for b in active_budget_rows)
+    active_budget_committed = sum(max(0.0, to_float(b.get("committed_unpaid"))) for b in active_budget_rows)
+    active_budget_forecast = sum(max(0.0, to_float(b.get("forecast_remaining"))) for b in active_budget_rows)
+    k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Kas siap investasi", idr(liq["cash_available_for_new_project"]), help="Kas aktual dikurangi pengeluaran yang dikonfirmasi dan cadangan likuiditas.")
     k2.metric("Peluang tersimpan", len(opps))
     k3.metric("Aset aktif", len(active))
-    k4.metric("Profit terealisasi", idr(total_realized_profit))
+    k4.metric("Anggaran aset berjalan", idr(active_budget_total), help="Jumlah budget item aktif pada seluruh proyek WON/ACTIVE; bukan biaya yang sudah dibayar.")
+    k5.metric("Profit terealisasi", idr(total_realized_profit))
+    st.caption(f"Dari anggaran aset aktif: komitmen belum dibayar {idr(active_budget_committed)} · forecast pekerjaan tersisa {idr(active_budget_forecast)}.")
     st.markdown("### Kondisi portofolio")
     c1, c2 = st.columns([1.1, 1])
     with c1:
@@ -295,8 +350,10 @@ if page == "Executive Dashboard":
             rows = []
             for p in active:
                 pay = record_payload(p); inp = pay.get("input_data", {}); prop = inp.get("property", {})
-                rows.append({"Property ID": p.get("property_id"), "Objek": p.get("name"), "Lifecycle": p.get("lifecycle_status"), "Status Analisis": p.get("decision_status"), "Limit": to_float(p.get("auction_limit")), "Tahap": pay.get("project_stage", "Settlement")})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                pb = [b for b in active_budget_rows if str(b.get("property_id")) == str(p.get("property_id"))]
+                ac = [x for x in read_table("COST_ACTUALS") if str(x.get("property_id")) == str(p.get("property_id"))]
+                rows.append({"Objek": p.get("name"), "Lifecycle": p.get("lifecycle_status"), "Status Analisis": p.get("decision_status"), "Limit": to_float(p.get("auction_limit")), "Anggaran berjalan": sum(to_float(b.get("budget_amount")) for b in pb), "Aktual dibayar": sum(to_float(x.get("amount")) for x in ac), "Komitmen": sum(to_float(b.get("committed_unpaid")) for b in pb), "Forecast sisa": sum(to_float(b.get("forecast_remaining")) for b in pb), "Tahap": pay.get("project_stage", "Settlement")})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config={"Limit": st.column_config.NumberColumn(format="Rp %.0f"), "Anggaran berjalan": st.column_config.NumberColumn(format="Rp %.0f"), "Aktual dibayar": st.column_config.NumberColumn(format="Rp %.0f"), "Komitmen": st.column_config.NumberColumn(format="Rp %.0f"), "Forecast sisa": st.column_config.NumberColumn(format="Rp %.0f")})
         else: st.info("Belum ada properti yang dimenangkan. Semua peluang yang dianalisis tetap tersimpan sebagai prospek, termasuk yang berstatus HOLD atau DO NOT BID.")
     with c2:
         st.markdown("**Distribusi keputusan analisis**")
@@ -461,15 +518,18 @@ elif page == "New Auction Analysis":
             set_default("na_lot_code", ""); st.text_input("Kode lot", key="na_lot_code")
             set_default("na_name", ""); st.text_input("Nama objek", key="na_name")
             set_default("na_complex", ""); st.text_input("Nama kompleks/perumahan", key="na_complex")
-            set_default("na_auction_date", ""); st.text_input("Tanggal lelang (YYYY-MM-DD)", key="na_auction_date")
+            set_default("na_auction_date", "")
+            st.session_state.na_auction_date = optional_date_picker("Tanggal lelang", st.session_state.na_auction_date, "na_auction_date")
             set_default("na_auction_time", ""); st.text_input("Jam lelang", key="na_auction_time")
         with c2:
             set_default("na_office", ""); st.text_input("KPKNL", key="na_office")
             set_default("na_seller", ""); st.text_input("Penjual/kreditur", key="na_seller")
             set_default("na_auction_type", ""); st.selectbox("Jenis lelang", ["", "Eksekusi Hak Tanggungan", "Eksekusi Pengadilan", "AYDA", "Lelang sukarela", "Lainnya"], key="na_auction_type")
             set_default("na_auction_url", ""); st.text_input("URL pengumuman lelang", key="na_auction_url")
-            set_default("na_deposit_deadline", ""); st.text_input("Batas setor jaminan", key="na_deposit_deadline")
-            set_default("na_payment_deadline", ""); st.text_input("Batas pelunasan", key="na_payment_deadline")
+            set_default("na_deposit_deadline", "")
+            st.session_state.na_deposit_deadline = optional_date_picker("Batas setor jaminan", st.session_state.na_deposit_deadline, "na_deposit_deadline")
+            set_default("na_payment_deadline", "")
+            st.session_state.na_payment_deadline = optional_date_picker("Batas pelunasan", st.session_state.na_payment_deadline, "na_payment_deadline")
         with c3:
             set_default("na_address", ""); st.text_input("Alamat objek", key="na_address")
             set_default("na_district", ""); st.text_input("Desa/Kecamatan/Kabupaten", key="na_district")
@@ -488,7 +548,8 @@ elif page == "New Auction Analysis":
         with c4:
             set_default("na_certificate", ""); st.selectbox("Jenis sertifikat", ["", "SHM", "SHGB/HGB", "Hak lain"], key="na_certificate")
             set_default("na_certificate_no", ""); st.text_input("Nomor sertifikat/hak", key="na_certificate_no")
-        set_default("na_rights_expiry", ""); st.text_input("Masa berlaku SHGB (jika ada)", key="na_rights_expiry")
+        set_default("na_rights_expiry", "")
+        st.session_state.na_rights_expiry = optional_date_picker("Tanggal berakhir hak SHGB (jika ada)", st.session_state.na_rights_expiry, "na_rights_expiry")
         c1,c2 = st.columns(2)
         with c1:
             set_default("na_bedrooms", None); st.number_input("Jumlah kamar tidur", min_value=0, step=1, value=st.session_state.na_bedrooms, key="na_bedrooms")
@@ -537,7 +598,9 @@ elif page == "New Auction Analysis":
             set_default("na_possession_months", float(defaults["months"])); st.number_input("Waktu penguasaan (bulan)", min_value=0.0, step=0.5, key="na_possession_months")
         with c3:
             set_default("na_possession_risk_reserve", defaults["risk_reserve"]); st.number_input("Cadangan risiko penguasaan (Rp)", min_value=0, step=1_000_000, key="na_possession_risk_reserve")
-        set_default("na_survey_date", date.today().isoformat()); st.text_input("Tanggal survei", key="na_survey_date")
+        set_default("na_survey_date", date.today().isoformat())
+        survey_date_value = st.date_input("Tanggal survei", value=as_date(st.session_state.na_survey_date), disabled=st.session_state.na_survey_status == "Belum Survei", key="na_survey_date_picker")
+        st.session_state.na_survey_date = "" if st.session_state.na_survey_status == "Belum Survei" else survey_date_value.isoformat()
         set_default("na_road_width", None); st.number_input("Lebar jalan (meter)", min_value=0.0, step=0.5, value=st.session_state.na_road_width, key="na_road_width")
         set_default("na_access", ""); st.selectbox("Akses jalan", ["", "2 Mobil", "1 Mobil", "Gang"], key="na_access")
         set_default("na_physical_condition", "Belum diketahui")
@@ -666,7 +729,12 @@ elif page == "New Auction Analysis":
                     comp_frame[column] = None
             st.session_state.na_comparables_editor = comp_frame[default_cols]
         st.caption("Baris dapat digunakan untuk valuasi indikatif jika nama, harga, minimal salah satu LT/LB, dan sumber listing tersedia. Untuk GO final, setiap comparable harus memiliki URL iklan individual dan tanggal ditemukan. URL pencarian, agregator, dan halaman kompleks tidak dihitung sebagai iklan individual. Kondisi, akses, LB, dan tanggal publikasi yang tidak disebutkan tidak akan ditebak; kekurangannya menurunkan confidence.")
-        edited = st.data_editor(st.session_state.na_comparables_editor, num_rows="dynamic", use_container_width=True, key="na_comparables_editor_widget", column_config={
+        comparable_editor_input = st.session_state.na_comparables_editor.copy()
+        # Streamlit DateColumn expects date-like values; normalize back to ISO strings after editing.
+        for date_col in ("listing_date", "date_found"):
+            if date_col in comparable_editor_input.columns:
+                comparable_editor_input[date_col] = comparable_editor_input[date_col].apply(comparable_date_for_editor)
+        edited = st.data_editor(comparable_editor_input, num_rows="dynamic", use_container_width=True, key="na_comparables_editor_widget", column_config={
             "name": st.column_config.TextColumn("Nama listing"),
             "address": st.column_config.TextColumn("Alamat/lokasi"),
             "price": st.column_config.NumberColumn("Harga listing (Rp)", min_value=0, format="Rp %.0f"),
@@ -679,17 +747,22 @@ elif page == "New Auction Analysis":
             "source_platforms": st.column_config.TextColumn("Portal/platform sumber"),
             "source_url": st.column_config.TextColumn("URL sumber (dari input)"),
             "source_url_scope": st.column_config.SelectboxColumn("Jenis halaman sumber", options=["", "Listing individual", "Portal pencarian/kategori", "Halaman venue/kompleks", "Perlu verifikasi"], help="Untuk GO final, pilih Listing individual hanya bila URL benar-benar membuka iklan rumah tertentu."),
-            "listing_date": st.column_config.TextColumn("Tanggal terbit iklan (opsional)"),
-            "date_found": st.column_config.TextColumn("Tanggal ditemukan / dikumpulkan"),
+            "listing_date": st.column_config.DateColumn("Tanggal terbit iklan (opsional)", format="DD/MM/YYYY", help="Kosongkan bila tanggal publikasi tidak tersedia."),
+            "date_found": st.column_config.DateColumn("Tanggal ditemukan / dikumpulkan", format="DD/MM/YYYY", help="Tanggal Anda menemukan/mencatat listing; gunakan tombol isi tanggal untuk mengisi tanggal hari ini bila sesuai."),
             "date_found_basis": st.column_config.TextColumn("Dasar tanggal ditemukan", disabled=True),
             "adjustment_pct": st.column_config.NumberColumn("Penyesuaian (%)", help="Penyesuaian total harga pembanding agar sebanding dengan target; harus memiliki alasan."),
             "ai_adjustment_rationale": st.column_config.TextColumn("Alasan saran AI", disabled=True, help="Catatan dari Gemini. Periksa sebelum menggunakan penyesuaian."),
             "ai_exclude_from_primary": st.column_config.CheckboxColumn("Keluarkan dari valuasi utama?", help="Hanya aktif bila Anda menyetujui saran untuk mengeluarkan listing ini dari pembanding utama."),
         })
-        st.session_state.na_comparables_current = edited.to_dict(orient="records")
+        edited_normalized = edited.copy()
+        for date_col in ("listing_date", "date_found"):
+            if date_col in edited_normalized.columns:
+                edited_normalized[date_col] = edited_normalized[date_col].apply(comparable_date_to_iso)
+        st.session_state.na_comparables_editor = edited_normalized.copy()
+        st.session_state.na_comparables_current = edited_normalized.to_dict(orient="records")
         st.markdown("#### Pemeriksaan kualitas listing dengan AI (opsional)")
         st.caption("Gemini membantu menilai relevansi setiap listing, menemukan data yang janggal, dan menyarankan penyesuaian hanya bila perbedaannya terlihat pada input. Gemini tidak mencari harga transaksi yang tidak tersedia dan tidak menetapkan ARV akhir. Python tetap menghitung valuasi.")
-        market_review_rows = edited.to_dict(orient="records")
+        market_review_rows = edited_normalized.to_dict(orient="records")
         market_review_positions = [i for i, row in enumerate(market_review_rows) if str(row.get("name") or "").strip() and to_float(row.get("price")) > 0 and (to_float(row.get("land_area")) > 0 or to_float(row.get("building_area")) > 0)]
         market_review_comps = [market_review_rows[i] for i in market_review_positions]
         market_review_subject = {
@@ -754,7 +827,7 @@ elif page == "New Auction Analysis":
         market_action_1, market_action_2 = st.columns(2)
         with market_action_1:
             if st.button("Isi tanggal ditemukan untuk baris yang masih kosong", use_container_width=True, key="na_fill_capture_dates"):
-                rows_to_update = edited.to_dict(orient="records")
+                rows_to_update = edited_normalized.to_dict(orient="records")
                 changed = 0
                 for comp in rows_to_update:
                     if str(comp.get("name") or "").strip() and to_float(comp.get("price")) > 0 and not str(comp.get("date_found") or "").strip():
@@ -768,14 +841,14 @@ elif page == "New Auction Analysis":
         with market_action_2:
             url_review_material = [
                 {"name": str(row.get("name") or "").strip(), "url": str(row.get("source_url") or "").strip()}
-                for row in edited.to_dict(orient="records")
+                for row in edited_normalized.to_dict(orient="records")
                 if str(row.get("source_url") or "").strip()
             ]
             url_review_signature = hashlib.sha256(safe_json(url_review_material).encode("utf-8")).hexdigest()
             sync_review_confirmation(st.session_state, "na_confirm_individual_urls", "na_confirm_individual_urls_signature", url_review_signature)
             confirm_individual_urls = st.checkbox("Saya sudah membuka URL dan memastikan setiap link yang relevan adalah iklan properti individual.", key="na_confirm_individual_urls")
             if st.button("Konfirmasi URL sebagai listing individual", disabled=not confirm_individual_urls, use_container_width=True, key="na_confirm_url_scope"):
-                rows_to_update = edited.to_dict(orient="records")
+                rows_to_update = edited_normalized.to_dict(orient="records")
                 changed = 0
                 for comp in rows_to_update:
                     url = str(comp.get("source_url") or "").strip()
@@ -818,6 +891,7 @@ elif page == "New Auction Analysis":
                 "property_type": st.session_state.get("na_property_type", ""), "floor_count": st.session_state.get("na_floor_count", 1),
                 "bedrooms": st.session_state.get("na_bedrooms"), "bathrooms": st.session_state.get("na_bathrooms"),
                 "physical_condition": st.session_state.get("na_physical_condition", ""),
+                "interior_inspected": bool(st.session_state.get("na_interior_inspected", False)),
                 "renovation_category": st.session_state.get("na_renovation_category", "Auto sesuai kondisi umum"),
                 "road_width_m": st.session_state.get("na_road_width"), "access": st.session_state.get("na_access", ""),
                 "facade_description": st.session_state.get("na_facade_manual", ""),
@@ -853,6 +927,28 @@ elif page == "New Auction Analysis":
             with st.expander("Ringkasan asumsi dan batasan RAB dari Gemini", expanded=True):
                 st.write(f"Kategori RAB: **{rab_estimate.get('category', 'Belum ditentukan')}**")
                 st.metric("Total indikatif konservatif dari AI", idr(rab_estimate.get("total_conservative_indicative")))
+                if rab_estimate.get("visual_findings"):
+                    st.markdown("**Temuan yang benar-benar terlihat**")
+                    for finding in rab_estimate["visual_findings"]: st.write(f"• {finding}")
+                if rab_estimate.get("likely_causes_to_verify"):
+                    st.markdown("**Kemungkinan penyebab — masih perlu diverifikasi**")
+                    for cause in rab_estimate["likely_causes_to_verify"]: st.write(f"• {cause}")
+                if rab_estimate.get("interior_unknowns"):
+                    st.markdown("**Bagian interior yang belum dapat dinilai dari foto**")
+                    for unknown in rab_estimate["interior_unknowns"]: st.write(f"• {unknown}")
+                if rab_estimate.get("inspection_plan"):
+                    st.markdown("**Urutan pemeriksaan lapangan yang disarankan**")
+                    for step in rab_estimate["inspection_plan"]: st.write(f"• {step}")
+                scenarios = rab_estimate.get("interior_scenarios") or []
+                if scenarios:
+                    st.markdown("**Skenario biaya interior (di luar total RAB dasar)**")
+                    for scenario in scenarios:
+                        low, high = scenario.get("cost_low"), scenario.get("cost_high")
+                        cost_label = f"{idr(low)} – {idr(high)}" if low is not None and high is not None else "Belum cukup dasar untuk menaksir nominal"
+                        st.markdown(f"**{scenario.get('scenario_name', 'Skenario')}** · {cost_label} · Keyakinan: {scenario.get('confidence', 'Rendah')}")
+                        for assumption in scenario.get("assumptions", []): st.caption(f"Asumsi: {assumption}")
+                        for work in scenario.get("potential_work_items", []): st.write(f"• {work}")
+                    st.info("Skenario interior tidak otomatis masuk total RAB atau anggaran. Gunakan sebagai sensitivitas/cadangan sampai kondisi interior diperiksa.")
                 guidance = rab_estimate.get("quantity_guidance", {})
                 if guidance:
                     st.caption(f"Profil volume: LT {guidance.get('land_area') or '—'} m² · LB {guidance.get('building_area') or '—'} m² · {guidance.get('floor_count', 1)} lantai · {guidance.get('bedrooms') or '—'} KT · {guidance.get('bathrooms') or '—'} KM")
@@ -1516,8 +1612,11 @@ elif page == "Active Properties":
                 stage_index = stage_options.index(stage_now) if stage_now in stage_options else 0
                 lifecycle_stage = st.selectbox("Tahap proyek saat ini", stage_options, index=stage_index)
             notes = st.text_area("Catatan progres proyek", value=str(payload.get("progress_notes") or payload.get("project_onboarding", {}).get("notes") or ""))
+            progress_confirm = st.checkbox("Saya sudah memeriksa harga, tanggal dan tahap proyek yang akan disimpan.", key=f"progress_confirm_{pid}")
             upd = st.form_submit_button("Simpan progres proyek")
-        if upd:
+        if upd and not progress_confirm:
+            st.warning("Centang konfirmasi setelah memastikan perubahan data proyek sudah benar.")
+        if upd and progress_confirm:
             payload["win_details"] = {**win, "win_price": win_price, "win_date": win_date.isoformat()}
             payload["project_stage"] = lifecycle_stage
             payload["progress_notes"] = notes
@@ -1526,7 +1625,7 @@ elif page == "Active Properties":
             st.success("Tahap proyek diperbarui."); cached_read.clear(); st.rerun()
 
         st.markdown("### 3. Catat realisasi biaya")
-        st.caption("Satu transaksi untuk setiap pembayaran yang benar-benar sudah dilakukan. Pilih kategori, subkategori, lalu item/lingkup. Tanggal menggunakan kalender. Bila pembayaran merupakan bagian harga menang, catat deposit + sisa pelunasan atau total harga perolehan satu kali—jangan keduanya.")
+        st.caption("Catat satu transaksi untuk setiap pembayaran yang benar-benar sudah keluar. Formulir ini terpisah dari tabel riwayat. Sebelum tersimpan, sistem memvalidasi saldo komitmen/forecast bila transaksi ditautkan ke item budget.")
         actual_category = st.selectbox("1. Kategori biaya", ACTUAL_CATEGORIES, key=f"actual_category_{pid}")
         actual_subcategory_options = subcategory_options(actual_category)
         actual_subcategory = st.selectbox("2. Subkategori", actual_subcategory_options, key=f"actual_subcategory_{pid}_{actual_category}")
@@ -1538,45 +1637,150 @@ elif page == "Active Properties":
         for budget in project_budget_rows:
             if str(budget.get("status") or "Active") not in {"Cancelled", "Archived"}:
                 budget_choices[f"{budget.get('category')} · {budget.get('subcategory') or 'Umum'} · {budget.get('description')} · {budget.get('budget_item_id')}"] = str(budget.get("budget_item_id"))
-        with st.form(f"actual_cost_form_v110_{pid}"):
+        with st.form(f"actual_cost_form_v111_{pid}"):
             a1, a2 = st.columns(2)
             with a1:
-                txdate = st.date_input("Tanggal pembayaran", value=date.today())
-                amount = st.number_input("Nominal yang sudah dibayar (Rp)", min_value=0, step=500_000)
-                vendor = st.text_input("Penerima / vendor", placeholder="Nama toko, tukang, kontraktor, instansi")
+                txdate = st.date_input("Tanggal pembayaran", value=date.today(), key=f"actual_txdate_{pid}")
+                amount = st.number_input("Nominal yang sudah dibayar (Rp)", min_value=0, step=500_000, key=f"actual_amount_{pid}")
+                vendor = st.text_input("Penerima / vendor", placeholder="Nama toko, tukang, kontraktor, instansi", key=f"actual_vendor_{pid}")
             with a2:
-                linked_budget_label = st.selectbox("Tautkan ke item anggaran (opsional)", list(budget_choices.keys()))
-                payment_source = st.selectbox("Pembayaran ini mengurangi", ["Pengeluaran di luar budget", "Pembayaran atas komitmen", "Pembayaran dari forecast"], help="Pilih komitmen atau forecast hanya bila transaksi benar-benar mengurangi saldo item tersebut.")
-                payment_method = st.selectbox("Metode pembayaran", ["Transfer", "Tunai", "QRIS", "Debit/kartu", "Lainnya"])
-                receipt = st.text_input("URL bukti pembayaran (opsional)")
-            payment_note = st.text_area("Catatan tambahan (opsional)", height=68)
+                linked_budget_label = st.selectbox("Tautkan ke item anggaran (opsional)", list(budget_choices.keys()), key=f"actual_budget_link_{pid}")
+                payment_source = st.selectbox("Pembayaran ini mengurangi", ["Pengeluaran di luar budget", "Pembayaran atas komitmen", "Pembayaran dari forecast"], key=f"actual_payment_source_{pid}", help="Pilih komitmen atau forecast hanya bila pembayaran benar-benar mengurangi saldo item tersebut.")
+                payment_method = st.selectbox("Metode pembayaran", ["Transfer", "Tunai", "QRIS", "Debit/kartu", "Lainnya"], key=f"actual_payment_method_{pid}")
+                receipt = st.text_input("URL bukti pembayaran (opsional)", key=f"actual_receipt_{pid}")
+            payment_note = st.text_area("Catatan tambahan (opsional)", height=68, key=f"actual_payment_note_{pid}")
+            confirm_payment = st.checkbox("Saya sudah memeriksa tanggal, kategori, nominal, dan penerima pembayaran.", key=f"confirm_payment_{pid}")
             addcost = st.form_submit_button("Simpan pembayaran", type="primary", use_container_width=True)
         if addcost:
-            if amount <= 0:
+            linked_budget_id = budget_choices[linked_budget_label]
+            new_transaction = {
+                "actual_id": new_id("ACT"), "property_id": pid,
+                "transaction_date": txdate.isoformat(), "category": actual_category,
+                "amount": amount, "description": actual_scope_text + (f" — {payment_note.strip()}" if payment_note.strip() else ""),
+                "receipt_url": receipt, "created_at": iso_now(), "budget_item_id": linked_budget_id,
+                "subcategory": actual_subcategory, "vendor": vendor, "payment_method": payment_method,
+                "details_json": {"entry_source": "ACTIVE_PROPERTY_LEDGER", "payment_source": payment_source, "item_scope": actual_scope_text, "additional_note": payment_note.strip()},
+            }
+            if not confirm_payment:
+                st.warning("Centang konfirmasi setelah memeriksa data pembayaran.")
+            elif amount <= 0:
                 st.warning("Nominal pembayaran harus lebih dari nol.")
             elif not actual_scope_text:
                 st.warning("Item/lingkup biaya perlu diisi agar riwayat mudah ditelusuri.")
+            elif payment_source != "Pengeluaran di luar budget" and not linked_budget_id:
+                st.warning("Pilih item anggaran jika pembayaran akan mengurangi komitmen atau forecast.")
             else:
-                linked_budget_id = budget_choices[linked_budget_label]
-                description = actual_scope_text + (f" — {payment_note.strip()}" if payment_note.strip() else "")
-                append_record("COST_ACTUALS", {
-                    "actual_id": new_id("ACT"), "property_id": pid,
-                    "transaction_date": txdate.isoformat(), "category": actual_category,
-                    "amount": amount, "description": description, "receipt_url": receipt,
-                    "created_at": iso_now(), "budget_item_id": linked_budget_id,
-                    "subcategory": actual_subcategory, "vendor": vendor, "payment_method": payment_method,
-                    "details_json": {"entry_source": "ACTIVE_PROPERTY_LEDGER", "payment_source": payment_source, "item_scope": actual_scope_text, "additional_note": payment_note.strip()},
-                })
-                if linked_budget_id and payment_source in {"Pembayaran atas komitmen", "Pembayaran dari forecast"}:
-                    linked_budget = next((b for b in project_budget_rows if str(b.get("budget_item_id")) == linked_budget_id), None)
-                    if linked_budget:
-                        update_field = "committed_unpaid" if payment_source == "Pembayaran atas komitmen" else "forecast_remaining"
-                        before_amount = max(0.0, to_float(linked_budget.get(update_field)))
-                        linked_budget[update_field] = max(0.0, before_amount - amount)
-                        linked_budget["updated_at"] = iso_now()
-                        upsert_record("PROJECT_BUDGETS", "budget_item_id", linked_budget)
-                log_event("COST_ACTUAL", pid, "ADDED", {"amount": amount, "category": actual_category, "subcategory": actual_subcategory, "item_scope": actual_scope_text, "budget_item_id": linked_budget_id, "payment_source": payment_source})
-                st.success("Pembayaran berhasil dicatat."); cached_read.clear(); st.rerun()
+                reconciled_budgets, allocation_error = reconcile_budget_payment_change(project_budget_rows, None, new_transaction)
+                if allocation_error:
+                    st.error(allocation_error)
+                else:
+                    try:
+                        append_record("COST_ACTUALS", new_transaction)
+                        for updated_budget in reconciled_budgets:
+                            original_budget = next((b for b in project_budget_rows if b.get("budget_item_id") == updated_budget.get("budget_item_id")), None)
+                            if original_budget and (to_float(original_budget.get("committed_unpaid")) != to_float(updated_budget.get("committed_unpaid")) or to_float(original_budget.get("forecast_remaining")) != to_float(updated_budget.get("forecast_remaining"))):
+                                upsert_record("PROJECT_BUDGETS", "budget_item_id", {**updated_budget, "updated_at": iso_now()})
+                        log_event("COST_ACTUAL", new_transaction["actual_id"], "ADDED", {"property_id": pid, "amount": amount, "category": actual_category, "budget_item_id": linked_budget_id, "payment_source": payment_source})
+                        for field_key in [f"actual_txdate_{pid}", f"actual_amount_{pid}", f"actual_vendor_{pid}", f"actual_budget_link_{pid}", f"actual_payment_source_{pid}", f"actual_payment_method_{pid}", f"actual_receipt_{pid}", f"actual_payment_note_{pid}", f"confirm_payment_{pid}", f"actual_scope_custom_{pid}"]:
+                            st.session_state.pop(field_key, None)
+                        st.success("Pembayaran berhasil dicatat. Formulir dikosongkan untuk transaksi berikutnya.")
+                        cached_read.clear(); st.rerun()
+                    except Exception as exc:
+                        st.error(f"Penyimpanan pembayaran/budget belum lengkap. Periksa riwayat transaksi dan item budget sebelum mencoba ulang. Detail: {exc}")
+
+        st.markdown("### 4. Riwayat pembayaran proyek")
+        if active_actual_rows:
+            actual_display = pd.DataFrame(active_actual_rows)
+            display_cols = [c for c in ["transaction_date", "category", "subcategory", "description", "vendor", "amount", "payment_method", "receipt_url", "budget_item_id"] if c in actual_display.columns]
+            st.dataframe(actual_display[display_cols], use_container_width=True, hide_index=True, column_config={"amount": st.column_config.NumberColumn("Jumlah dibayar", format="Rp %.0f")})
+            transaction_options = {
+                f"{x.get('transaction_date','—')} · {x.get('category','Lainnya')} · {x.get('description','')} · {idr(x.get('amount'))} · {x.get('actual_id')}": x
+                for x in active_actual_rows
+            }
+            with st.expander("Koreksi transaksi yang sudah tercatat", expanded=False):
+                selected_transaction_label = st.selectbox("Pilih transaksi yang akan dikoreksi", list(transaction_options.keys()), key=f"edit_actual_select_{pid}")
+                selected_transaction = transaction_options[selected_transaction_label]
+                edit_flag_key = f"show_edit_actual_{pid}"
+                if st.button("Edit transaksi terpilih", key=f"open_edit_actual_{pid}"):
+                    st.session_state[edit_flag_key] = True
+                if st.session_state.get(edit_flag_key, False):
+                    txid = str(selected_transaction.get("actual_id") or "legacy")
+                    tx_details = parse_json(selected_transaction.get("details_json"), {})
+                    prior_category = str(selected_transaction.get("category") or "Lainnya")
+                    edit_categories = list(ACTUAL_CATEGORIES)
+                    if prior_category not in edit_categories: edit_categories.append(prior_category)
+                    edit_subcats = subcategory_options(prior_category)
+                    prior_subcat = str(selected_transaction.get("subcategory") or "")
+                    if prior_subcat and prior_subcat not in edit_subcats: edit_subcats.append(prior_subcat)
+                    with st.form(f"edit_actual_form_{pid}_{txid}"):
+                        st.caption(f"Transaksi: {txid}. Koreksi akan memperbarui transaksi yang sama dan mencatat perubahan di audit history.")
+                        ec1, ec2 = st.columns(2)
+                        with ec1:
+                            edit_tx_date = st.date_input("Tanggal pembayaran", value=as_date(selected_transaction.get("transaction_date")), key=f"edit_tx_date_{pid}_{txid}")
+                            edit_amount = st.number_input("Nominal pembayaran (Rp)", min_value=0, step=500_000, value=safe_int(selected_transaction.get("amount")), key=f"edit_amount_{pid}_{txid}")
+                            edit_vendor = st.text_input("Penerima / vendor", value=str(selected_transaction.get("vendor") or ""), key=f"edit_vendor_{pid}_{txid}")
+                            edit_category = st.selectbox("Kategori", edit_categories, index=edit_categories.index(prior_category), key=f"edit_category_{pid}_{txid}")
+                            edit_subcat_options = subcategory_options(edit_category)
+                            if prior_subcat and prior_subcat not in edit_subcat_options: edit_subcat_options.append(prior_subcat)
+                            edit_subcategory = st.selectbox("Subkategori", edit_subcat_options, index=edit_subcat_options.index(prior_subcat) if prior_subcat in edit_subcat_options else 0, key=f"edit_subcategory_{pid}_{txid}_{edit_category}")
+                        with ec2:
+                            existing_budget_id = str(selected_transaction.get("budget_item_id") or "")
+                            edit_budget_choices = dict(budget_choices)
+                            if existing_budget_id and existing_budget_id not in edit_budget_choices.values():
+                                edit_budget_choices[f"(Item budget lama) · {existing_budget_id}"] = existing_budget_id
+                            current_budget_label = next((k for k, v in edit_budget_choices.items() if v == existing_budget_id), list(edit_budget_choices.keys())[0])
+                            edit_budget_label = st.selectbox("Item anggaran", list(edit_budget_choices.keys()), index=list(edit_budget_choices.keys()).index(current_budget_label), key=f"edit_budget_link_{pid}_{txid}")
+                            old_source = str(tx_details.get("payment_source") or "Pengeluaran di luar budget")
+                            edit_source_options = ["Pengeluaran di luar budget", "Pembayaran atas komitmen", "Pembayaran dari forecast"]
+                            if old_source not in edit_source_options: old_source = edit_source_options[0]
+                            edit_payment_source = st.selectbox("Mengurangi saldo", edit_source_options, index=edit_source_options.index(old_source), key=f"edit_payment_source_{pid}_{txid}")
+                            methods = ["Transfer", "Tunai", "QRIS", "Debit/kartu", "Lainnya"]
+                            old_method = str(selected_transaction.get("payment_method") or "Transfer")
+                            if old_method not in methods: old_method = "Lainnya"
+                            edit_method = st.selectbox("Metode pembayaran", methods, index=methods.index(old_method), key=f"edit_payment_method_{pid}_{txid}")
+                            edit_receipt = st.text_input("URL bukti pembayaran", value=str(selected_transaction.get("receipt_url") or ""), key=f"edit_receipt_{pid}_{txid}")
+                        edit_item_scope = st.text_input("Item / lingkup biaya", value=str(tx_details.get("item_scope") or selected_transaction.get("description") or ""), key=f"edit_scope_{pid}_{txid}")
+                        edit_note = st.text_area("Catatan tambahan", value=str(tx_details.get("additional_note") or ""), key=f"edit_note_{pid}_{txid}")
+                        edit_confirm = st.checkbox("Saya yakin koreksi data transaksi ini sudah benar.", key=f"edit_confirm_{pid}_{txid}")
+                        save_transaction_edit = st.form_submit_button("Simpan koreksi transaksi")
+                    if save_transaction_edit:
+                        new_budget_id = edit_budget_choices[edit_budget_label]
+                        updated_transaction = {
+                            **selected_transaction, "transaction_date": edit_tx_date.isoformat(), "category": edit_category,
+                            "subcategory": edit_subcategory, "amount": edit_amount, "vendor": edit_vendor,
+                            "receipt_url": edit_receipt, "payment_method": edit_method,
+                            "budget_item_id": new_budget_id,
+                            "description": edit_item_scope.strip() + (f" — {edit_note.strip()}" if edit_note.strip() else ""),
+                            "details_json": {"entry_source": tx_details.get("entry_source", "ACTIVE_PROPERTY_LEDGER"), "payment_source": edit_payment_source, "item_scope": edit_item_scope.strip(), "additional_note": edit_note.strip()},
+                            "updated_at": iso_now(),
+                        }
+                        if not edit_confirm:
+                            st.warning("Centang konfirmasi setelah memeriksa seluruh perubahan.")
+                        elif edit_amount <= 0 or not edit_item_scope.strip():
+                            st.warning("Nominal harus lebih dari nol dan item/lingkup tidak boleh kosong.")
+                        elif edit_payment_source != "Pengeluaran di luar budget" and not new_budget_id:
+                            st.warning("Pilih item budget jika pembayaran akan mengurangi komitmen atau forecast.")
+                        else:
+                            updated_budgets, reconcile_error = reconcile_budget_payment_change(project_budget_rows, selected_transaction, updated_transaction)
+                            if reconcile_error:
+                                st.error(reconcile_error)
+                            else:
+                                before = {k: selected_transaction.get(k) for k in ["transaction_date", "category", "subcategory", "description", "amount", "vendor", "budget_item_id", "payment_method"]}
+                                upsert_record("COST_ACTUALS", "actual_id", updated_transaction)
+                                for updated_budget in updated_budgets:
+                                    original_budget = next((b for b in project_budget_rows if b.get("budget_item_id") == updated_budget.get("budget_item_id")), None)
+                                    if original_budget and (to_float(original_budget.get("committed_unpaid")) != to_float(updated_budget.get("committed_unpaid")) or to_float(original_budget.get("forecast_remaining")) != to_float(updated_budget.get("forecast_remaining"))):
+                                        upsert_record("PROJECT_BUDGETS", "budget_item_id", {**updated_budget, "updated_at": iso_now()})
+                                after = {k: updated_transaction.get(k) for k in before}
+                                log_event("COST_ACTUAL", txid, "CORRECTED", {"property_id": pid, "before": before, "after": after})
+                                st.session_state[edit_flag_key] = False
+                                st.success("Transaksi diperbarui. Riwayat perubahan tersimpan di Database & Riwayat.")
+                                cached_read.clear(); st.rerun()
+                    if st.button("Tutup mode edit", key=f"close_edit_actual_{pid}"):
+                        st.session_state[edit_flag_key] = False
+                        st.rerun()
+        else:
+            st.info("Belum ada transaksi pembayaran proyek.")
 
         st.markdown("### 4. Anggaran, komitmen, dan forecast pekerjaan")
         st.caption("Tabel berikut hanya untuk melihat data. Untuk menambah atau mengubah angka, gunakan formulir di bawah. Budget adalah batas/rencana biaya; komitmen adalah kewajiban yang sudah disepakati; forecast adalah biaya tersisa yang belum dikomitmen.")
@@ -1592,98 +1796,112 @@ elif page == "Active Properties":
                     "variance_at_completion": st.column_config.NumberColumn("Selisih vs anggaran", format="Rp %.0f"),
                 })
             st.caption(f"Total anggaran: {idr(ledger['budget_total'])} · Aktual: {idr(ledger['actual_paid_total'])} · Komitmen: {idr(committed_total)} · Forecast: {idr(forecast_total)}")
-            budget_edit_options = {f"{b.get('category')} · {b.get('subcategory') or 'Umum'} · {b.get('description')} · {b.get('budget_item_id')}": b for b in project_budget_rows if str(b.get("status") or "Active") not in {"Cancelled", "Archived"}}
-            if budget_edit_options:
-                selected_budget_label = st.selectbox("Pilih item anggaran untuk diperbarui", list(budget_edit_options.keys()), key=f"budget_edit_select_{pid}")
-                selected_budget = budget_edit_options[selected_budget_label]
-                current_budget_category = str(selected_budget.get("category") or "Lainnya")
-                edit_budget_category = st.selectbox("Kategori item terpilih", BUDGET_CATEGORIES, index=BUDGET_CATEGORIES.index(current_budget_category) if current_budget_category in BUDGET_CATEGORIES else len(BUDGET_CATEGORIES)-1, key=f"budget_edit_category_{pid}_{selected_budget.get('budget_item_id')}")
-                edit_subcategory_options = subcategory_options(edit_budget_category)
-                current_budget_subcategory = str(selected_budget.get("subcategory") or edit_subcategory_options[0])
-                edit_budget_subcategory = st.selectbox("Subkategori item terpilih", edit_subcategory_options, index=edit_subcategory_options.index(current_budget_subcategory) if current_budget_subcategory in edit_subcategory_options else 0, key=f"budget_edit_subcategory_{pid}_{selected_budget.get('budget_item_id')}_{edit_budget_category}")
-                try:
-                    due_default = date.fromisoformat(str(selected_budget.get("due_date") or date.today().isoformat())[:10])
-                    has_due_default = bool(selected_budget.get("due_date"))
-                except ValueError:
-                    due_default = date.today(); has_due_default = False
-                with st.form(f"budget_edit_form_{pid}_{selected_budget.get('budget_item_id')}"):
-                    st.caption(f"Memperbarui: {selected_budget.get('description')} · {selected_budget.get('budget_item_id')}")
-                    edit_budget_description = st.text_input("Nama item / lingkup biaya", value=str(selected_budget.get("description") or ""))
-                    e1, e2 = st.columns(2)
-                    with e1:
-                        edit_budget_amount = st.number_input("Anggaran total item (Rp)", min_value=0, step=500_000, value=safe_int(selected_budget.get("budget_amount")))
-                        edit_committed = st.number_input("Komitmen belum dibayar (Rp)", min_value=0, step=500_000, value=safe_int(selected_budget.get("committed_unpaid")))
-                        edit_forecast = st.number_input("Forecast belum dikomitmen (Rp)", min_value=0, step=500_000, value=safe_int(selected_budget.get("forecast_remaining")))
-                    with e2:
-                        edit_vendor = st.text_input("Vendor / kontraktor", value=str(selected_budget.get("vendor") or ""))
-                        edit_has_due = st.checkbox("Ada tanggal jatuh tempo", value=has_due_default)
-                        edit_due_date = st.date_input("Tanggal jatuh tempo", value=due_default, disabled=not edit_has_due)
-                        edit_status = st.selectbox("Status item", ["Active", "Completed", "Archived", "Cancelled"], index=["Active", "Completed", "Archived", "Cancelled"].index(selected_budget.get("status", "Active")) if selected_budget.get("status", "Active") in ["Active", "Completed", "Archived", "Cancelled"] else 0)
-                    save_budget_edit = st.form_submit_button("Simpan perubahan item anggaran")
-                if save_budget_edit:
-                    updated_budget = {**selected_budget, "category": edit_budget_category, "subcategory": edit_budget_subcategory, "description": edit_budget_description.strip(), "budget_amount": edit_budget_amount, "committed_unpaid": edit_committed, "forecast_remaining": edit_forecast, "vendor": edit_vendor, "due_date": edit_due_date.isoformat() if edit_has_due else "", "status": edit_status, "updated_at": iso_now()}
-                    upsert_record("PROJECT_BUDGETS", "budget_item_id", updated_budget)
-                    log_event("PROJECT_BUDGET", selected_budget.get("budget_item_id"), "UPDATED", {"property_id": pid})
-                    st.success("Item anggaran berhasil diperbarui."); cached_read.clear(); st.rerun()
+            with st.expander("Edit item anggaran yang sudah ada", expanded=False):
+                budget_edit_options = {f"{b.get('category')} · {b.get('subcategory') or 'Umum'} · {b.get('description')} · {b.get('budget_item_id')}": b for b in project_budget_rows if str(b.get("status") or "Active") not in {"Cancelled", "Archived"}}
+                if budget_edit_options:
+                    selected_budget_label = st.selectbox("Pilih item anggaran untuk diperbarui", list(budget_edit_options.keys()), key=f"budget_edit_select_{pid}")
+                    selected_budget = budget_edit_options[selected_budget_label]
+                    current_budget_category = str(selected_budget.get("category") or "Lainnya")
+                    edit_budget_category = st.selectbox("Kategori item terpilih", BUDGET_CATEGORIES, index=BUDGET_CATEGORIES.index(current_budget_category) if current_budget_category in BUDGET_CATEGORIES else len(BUDGET_CATEGORIES)-1, key=f"budget_edit_category_{pid}_{selected_budget.get('budget_item_id')}")
+                    edit_subcategory_options = subcategory_options(edit_budget_category)
+                    current_budget_subcategory = str(selected_budget.get("subcategory") or edit_subcategory_options[0])
+                    edit_budget_subcategory = st.selectbox("Subkategori item terpilih", edit_subcategory_options, index=edit_subcategory_options.index(current_budget_subcategory) if current_budget_subcategory in edit_subcategory_options else 0, key=f"budget_edit_subcategory_{pid}_{selected_budget.get('budget_item_id')}_{edit_budget_category}")
+                    try:
+                        due_default = date.fromisoformat(str(selected_budget.get("due_date") or date.today().isoformat())[:10])
+                        has_due_default = bool(selected_budget.get("due_date"))
+                    except ValueError:
+                        due_default = date.today(); has_due_default = False
+                    with st.form(f"budget_edit_form_{pid}_{selected_budget.get('budget_item_id')}"):
+                        st.caption(f"Memperbarui: {selected_budget.get('description')} · {selected_budget.get('budget_item_id')}")
+                        edit_budget_description = st.text_input("Nama item / lingkup biaya", value=str(selected_budget.get("description") or ""))
+                        e1, e2 = st.columns(2)
+                        with e1:
+                            edit_budget_amount = st.number_input("Anggaran total item (Rp)", min_value=0, step=500_000, value=safe_int(selected_budget.get("budget_amount")))
+                            edit_committed = st.number_input("Komitmen belum dibayar (Rp)", min_value=0, step=500_000, value=safe_int(selected_budget.get("committed_unpaid")))
+                            edit_forecast = st.number_input("Forecast belum dikomitmen (Rp)", min_value=0, step=500_000, value=safe_int(selected_budget.get("forecast_remaining")))
+                        with e2:
+                            edit_vendor = st.text_input("Vendor / kontraktor", value=str(selected_budget.get("vendor") or ""))
+                            edit_has_due = st.checkbox("Ada tanggal jatuh tempo", value=has_due_default)
+                            edit_due_date = st.date_input("Tanggal jatuh tempo", value=due_default, disabled=not edit_has_due)
+                            edit_status = st.selectbox("Status item", ["Active", "Completed", "Archived", "Cancelled"], index=["Active", "Completed", "Archived", "Cancelled"].index(selected_budget.get("status", "Active")) if selected_budget.get("status", "Active") in ["Active", "Completed", "Archived", "Cancelled"] else 0)
+                        edit_budget_confirm = st.checkbox("Saya yakin perubahan item anggaran ini sudah benar.", key=f"budget_edit_confirm_{pid}_{selected_budget.get('budget_item_id')}")
+                        save_budget_edit = st.form_submit_button("Simpan perubahan item anggaran")
+                    if save_budget_edit and not edit_budget_confirm:
+                        st.warning("Centang konfirmasi setelah memeriksa perubahan anggaran.")
+                    elif save_budget_edit:
+                        updated_budget = {**selected_budget, "category": edit_budget_category, "subcategory": edit_budget_subcategory, "description": edit_budget_description.strip(), "budget_amount": edit_budget_amount, "committed_unpaid": edit_committed, "forecast_remaining": edit_forecast, "vendor": edit_vendor, "due_date": edit_due_date.isoformat() if edit_has_due else "", "status": edit_status, "updated_at": iso_now()}
+                        before = {k: selected_budget.get(k) for k in ["category", "subcategory", "description", "budget_amount", "committed_unpaid", "forecast_remaining", "vendor", "due_date", "status"]}
+                        upsert_record("PROJECT_BUDGETS", "budget_item_id", updated_budget)
+                        after = {k: updated_budget.get(k) for k in before}
+                        log_event("PROJECT_BUDGET", selected_budget.get("budget_item_id"), "UPDATED", {"property_id": pid, "before": before, "after": after})
+                        st.success("Item anggaran berhasil diperbarui."); cached_read.clear(); st.rerun()
         else:
             st.info("Belum ada item anggaran. Tambahkan budget per lingkup agar PFMS dapat menghitung sisa kebutuhan proyek secara lebih akurat.")
 
-        st.markdown("#### Tambah item anggaran baru")
-        budget_category = st.selectbox("1. Kategori anggaran", BUDGET_CATEGORIES, key=f"budget_new_category_{pid}")
-        budget_subcategory_options = subcategory_options(budget_category)
-        budget_subcategory = st.selectbox("2. Subkategori", budget_subcategory_options, key=f"budget_new_subcategory_{pid}_{budget_category}")
-        budget_scope_options = scope_options(budget_category, budget_subcategory)
-        budget_scope_choice = st.selectbox("3. Item / lingkup anggaran", budget_scope_options, key=f"budget_new_scope_{pid}_{budget_category}_{budget_subcategory}")
-        budget_scope_custom = st.text_input("Tuliskan item/lingkup lain", key=f"budget_new_scope_custom_{pid}", placeholder="Contoh: penggantian seluruh genteng dan nok") if budget_scope_choice == "Lainnya" else ""
-        budget_scope_text = budget_scope_custom.strip() if budget_scope_choice == "Lainnya" else budget_scope_choice
-        with st.form(f"project_budget_add_form_{pid}"):
-            b1, b2 = st.columns(2)
-            with b1:
-                budget_amount = st.number_input("Anggaran total item (Rp)", min_value=0, step=500_000)
-                committed_unpaid = st.number_input("Komitmen yang sudah disepakati, belum dibayar (Rp)", min_value=0, step=500_000)
-                forecast_remaining = st.number_input("Perkiraan biaya tersisa yang belum dikomitmen (Rp)", min_value=0, step=500_000)
-            with b2:
-                budget_vendor = st.text_input("Vendor / kontraktor (opsional)")
-                budget_has_due = st.checkbox("Ada tanggal jatuh tempo")
-                budget_due_date = st.date_input("Tanggal jatuh tempo", value=date.today(), disabled=not budget_has_due)
-            add_budget = st.form_submit_button("Tambah item anggaran", type="primary", use_container_width=True)
-        if add_budget:
-            if not budget_scope_text:
-                st.warning("Item/lingkup anggaran wajib dipilih atau ditulis.")
-            elif budget_amount <= 0 and committed_unpaid <= 0 and forecast_remaining <= 0:
-                st.warning("Isi minimal salah satu: anggaran, komitmen, atau forecast.")
-            else:
-                budget_rec = {
-                    "budget_item_id": new_id("BUD"), "property_id": pid,
-                    "category": budget_category, "subcategory": budget_subcategory,
-                    "description": budget_scope_text, "budget_amount": budget_amount,
-                    "committed_unpaid": committed_unpaid, "forecast_remaining": forecast_remaining,
-                    "due_date": budget_due_date.isoformat() if budget_has_due else "", "vendor": budget_vendor, "status": "Active",
-                    "updated_at": iso_now(), "payload": {"entry_source": "ACTIVE_PROPERTY_BUDGET", "item_scope": budget_scope_text},
-                }
-                upsert_record("PROJECT_BUDGETS", "budget_item_id", budget_rec)
-                log_event("PROJECT_BUDGET", budget_rec["budget_item_id"], "ADDED", {"property_id": pid, "category": budget_category, "subcategory": budget_subcategory, "item_scope": budget_scope_text})
-                st.success("Item anggaran berhasil ditambahkan."); cached_read.clear(); st.rerun()
+        with st.expander("Tambah item anggaran / komitmen / forecast", expanded=False):
+            budget_category = st.selectbox("1. Kategori anggaran", BUDGET_CATEGORIES, key=f"budget_new_category_{pid}")
+            budget_subcategory_options = subcategory_options(budget_category)
+            budget_subcategory = st.selectbox("2. Subkategori", budget_subcategory_options, key=f"budget_new_subcategory_{pid}_{budget_category}")
+            budget_scope_options = scope_options(budget_category, budget_subcategory)
+            budget_scope_choice = st.selectbox("3. Item / lingkup anggaran", budget_scope_options, key=f"budget_new_scope_{pid}_{budget_category}_{budget_subcategory}")
+            budget_scope_custom = st.text_input("Tuliskan item/lingkup lain", key=f"budget_new_scope_custom_{pid}", placeholder="Contoh: penggantian seluruh genteng dan nok") if budget_scope_choice == "Lainnya" else ""
+            budget_scope_text = budget_scope_custom.strip() if budget_scope_choice == "Lainnya" else budget_scope_choice
+            with st.form(f"project_budget_add_form_{pid}"):
+                b1, b2 = st.columns(2)
+                with b1:
+                    budget_amount = st.number_input("Anggaran total item (Rp)", min_value=0, step=500_000, key=f"budget_amount_{pid}")
+                    committed_unpaid = st.number_input("Komitmen yang sudah disepakati, belum dibayar (Rp)", min_value=0, step=500_000, key=f"budget_commit_{pid}")
+                    forecast_remaining = st.number_input("Perkiraan biaya tersisa yang belum dikomitmen (Rp)", min_value=0, step=500_000, key=f"budget_forecast_{pid}")
+                with b2:
+                    budget_vendor = st.text_input("Vendor / kontraktor (opsional)", key=f"budget_vendor_{pid}")
+                    budget_has_due = st.checkbox("Ada tanggal jatuh tempo", key=f"budget_has_due_{pid}")
+                    budget_due_date = st.date_input("Tanggal jatuh tempo", value=date.today(), disabled=not budget_has_due, key=f"budget_due_{pid}")
+                budget_confirm = st.checkbox("Saya sudah memeriksa anggaran, komitmen dan forecast yang akan disimpan.", key=f"budget_confirm_{pid}")
+                add_budget = st.form_submit_button("Tambah item anggaran", type="primary", use_container_width=True)
+            if add_budget:
+                if not budget_confirm:
+                    st.warning("Centang konfirmasi setelah memeriksa seluruh angka.")
+                elif not budget_scope_text:
+                    st.warning("Item/lingkup anggaran wajib dipilih atau ditulis.")
+                elif budget_amount <= 0 and committed_unpaid <= 0 and forecast_remaining <= 0:
+                    st.warning("Isi minimal salah satu: anggaran, komitmen, atau forecast.")
+                else:
+                    budget_rec = {
+                        "budget_item_id": new_id("BUD"), "property_id": pid,
+                        "category": budget_category, "subcategory": budget_subcategory,
+                        "description": budget_scope_text, "budget_amount": budget_amount,
+                        "committed_unpaid": committed_unpaid, "forecast_remaining": forecast_remaining,
+                        "due_date": budget_due_date.isoformat() if budget_has_due else "", "vendor": budget_vendor, "status": "Active",
+                        "updated_at": iso_now(), "payload": {"entry_source": "ACTIVE_PROPERTY_BUDGET", "item_scope": budget_scope_text},
+                    }
+                    upsert_record("PROJECT_BUDGETS", "budget_item_id", budget_rec)
+                    log_event("PROJECT_BUDGET", budget_rec["budget_item_id"], "ADDED", {"property_id": pid, "category": budget_category, "subcategory": budget_subcategory, "item_scope": budget_scope_text})
+                    for field_key in [f"budget_scope_custom_{pid}", f"budget_amount_{pid}", f"budget_commit_{pid}", f"budget_forecast_{pid}", f"budget_vendor_{pid}", f"budget_has_due_{pid}", f"budget_due_{pid}", f"budget_confirm_{pid}"]:
+                        st.session_state.pop(field_key, None)
+                    st.success("Item anggaran berhasil ditambahkan. Formulir dikosongkan untuk item berikutnya.")
+                    cached_read.clear(); st.rerun()
 
-        st.markdown("### 5. Riwayat pembayaran proyek")
-        if active_actual_rows:
-            actual_display = pd.DataFrame(active_actual_rows)
-            display_cols = [c for c in ["transaction_date", "category", "subcategory", "description", "vendor", "amount", "payment_method", "receipt_url", "budget_item_id"] if c in actual_display.columns]
-            st.dataframe(actual_display[display_cols], use_container_width=True, hide_index=True, column_config={"amount": st.column_config.NumberColumn("Jumlah dibayar", format="Rp %.0f")})
-        else:
-            st.info("Belum ada transaksi biaya aktual. Masukkan pembayaran yang sudah benar-benar dilakukan di bagian Realisasi Biaya.")
         st.markdown("### 6. Milestone proyek")
         milestones = [m for m in read_table("PROJECT_MILESTONES") if m.get("property_id") == pid]
         if milestones: st.dataframe(pd.DataFrame(milestones), use_container_width=True, hide_index=True)
-        with st.form("milestone_form_v110"):
-            m1, m2, m3 = st.columns(3)
-            with m1: milestone_stage = st.selectbox("Tahap milestone", PROJECT_STAGES)
-            with m2: milestone_status = st.selectbox("Status milestone", ["Not Started", "In Progress", "Completed", "Delayed"])
-            with m3: milestone_planned = st.text_input("Tanggal rencana (YYYY-MM-DD)")
-            milestone_actual = st.text_input("Tanggal aktual (YYYY-MM-DD)")
-            milestone_note = st.text_input("Catatan milestone")
+        with st.form(f"milestone_form_v111_{pid}"):
+            m1, m2 = st.columns(2)
+            with m1:
+                milestone_stage = st.selectbox("Tahap milestone", PROJECT_STAGES)
+                has_planned = st.checkbox("Tanggal rencana tersedia", key=f"milestone_has_planned_{pid}")
+                milestone_planned_value = st.date_input("Tanggal rencana", value=date.today(), disabled=not has_planned, key=f"milestone_planned_{pid}")
+            with m2:
+                milestone_status = st.selectbox("Status milestone", ["Not Started", "In Progress", "Completed", "Delayed"])
+                has_actual = st.checkbox("Tanggal aktual tersedia", key=f"milestone_has_actual_{pid}")
+                milestone_actual_value = st.date_input("Tanggal aktual", value=date.today(), disabled=not has_actual, key=f"milestone_actual_{pid}")
+            milestone_note = st.text_input("Catatan milestone", key=f"milestone_note_{pid}")
+            milestone_confirm = st.checkbox("Saya sudah memeriksa tahap dan tanggal milestone.", key=f"milestone_confirm_{pid}")
             save_milestone = st.form_submit_button("Simpan milestone")
-        if save_milestone:
+        if save_milestone and not milestone_confirm:
+            st.warning("Centang konfirmasi setelah memeriksa milestone.")
+        if save_milestone and milestone_confirm:
+            milestone_planned = milestone_planned_value.isoformat() if has_planned else ""
+            milestone_actual = milestone_actual_value.isoformat() if has_actual else ""
             rec = {"milestone_id": new_id("MIL"), "property_id": pid, "stage": milestone_stage, "status": milestone_status, "planned_date": milestone_planned, "actual_date": milestone_actual, "notes": milestone_note, "updated_at": iso_now()}
             if repo: repo.save_milestone(rec); cached_read.clear()
             else:
@@ -1693,7 +1911,10 @@ elif page == "Active Properties":
                 else: milestones_local[match] = {**milestones_local[match], **rec}
             payload["project_stage"] = milestone_stage
             upsert_record("PROPERTIES", "property_id", {**p, "updated_at": iso_now(), "payload": payload, "lifecycle_status": "ACTIVE"})
-            st.success("Milestone tersimpan."); st.rerun()
+            log_event("PROJECT_MILESTONE", rec["milestone_id"], "SAVED", {"property_id": pid, "stage": milestone_stage, "status": milestone_status})
+            for field_key in [f"milestone_has_planned_{pid}", f"milestone_planned_{pid}", f"milestone_has_actual_{pid}", f"milestone_actual_{pid}", f"milestone_note_{pid}", f"milestone_confirm_{pid}"]:
+                st.session_state.pop(field_key, None)
+            st.success("Milestone tersimpan. Formulir dikosongkan untuk milestone berikutnya."); st.rerun()
 
         st.markdown("### 7. Penjualan / closing")
         with st.form("closing_form_v109"):
@@ -1708,10 +1929,12 @@ elif page == "Active Properties":
                 total_months = st.number_input("Total holding aktual (bulan)", min_value=0.0, step=0.5)
                 actual_costs_confirmed = st.checkbox("Saya memastikan seluruh biaya aktual proyek sudah dicatat.")
             closing_notes = st.text_input("Catatan closing")
+            closing_confirm = st.checkbox("Saya yakin ingin menandai properti ini SOLD / CLOSED.")
             close = st.form_submit_button("Tandai SOLD / CLOSED")
         if close:
             if closing_price <= 0: st.error("Harga closing wajib diisi.")
             elif not actual_costs_confirmed: st.error("Konfirmasi kelengkapan biaya aktual diperlukan agar profit dan ROI closing tidak menyesatkan.")
+            elif not closing_confirm: st.error("Centang konfirmasi sebelum mengubah lifecycle menjadi SOLD.")
             else:
                 closing = {"property_id": pid, "sold_date": sold_date.isoformat(), "listing_start_date": listing_start.isoformat(), "closing_price": closing_price, "selling_cost_actual": selling_actual, "total_holding_months": total_months, "notes": closing_notes, "updated_at": iso_now(), "payload": {"closing_price": closing_price}}
                 upsert_record("SALES_CLOSING", "property_id", closing)
