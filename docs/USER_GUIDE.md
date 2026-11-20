@@ -106,3 +106,22 @@ Kategori Auto dengan kondisi yang belum diketahui hanya menampilkan inspeksi/per
 ## Error penyimpanan Google Sheets (V1.0.7)
 
 PFMS mengompresi JSON panjang pada kolom `*_json` agar satu sel tidak melewati batas Google Sheets sekitar 50.000 karakter. Aplikasi membaca/dekompresi otomatis; jangan mengedit isi marker `__PFMS_GZIP_JSON_V1__:` secara manual. Jika penulisan tetap gagal, baca HTTP status dan pesan Google yang ditampilkan aplikasi. Untuk 403, periksa akses Editor Service Account dan proteksi sheet; untuk 400/range, periksa tab/header; untuk grid limit, tambahkan baris worksheet. Setelah kegagalan simpan multi-tab, periksa Database & History sebelum mencoba ulang karena sebagian tab mungkin sudah berhasil ditulis.
+
+
+## Mendaftarkan proyek yang sudah berjalan (V1.0.9)
+
+Gunakan menu **Daftarkan proyek berjalan** untuk properti yang sudah dimenangkan/diperoleh, termasuk sebelum PFMS dipakai. Isi identitas objek, harga perolehan, tanggal, tahap saat ini, dan kondisi/progres. Jangan memasukkannya kembali sebagai objek lelang baru hanya untuk membuat record proyek. Jika sebuah prospect sudah ada di PFMS, gunakan kode lot yang sama agar Project Onboarding dapat menggabungkannya dan mempertahankan snapshot analisis lama.
+
+Pada tabel **Realisasi biaya historis**, masukkan hanya uang yang benar-benar sudah dibayar. Harga menang/perolehan adalah informasi; pembayaran pembeliannya dimasukkan sekali pada ledger aktual. Jika deposit menjadi bagian harga menang, total deposit + pelunasan harus sama dengan harga menang, bukan harga menang ditambah deposit.
+
+Pada tabel **Anggaran dan biaya yang masih harus diselesaikan**, masukkan per item: budget total, komitmen belum dibayar (sudah disepakati), dan forecast belum dikomitmen. Jangan masukkan pengeluaran yang sudah dibayar ke dua kolom outstanding.
+
+Setelah proyek tersimpan, buka **Properti aktif**. Catat pembayaran satu per satu dan hubungkan ke item budget bila sesuai. Pilih apakah pembayaran mengurangi komitmen, forecast, atau merupakan pengeluaran di luar budget. Periksa riwayat pembayaran, item yang belum tertaut, total aktual, komitmen, forecast, dan proyeksi biaya sampai siap dipasarkan. Komitmen proyek aktif secara otomatis mengurangi kas siap investasi; jangan mencatat komitmen yang sama lagi sebagai Cashflow Event.
+
+Lihat juga `PROJECT_ONBOARDING_AND_LEDGER_V1.0.9.md` untuk definisi data dan cara menghindari penghitungan ganda.
+
+## Review pasar dengan Gemini (V1.0.9)
+
+Masukkan comparable yang tersedia, meskipun hanya beberapa dan sebagian kolom tidak diketahui. Sistem dapat menghitung indikasi awal jika harga dan minimal satu basis luas dapat dinormalisasi. Klik **Evaluasi kualitas & penyesuaian listing dengan Gemini** untuk mendapat review kesetaraan, gap data, risiko duplikasi/outlier, dan saran penyesuaian. Baca alasan setiap saran; terapkan hanya jika sesuai fakta. Hasil AI bukan verifikasi transaksi.
+
+Tanggal ditemukan adalah tanggal pengguna mengumpulkan listing; tanggal publikasi iklan adalah field terpisah dan boleh kosong. Lima URL listing individual dan tanggal ditemukan tetap diperlukan untuk GO final. Jika jumlah data sedikit atau tersebar, ARV konservatif akan mendapat haircut ketidakpastian lebih besar. Sistem tidak akan mengarang ARV bila tidak ada harga atau dasar normalisasi sama sekali. NJOP hanya dikalibrasi ke indikasi pasar bila tersedia pasangan data harga dan NJOP dari minimal tiga comparable lokal; NJOP objek sendirian tidak dikalikan dengan rasio nasional yang tidak terbukti.

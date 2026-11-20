@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.0.9] - 2026-11-20
+
+### Added
+- Project Onboarding for properties already won/acquired before PFMS adoption; preserves existing analysis snapshots when merging a stored prospect.
+- Project Financial Ledger with separate Actual Paid, Committed Unpaid, Forecast Remaining, and risk reserve concepts.
+- Active-project budget lines, budget-vs-actual summaries, transaction linking, and automatic reduction of a selected unpaid budget bucket when recording payment.
+- New `PROJECT_BUDGETS` Google Sheets tab and additive detail columns in `COST_ACTUALS`; updated workbook template.
+- Optional Gemini market-comparable review with bounded, explainable suggestions that require explicit user approval before Python recalculates ARV.
+- Wider data-uncertainty range and conservative haircut for small/dispersed comparable samples; extreme observations remain visible and are down-weighted for review.
+
+### Changed
+- Market publication date is distinct from user capture date; missing publication date is uncertainty, not a standalone GO hard stop. Five traceable individual URLs with capture dates plus confidence threshold remain required for GO.
+- Active-project projected completion cost excludes selling costs; selling cash commitments/forecast remain separately identifiable.
+
+### Compatibility
+- Existing auction-analysis workflow, Google Sheets tab names, and existing column order remain intact. New sheet/columns are additive.
+- Existing financial acquisition/profit/ROI formulae remain in place; ARV inputs are now more conservative when evidence is sparse.
+
+### Verification
+- `python -m compileall -q .`: passed.
+- `pytest -q`: 92 passed.
+- Live Google Sheets migration and live Gemini API calls were not run in this environment.
+
 ## V1.0.7
 - Compress long JSON cells using a versioned gzip/base64 marker and transparently decode on read to stay below Google Sheets per-cell character limits.
 - Add preflight validation for overlong non-JSON cells.

@@ -87,6 +87,20 @@ def _weighted_median(values: list[tuple[float, float]]) -> float:
     return ordered[-1][0]
 
 
+def _percentile(values: list[float], percentile: float) -> float:
+    """Linear-interpolated percentile for small comparable samples."""
+    clean = sorted(float(v) for v in values if v is not None)
+    if not clean:
+        return 0.0
+    if len(clean) == 1:
+        return clean[0]
+    pos = max(0.0, min(1.0, percentile / 100.0)) * (len(clean) - 1)
+    lo = int(pos)
+    hi = min(len(clean) - 1, lo + 1)
+    frac = pos - lo
+    return clean[lo] * (1 - frac) + clean[hi] * frac
+
+
 def assess_comparables(
     comparables: list[dict[str, Any]],
     subject: dict[str, Any],
@@ -102,8 +116,16 @@ def assess_comparables(
         ok, errors = validate_comparable(row)
         if not ok:
             invalid.append({"name": row.get("name", "(tanpa nama)"), "errors": errors}); continue
+        if bool(row.get("ai_exclude_from_primary", False)):
+            invalid.append({"name": row.get("name", "(tanpa nama)"), "errors": ["dikeluarkan dari indikasi utama setelah pengguna meninjau saran AI"]})
+            continue
         url_key = normalize_text(row.get("source_url")) if not is_blank(row.get("source_url")) else ""
-        fallback_key = "|".join([normalize_text(row.get("name")), str(row.get("price")), str(row.get("land_area")), str(row.get("building_area"))])
+        fallback_key = "|".join([
+            normalize_text(row.get("address") or row.get("name")),
+            str(round(to_float(row.get("price")) / 1_000_000)),
+            str(round(to_float(row.get("land_area")))),
+            str(round(to_float(row.get("building_area")))),
+        ])
         key = url_key or fallback_key
         if key in seen:
             invalid.append({"name": row.get("name"), "errors": ["duplikat URL/listing"]}); continue
@@ -183,14 +205,37 @@ def assess_comparables(
             "base_exit": None, "comparable_base_exit": None, "njop_indicated_exit": None,
             "njop_comparable_count": 0, "njop_market_ratio": None, "subject_njop": subject_njop or None,
             "njop_weight_pct_used": 0.0, "conservative_exit": None, "optimistic_exit": None,
+            "market_range_low": None, "market_range_high": None, "data_uncertainty_discount_pct": None,
+            "conservative_discount_used_pct": None, "dispersion_iqr_pct": None,
             "confidence": 0, "status": "INSUFFICIENT_DATA", "median_adjusted": None,
             "direct_url_count": 0, "individual_listing_url_count": 0,
             "listing_date_missing_count": 0, "date_found_missing_count": 0,
             "unconfirmed_url_count": 0, "quality_notes": [],
         }
+    normalized_values = [float(r["subject_normalized_value"]) for r in rows]
+    q25 = _percentile(normalized_values, 25)
+    q50 = _percentile(normalized_values, 50)
+    q75 = _percentile(normalized_values, 75)
+    iqr = max(0.0, q75 - q25)
+    # Flag extreme observations for transparency and down-weight them. They are
+    # retained in the audit table; they are not silently deleted.
+    if count >= 5 and iqr > 0:
+        lower_fence, upper_fence = q25 - 1.5 * iqr, q75 + 1.5 * iqr
+        for row in rows:
+            value = to_float(row.get("subject_normalized_value"))
+            row["outlier_flag"] = value < lower_fence or value > upper_fence
+            if row["outlier_flag"]:
+                row["weight"] = round(max(0.01, to_float(row.get("weight")) * 0.35), 3)
+                row["valuation_note"] = "Observasi jauh dari rentang mayoritas; bobot diturunkan, perlu pemeriksaan manual."
+            else:
+                row["outlier_flag"] = False
+    else:
+        for row in rows:
+            row["outlier_flag"] = False
+            row["valuation_note"] = ""
     weighted = [(r["subject_normalized_value"], r["weight"]) for r in rows]
     comparable_base = _weighted_median(weighted)
-    simple_median = median([r["subject_normalized_value"] for r in rows])
+    simple_median = median(normalized_values)
 
     # NJOP is not market value and is never converted using an arbitrary national
     # multiplier. It is used as a secondary calibrated reference only when at least
@@ -205,13 +250,35 @@ def assess_comparables(
     njop_indicated = subject_njop * njop_market_ratio if subject_njop > 0 and njop_market_ratio else None
     njop_weight_used = max(0.0, min(25.0, to_float(njop_market_weight_pct))) if njop_indicated is not None else 0.0
     base = comparable_base * (1 - njop_weight_used / 100) + (njop_indicated or 0) * (njop_weight_used / 100)
-    dispersion = (max(r["subject_normalized_value"] for r in rows) - min(r["subject_normalized_value"] for r in rows)) / max(comparable_base, 1)
+    # Use the full range for very small samples and IQR for larger samples. This
+    # makes random/outlying listings visible instead of trusting their mean.
+    spread = ((max(normalized_values) - min(normalized_values)) if count < 4 else iqr)
+    dispersion = spread / max(comparable_base, 1)
+    dispersion_iqr_pct = (iqr / max(comparable_base, 1)) * 100
     avg_score = sum(r["similarity_score"] for r in rows) / count
-    confidence = max(0, min(100, avg_score - max(0, dispersion - 0.25) * 40 + min(10, count)))
+    sample_score = min(18.0, count * 3.0)
+    dispersion_penalty = min(28.0, max(0.0, dispersion - 0.15) * 35.0)
+    confidence = max(0.0, min(100.0, avg_score * 0.55 + sample_score - dispersion_penalty))
     land_unit_median = median([r["land_unit_price"] for r in rows if r.get("land_unit_price")]) if any(r.get("land_unit_price") for r in rows) else None
     building_unit_median = median([r["building_unit_price"] for r in rows if r.get("building_unit_price")]) if any(r.get("building_unit_price") for r in rows) else None
-    conservative = base * (1 - quick_sale_discount_pct / 100)
-    optimistic = base * 1.05
+    # Data uncertainty is separate from the user's quick-sale preference. Sparse
+    # or dispersed evidence gets a wider conservative haircut; the output remains
+    # indicative, not a probabilistic appraisal.
+    if count == 1: sample_uncertainty = 24.0
+    elif count == 2: sample_uncertainty = 18.0
+    elif count == 3: sample_uncertainty = 14.0
+    elif count == 4: sample_uncertainty = 11.0
+    elif count == 5: sample_uncertainty = 9.0
+    else: sample_uncertainty = max(5.0, 9.0 - (count - 5) * 0.5)
+    quality_uncertainty = max(0.0, (85.0 - avg_score) * 0.06)
+    spread_uncertainty = min(12.0, max(0.0, dispersion * 18.0))
+    data_uncertainty_discount = min(35.0, sample_uncertainty + quality_uncertainty + spread_uncertainty)
+    conservative_discount_used = max(0.0, min(40.0, max(to_float(quick_sale_discount_pct), data_uncertainty_discount)))
+    conservative = base * (1 - conservative_discount_used / 100)
+    optimistic_uplift = min(25.0, max(5.0, data_uncertainty_discount * 0.65))
+    optimistic = base * (1 + optimistic_uplift / 100)
+    market_range_low = min(q25 if q25 > 0 else base, conservative)
+    market_range_high = max(q75 if q75 > 0 else base, optimistic)
     direct_url_count = sum(1 for r in rows if str(r.get("source_url") or "").startswith(("http://", "https://")))
     individual_listing_url_count = sum(1 for r in rows if str(r.get("source_url_scope") or "") == "Listing individual")
     # GO-grade evidence must be traceable to an individual source listing and carry
@@ -246,6 +313,12 @@ def assess_comparables(
         "njop_comparable_count": len(njop_pairs), "njop_market_ratio": round(njop_market_ratio, 4) if njop_market_ratio is not None else None,
         "subject_njop": subject_njop or None, "njop_weight_pct_used": njop_weight_used,
         "conservative_exit": round(conservative), "optimistic_exit": round(optimistic),
+        "market_range_low": round(market_range_low), "market_range_high": round(market_range_high),
+        "data_uncertainty_discount_pct": round(data_uncertainty_discount, 1),
+        "conservative_discount_used_pct": round(conservative_discount_used, 1),
+        "dispersion_iqr_pct": round(dispersion_iqr_pct, 1),
+        "valuation_method": "Weighted median + normalized land/building indicators + NJOP calibration (if paired local data exists)",
+        "valuation_note": "ARV indikatif. Haircut konservatif meningkat saat sampel sedikit, data tersebar, atau kualitas sumber lemah. Bukan appraisal dan bukan kepastian harga transaksi.",
         "confidence": round(confidence, 1), "simple_median": round(simple_median),
         "land_unit_price_median": round(land_unit_median) if land_unit_median else None,
         "building_unit_price_median": round(building_unit_median) if building_unit_median else None,

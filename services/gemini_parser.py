@@ -99,6 +99,26 @@ class ComparableExtraction(BaseModel):
     parsing_notes: list[str] = Field(default_factory=list)
 
 
+
+
+class MarketComparableJudgement(BaseModel):
+    source_index: int = Field(ge=1, le=20)
+    relevance_score: int = Field(default=50, ge=0, le=100)
+    suggested_adjustment_pct: float = Field(default=0.0, ge=-20.0, le=20.0)
+    exclude_from_primary: bool = False
+    reason: str = ""
+    data_gaps: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+
+
+class MarketIntelligenceReview(BaseModel):
+    overall_assessment: str = ""
+    market_segment: Optional[str] = None
+    key_value_drivers: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    items: list[MarketComparableJudgement] = Field(default_factory=list)
+
+
 class RenovationRabItem(BaseModel):
     """One AI-selected RAB item; deterministic Python quantity hints take priority."""
     item_code: Optional[str] = None
@@ -679,3 +699,80 @@ def parse_comparable_narrative(api_key: str, narrative: str, model: str = DEFAUL
         "api_calls": (expected_count + batch_size - 1) // batch_size,
     }
 
+
+
+def assess_market_with_ai(
+    api_key: str,
+    model: str,
+    subject: dict[str, Any],
+    comparables: list[dict[str, Any]],
+    python_market_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Review comparable quality and propose bounded, evidence-based adjustments.
+
+    Gemini is not asked to invent a final ARV or transaction prices. Python remains
+    responsible for the numeric valuation. Suggestions are advisory and require
+    explicit user application in the comparable table.
+    """
+    rows = [dict(x) for x in (comparables or []) if isinstance(x, dict)]
+    if not rows:
+        raise ValueError("Belum ada data listing untuk dievaluasi.")
+    if len(rows) > 20:
+        raise ValueError("Evaluasi AI dibatasi 20 listing per permintaan. Pilih/pecah data menjadi kelompok yang lebih kecil.")
+    compact_rows = []
+    for idx, row in enumerate(rows, start=1):
+        compact_rows.append({
+            "source_index": idx, "name": row.get("name"), "address": row.get("address"),
+            "complex_name": row.get("complex_name"), "price_rp": row.get("price"),
+            "price_type": row.get("price_type"), "land_area_m2": row.get("land_area"),
+            "building_area_m2": row.get("building_area"), "bedrooms": row.get("bedrooms"),
+            "bathrooms": row.get("bathrooms"), "condition": row.get("condition"),
+            "condition_detail": row.get("condition_detail"), "access": row.get("access"),
+            "access_detail": row.get("access_detail"), "certificate": row.get("certificate"),
+            "njop_rp": row.get("njop"), "listing_date": row.get("listing_date"),
+            "date_found": row.get("date_found"), "source_platforms": row.get("source_platforms"),
+            "source_url_scope": row.get("source_url_scope"), "notes": row.get("notes"),
+        })
+    prompt = f"""Anda adalah analis pasar properti residensial Indonesia. Lakukan peer review terhadap data pembanding yang diberikan.
+
+OBJEK TARGET (fakta yang diberikan pengguna):
+{json.dumps(subject, ensure_ascii=False, default=str)}
+
+HASIL AWAL PYTHON (untuk mengkritisi, bukan untuk ditiru):
+{json.dumps(python_market_result or {}, ensure_ascii=False, default=str)}
+
+DATA COMPARABLE (source_index adalah nomor baris; jangan mengubah identitas):
+{json.dumps(compact_rows, ensure_ascii=False, default=str)}
+
+ATURAN KETAT:
+1. Gunakan hanya fakta yang ada pada input. Jangan membuat transaksi, harga deal, tanggal, ukuran, kondisi, lokasi, atau URL baru.
+2. Harga listing bukan harga transaksi. Harga bertanda sold tanpa bukti tetap tidak terverifikasi.
+3. Nilai setiap listing terhadap properti target: kemiripan lokasi, LT/LB, tipe, kondisi, legalitas, akses, dan kualitas sumber.
+4. Berikan suggested_adjustment_pct terhadap HARGA PEMBANDING agar lebih setara dengan target: positif bila pembanding terlihat inferior sehingga harga pembanding perlu dinaikkan; negatif bila pembanding superior sehingga harga pembanding perlu diturunkan.
+5. Hanya sarankan penyesuaian jika perbedaannya eksplisit pada input. Jika datanya tidak cukup, adjustment harus 0 dan jelaskan data gap. Jangan menyamarkan ketidaktahuan sebagai presisi. Batas penyesuaian -20% sampai +20%.
+6. Tandai exclude_from_primary hanya untuk listing yang jelas duplikat, beda segmen/lokasi secara material, harga tidak masuk akal dibanding input lain, atau bukan properti pembanding. Jelaskan alasannya. Jangan mengecualikan hanya karena datanya tidak lengkap; turunkan relevance dan catat gap.
+7. Jangan menghitung atau mengusulkan ARV akhir, jangan menyebut angka transaksi aktual yang tidak tersedia. Tugas Python menghitung dari data yang telah ditinjau.
+8. relevance_score adalah skor kualitas/kecocokan relatif 0-100, bukan probabilitas.
+9. Output satu item untuk setiap source_index yang relevan, tanpa mengarang listing baru.
+
+Berikan overall_assessment singkat, market_segment jika bisa disimpulkan, faktor pendorong nilai dan limitations."""
+    raw = _client_call(api_key, model or DEFAULT_MODEL, prompt, schema=MarketIntelligenceReview, max_output_tokens=2400)
+    try:
+        result = MarketIntelligenceReview.model_validate_json(str(raw)).model_dump()
+    except Exception as exc:
+        raise RuntimeError(f"Hasil evaluasi pasar AI tidak sesuai skema: {exc}. Respons awal: {str(raw)[:350]}") from exc
+    seen = set()
+    clean_items = []
+    for item in result.get("items", []):
+        idx = int(item.get("source_index") or 0)
+        if idx < 1 or idx > len(rows) or idx in seen:
+            continue
+        seen.add(idx)
+        item["suggested_adjustment_pct"] = max(-20.0, min(20.0, float(item.get("suggested_adjustment_pct") or 0)))
+        clean_items.append(item)
+    result["items"] = clean_items
+    result["model"] = model or DEFAULT_MODEL
+    result["input_count"] = len(rows)
+    result["returned_count"] = len(clean_items)
+    result["warning"] = "Saran AI bukan data transaksi atau appraisal. Periksa alasan setiap penyesuaian sebelum menerapkannya; Python tetap menghitung ARV."
+    return result

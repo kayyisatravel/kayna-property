@@ -109,3 +109,45 @@ def test_subject_njop_is_not_applied_without_three_comparable_njop_pairs():
     assert market["njop_indicated_exit"] is None
     assert market["njop_weight_pct_used"] == 0
     assert market["base_exit"] == market["comparable_base_exit"]
+
+
+def test_sparse_sample_produces_indicative_arv_with_wider_uncertainty_range():
+    row = comp(101)
+    row["source_url_scope"] = "Listing individual"
+    market = assess_comparables([row], {"land_area": 100, "building_area": 90})
+    assert market["status"] == "PRELIMINARY"
+    assert market["valid_count"] == 1
+    assert market["base_exit"] > 0
+    assert market["conservative_exit"] < market["base_exit"]
+    assert market["market_range_low"] <= market["base_exit"] <= market["market_range_high"]
+    assert market["conservative_discount_used_pct"] >= 24
+    assert market["confidence"] < 65
+
+
+def test_more_consistent_comparables_reduce_uncertainty_haircut():
+    one = assess_comparables([comp(1)], {"land_area": 100, "building_area": 90})
+    many_rows = [comp(i) for i in range(1, 7)]
+    for row in many_rows:
+        row["source_url_scope"] = "Listing individual"
+    many = assess_comparables(many_rows, {"land_area": 100, "building_area": 90})
+    assert many["data_uncertainty_discount_pct"] < one["data_uncertainty_discount_pct"]
+
+
+def test_ai_exclusion_is_applied_only_when_flag_is_explicitly_true():
+    rows = [comp(1), comp(2)]
+    rows[0]["ai_exclude_from_primary"] = True
+    market = assess_comparables(rows, {"land_area": 100, "building_area": 90})
+    assert market["valid_count"] == 1
+    assert any("dikeluarkan dari indikasi utama" in " ".join(x["errors"]) for x in market["invalid"])
+
+
+def test_outlier_is_flagged_and_downweighted_not_silently_removed():
+    rows = [comp(i) for i in range(1, 6)]
+    for row in rows:
+        row["source_url_scope"] = "Listing individual"
+    rows[-1]["price"] = 1_200_000_000
+    market = assess_comparables(rows, {"land_area": 100, "building_area": 90})
+    assert market["valid_count"] == 5
+    outliers = [row for row in market["valid"] if row.get("outlier_flag")]
+    assert outliers
+    assert outliers[0]["weight"] < outliers[0]["similarity_score"] / 100
