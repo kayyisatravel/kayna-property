@@ -1,3 +1,26 @@
+## [1.0.13] - 2026-11-21
+
+### Added
+- Optional focused Gemini unit-rate pass for user-provided BoQ rows that remain unpriced after the initial visual RAB call.
+- Separate three-band unit-rate estimates (low/conservative/high); conservative rate remains the value used by Python.
+- Detailed documentation for user BoQ pricing and analysis-to-active lifecycle integration.
+
+### Fixed
+- Gemini RAB rows can now map to user-supplied BoQ by exact normalized work-item name when the model omits the stable item code; Python still preserves the user's quantity and unit.
+- Prevent a user BoQ row matched by name from being re-injected as a duplicate unpriced row.
+- Assumption-based interior ceiling repair remains conditional even if its description mentions water ingress; it is not treated as observed interior damage.
+- Dashboard and active project views consume the analysis-derived opening budget when a stored prospect becomes WON/ACTIVE, while preserving the original pre-bid decision and cash snapshot as history.
+
+### Compatibility
+- No Google Sheets tab names or existing data columns are removed or renamed.
+- Existing `PROJECT_BUDGETS`, `COST_ACTUALS`, `PROPERTIES` and analysis snapshots are reused; no destructive migration.
+- Manual/onboarding budgets are not merged automatically with analysis baselines, to prevent double counting.
+
+### Verification
+- `python -m compileall -q .`: passed.
+- `pytest -q`: 136 passed.
+- Live Google Sheets, Streamlit Cloud and Gemini API calls were not run in this environment.
+
 # Changelog
 
 ## [1.0.12] - 2026-11-21

@@ -1,8 +1,18 @@
-# Property Flipper Management System (PFMS) — V1.0.12
+# Property Flipper Management System (PFMS) — V1.0.13
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.13 — User BoQ Pricing Reliability & Analysis-to-Active Integration
+
+- Preserve detailed user BoQ rows and match Gemini unit rates by stable item code or exact normalized work-item name.
+- Add an optional one-call Gemini price-only pass for missing user BoQ rates; quantity, unit and scope are unchanged.
+- Separate assumption-based interior/MEP works from visible/confirmed base RAB items.
+- Show geometry mismatch warnings without rewriting property area facts or scaling user quantities.
+- When a stored analyzed prospect becomes WON/ACTIVE, seed an opening project budget from the analysis snapshot using the actual winning price if no manual budget already exists.
+- Preserve pre-bid decision and cash as historical evidence; display current liquidity separately from Investor Cashflow.
+- Existing Google Sheets tab names and financial formulae are preserved.
 
 ## V1.0.12 — RAB Evidence Guardrails & Auction Bid Logic Audit
 

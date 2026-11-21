@@ -77,11 +77,7 @@ def _infer_renovation_category_with_basis(
     """
     selected_category = _normalise_renovation_category(selected)
     if selected_category and selected_category != "Auto sesuai kondisi umum":
-        return selected_category, "Pilihan kategori oleh pengguna"
-
-    physical_category = _normalise_renovation_category(physical_condition)
-    if physical_category:
-        return physical_category, "Kondisi fisik yang dipilih pengguna"
+        return selected_category, "Pilihan kategori RAB yang dikonfirmasi pengguna"
 
     clean = re.sub(r"[\*_`]+", "", str(condition_description or "")).strip()
     # Prefer an explicit statement about the primary category, usually near the
@@ -95,6 +91,14 @@ def _infer_renovation_category_with_basis(
         match = re.search(pattern, clean[:1800], flags=re.IGNORECASE)
         if match:
             return _normalise_renovation_category(match.group(1)) or "Auto sesuai kondisi umum", "Pernyataan kategori utama dalam deskripsi"
+
+    # A generic survey-condition dropdown may be a default/quick description.
+    # When the detailed RAB narrative states a primary class, that explicit
+    # classification wins. Only use the generic physical-condition value when
+    # the narrative itself does not state a renovation class.
+    physical_category = _normalise_renovation_category(physical_condition)
+    if physical_category:
+        return physical_category, "Kondisi fisik yang dipilih pengguna (tidak ada kategori lebih spesifik dalam deskripsi)"
 
     lower = clean.lower()
     # Risk/caveat sections often mention more severe future possibilities. Exclude
