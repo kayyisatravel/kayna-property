@@ -84,8 +84,10 @@ def _infer_renovation_category_with_basis(
     # beginning of the property description. Do not scan risk notes as if they
     # describe current physical damage.
     primary_patterns = [
-        r"(?:masuk\s+dalam\s+kategori|masuk\s+kategori|kategori(?:\s+renovasi)?|kelas\s+renovasi)\s*(?:adalah|:|-)?\s*(renovasi\s+(?:kosmetik|ringan|sedang|berat))",
-        r"(?:kondisi\s+bangunan|tingkat\s+renovasi)\s*(?:adalah|:|-)?\s*(renovasi\s+(?:kosmetik|ringan|sedang|berat))",
+        # Common user wording in property reports, including "Kategori Kondisi: Renovasi Sedang".
+        r"kategori\s*(?:kondisi|fisik|renovasi|utama)?\s*(?:properti)?\s*(?:adalah|:|-)?\s*(renovasi\s+(?:kosmetik|ringan|sedang|berat))",
+        r"(?:masuk\s+dalam\s+kategori|masuk\s+kategori|kelas\s+renovasi)\s*(?:adalah|:|-)?\s*(renovasi\s+(?:kosmetik|ringan|sedang|berat))",
+        r"(?:kondisi\s+(?:bangunan|fisik)|tingkat\s+renovasi)\s*(?:utama)?\s*(?:adalah|:|-)?\s*(renovasi\s+(?:kosmetik|ringan|sedang|berat))",
     ]
     for pattern in primary_patterns:
         match = re.search(pattern, clean[:1800], flags=re.IGNORECASE)

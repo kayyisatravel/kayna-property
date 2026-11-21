@@ -195,3 +195,10 @@
 - Market confidence >=55 remains the hard threshold; scores below 70 display quality warnings without independently blocking GO.
 ### Fixed
 - Cost and risk review confirmations persist across Streamlit reruns and reset only when their underlying reviewed data changes.
+
+## V1.0.14 — 2026-11-21
+- Fixed BoQ parser for Excel/Google Sheets tab-separated paste and flattened plain rows.
+- Fixed category inference for explicit labels such as `Kategori Kondisi: Renovasi Sedang`.
+- Added pre-Gemini BoQ preview to catch parsing issues before API usage.
+- Bumped the RAB cache namespace so old parse results are not reused after this parser upgrade.
+- Preserved the user's customised Dashboard layout in the supplied `app.py`.

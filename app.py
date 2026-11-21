@@ -19,6 +19,7 @@ from core.onboarding import build_project_onboarding_records
 from core.market_engine import assess_comparables
 from core.form_state import form_state_from_input_data
 from core.review_state import sync_review_confirmation
+from core.user_boq import parse_user_boq_table
 from core.renovation_engine import CATEGORIES as RENOVATION_CATEGORIES, rab_item_is_in_scope, infer_renovation_category
 from core.calculator import calculate_project
 from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, estimate_renovation_rab, estimate_missing_boq_unit_rates, assess_market_with_ai, file_sha256
@@ -931,13 +932,20 @@ elif page == "New Auction Analysis":
         st.subheader("Biaya proyek dan target")
         rules = get_rules()
         st.markdown("### RAB renovasi — AI-assisted draft")
-        st.caption("Pilih kelas pekerjaan terlebih dahulu. Python menyiapkan scope dan rentang volume dari LT/LB, luas tapak (jika diketahui), jumlah lantai, tipe properti serta jumlah kamar. Gemini menilai foto/deskripsi dan mengusulkan harga satuan konservatif. Semua hasil tetap draft untuk diperiksa.")
+        st.caption("Masukkan deskripsi kondisi dan, bila tersedia, tabel BoQ berisi Item Pekerjaan, Estimasi Volume, dan Satuan. Volume BoQ pengguna dipertahankan; jika BoQ tidak diberikan, Python menyiapkan allowance awal dari LT/LB dan profil rumah. Gemini membantu menilai lingkup serta mengusulkan harga satuan. Semua hasil tetap draft untuk diperiksa.")
         set_default("na_renovation_category", "Auto sesuai kondisi umum")
         rab_category_options = RENOVATION_CATEGORIES
         if st.session_state.na_renovation_category not in rab_category_options: rab_category_options = rab_category_options + [st.session_state.na_renovation_category]
         st.selectbox("Kategori / lingkup RAB", rab_category_options, key="na_renovation_category", help="Pilih Auto agar kategori utama dalam deskripsi rinci dibaca AI/Python. Pilihan manual akan mengesampingkan kategori pada narasi. Untuk pekerjaan struktur, volume tetap wajib dari desain/engineer.")
         set_default("na_rab_condition_description", "")
-        st.text_area("Deskripsi kondisi aktual dan pekerjaan yang terlihat/diperlukan", key="na_rab_condition_description", height=115, placeholder="Deskripsi singkat cukup: misalnya rumah lama, cat mengelupas, atap perlu diganti, kamar mandi 1 unit perlu renovasi; interior sebagian belum diperiksa...")
+        st.text_area("Deskripsi kondisi aktual dan pekerjaan yang terlihat/diperlukan", key="na_rab_condition_description", height=115, placeholder="Tempel kondisi properti dan tabel BoQ. Format Markdown atau tabel yang disalin dari Excel/Google Sheets (tab-separated) didukung.")
+        boq_preview_rows = parse_user_boq_table(st.session_state.get("na_rab_condition_description", ""))
+        if boq_preview_rows:
+            st.success(f"BoQ terdeteksi sebelum analisis: {len(boq_preview_rows)} item. Nama pekerjaan, volume, dan satuan dari input Anda akan dipertahankan.")
+            with st.expander("Pratinjau BoQ yang akan dikirim ke Gemini", expanded=False):
+                st.dataframe(pd.DataFrame([{"Kelompok": r.get("subcategory"), "Item pekerjaan": r.get("work_item"), "Volume": r.get("quantity"), "Satuan": r.get("unit"), "Status awal": r.get("priority")} for r in boq_preview_rows]), use_container_width=True, hide_index=True)
+        elif any(token in st.session_state.get("na_rab_condition_description", "").lower() for token in ["estimasi volume", "item pekerjaan", "boq"]):
+            st.warning("Teks tampaknya memuat BoQ, tetapi belum ada baris yang terbaca. Pastikan header memuat Item Pekerjaan, Estimasi Volume, dan Satuan. Anda boleh memakai tabel Markdown dengan tanda | atau menempel langsung tabel Excel/Google Sheets yang dipisahkan tab.")
         available_rab_files: list[tuple[bytes, str, str]] = []
         if uploaded is not None:
             available_rab_files.append((uploaded.getvalue(), uploaded.type or "application/octet-stream", uploaded.name))
@@ -962,7 +970,7 @@ elif page == "New Auction Analysis":
                 "condition_description": st.session_state.get("na_rab_condition_description", ""),
             }
             rab_description = "\n".join(x for x in [st.session_state.na_rab_condition_description.strip(), "Deskripsi fasad: " + context["facade_description"] if context["facade_description"] else "", "Catatan survei: " + context["survey_notes"] if context["survey_notes"] else ""] if x)
-            cache_material = rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
+            cache_material = "RAB_PARSER_V1.0.14|" + rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
             cache_key = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
             cache = st.session_state.setdefault("na_rab_cache", {})
             try:
@@ -999,7 +1007,7 @@ elif page == "New Auction Analysis":
                             for unpriced_name in rab_estimate.get("user_boq_unpriced_items", []):
                                 st.write(f"• {unpriced_name}")
                 elif "estimasi volume" in str(st.session_state.get("na_rab_condition_description", "")).lower():
-                    st.error("Teks menyebut tabel estimasi volume, tetapi parser belum menemukan BoQ terstruktur. Pastikan tabel menggunakan format Markdown dengan kolom Item Pekerjaan, Estimasi Volume, dan Satuan; periksa kembali tabel hasil ekstraksi di area deskripsi.")
+                    st.error("BoQ belum terbaca. V1.0.14 mendukung tabel Markdown (|) dan tabel tab-separated hasil salin dari Excel/Google Sheets. Periksa header Item Pekerjaan, Estimasi Volume, Satuan serta setiap baris memiliki volume dan satuan.")
                 for category_note in rab_estimate.get("category_warnings", []):
                     st.warning(category_note)
                 for geometry_note in rab_estimate.get("geometry_warnings", []):

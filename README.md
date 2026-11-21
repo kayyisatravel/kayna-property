@@ -282,3 +282,7 @@ Long JSON snapshots are gzip-compressed and base64-encoded when stored in Sheets
 Google Sheets membatasi isi satu sel sekitar 50.000 karakter. Snapshot analisis yang disimpan dalam `PROPERTIES.payload_json` dapat membesar karena menyimpan input, comparable, RAB, risk register dan hasil kalkulasi. Mulai V1.0.7, JSON panjang dikompresi dengan gzip/base64 dan otomatis didekompresi saat dibaca. Tidak ada perubahan nama tab atau header. Jangan menurunkan versi aplikasi ke V1.0.6 setelah data terkompresi baru ditulis, karena versi lama belum mengenali marker kompresi.
 
 Jika Google API tetap menolak penulisan, UI menampilkan HTTP status dan pesan Google yang lebih spesifik beserta tab/range. Periksa pesan itu sebelum retry. Simpan analisis menulis ke beberapa tab secara berurutan dan Google Sheets tidak menyediakan transaksi lintas-tab; setelah kegagalan, periksa Database & History sebelum menekan simpan ulang.
+
+## BoQ input formats (V1.0.14)
+
+The RAB description box accepts either Markdown pipe tables (`|`) or a table copied directly from Excel/Google Sheets (tab-separated columns). The header must contain **Item Pekerjaan**, **Estimasi Volume**, and **Satuan**. A preview shows how many rows PFMS detected before Gemini is called. User-provided quantities are preserved and are not resized from property LT/LB or inferred from photographs.

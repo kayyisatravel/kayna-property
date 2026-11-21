@@ -191,3 +191,89 @@ def test_all_16_user_boq_rows_keep_exact_quantity_when_gemini_returns_rates():
     assert len({r["item_code"] for r in mapped}) == 3
     assert all(r["unit_cost"] == 125_000 for r in mapped)
     assert mapped[2]["priority"] == "Bersyarat"
+
+
+def tas3_full_boq_tsv():
+    return '''
+Identitas & Klasifikasi Kondisi Properti
+Alamat Objek: Perum TAS 3 Blok M6 No. 12, Desa Kepuhkemiri, Kecamatan Tulangan, Kabupaten Sidoarjo.
+Luas Tanah 102 m² | Luas Bangunan 90 m².
+Kategori Kondisi: Renovasi Sedang.
+
+BoQ Terstruktur
+Item Pekerjaan\tEstimasi Volume\tSatuan
+Pembersihan tumpukan peti kayu, sampah, dan area depan\t1.0\tLs
+Pembongkaran atap kanopi/teras depan yang jebol & keropos\t18.0\tm²
+Pengikisan cat mengelupas & jamur pada dinding dalam teras\t18.0\tm²
+Pemasangan atap kanopi baru (rangka hollow/baja ringan + spandek)\t18.0\tm²
+Pemasangan flashing seng/waterproofing sambungan dinding\t12.0\tm'
+Penggantian plafon area teras/carport (rangka hollow + PVC/GRC)\t18.0\tm²
+Perbaikan/tambal sulam plafon interior akibat rembesan\t14.4\tm²
+Pelapisan waterproofing anti-rembes (dinding samping carport)\t18.0\tm²
+Pengecatan ulang dinding fasad & teras (cat weatherproof)\t50.0\tm²
+Pengecatan ulang dinding interior rumah utama (2 lapis)\t180.0\tm²
+Pemasangan keramik area carport, teras & jalan masuk depan\t30.0\tm²
+Perapian taman kecil & pengecatan ulang kanstin depan\t1.0\tLs
+Pengamplasan & pengecatan ulang pagar besi dorong + teralis depan\t9.6\tm²
+Pengecatan ulang kusen, daun pintu, dan jendela\t8.0\tUnit
+Peremajaan titik instalasi listrik (lampu teras, saklar, stopkontak)\t15.0\tTitik
+Servis ringan sanitair kamar mandi, keran air, & cek pompa\t1.0\tLs
+'''
+
+
+def test_user_boq_parser_accepts_excel_tsv_and_preserves_all_16_quantities():
+    description = tas3_full_boq_tsv()
+    rows = parse_user_boq_table(description)
+    assert len(rows) == 16
+    assert [row["quantity"] for row in rows] == [1, 18, 18, 18, 12, 18, 14.4, 18, 50, 180, 30, 1, 9.6, 8, 15, 1]
+    assert [row["unit"] for row in rows][0:5] == ["Ls", "m²", "m²", "m²", "m'"]
+    assert rows[0]["quantity_source"] == "USER_SUPPLIED_BOQ"
+    assert rows[0]["subcategory"] == "BoQ Pengguna"
+
+
+def test_category_kategori_kondisi_renovasi_sedang_overrides_light_dropdown():
+    description = tas3_full_boq_tsv()
+    assert infer_renovation_category(
+        physical_condition="Renovasi Ringan",
+        selected="Auto sesuai kondisi umum",
+        condition_description=description,
+    ) == "Renovasi Sedang"
+
+
+def test_full_tas3_tsv_flows_through_rab_engine_without_gemini_omitting_boq_rows(monkeypatch):
+    import services.gemini_parser as gp
+
+    monkeypatch.setattr(gp, "_client_call", lambda *args, **kwargs: json.dumps({"items": []}))
+    result = gp.estimate_renovation_rab(
+        "test-key", [], tas3_full_boq_tsv(),
+        {
+            "address": "Perum TAS 3 Blok M6 No. 12, Tulangan, Sidoarjo",
+            "district": "Sidoarjo",
+            "land_area": 102,
+            "building_area": 90,
+            "floor_count": 1,
+            "bedrooms": 3,
+            "bathrooms": 2,
+            "physical_condition": "Renovasi Ringan",
+            "renovation_category": "Auto sesuai kondisi umum",
+            "interior_inspected": False,
+        },
+    )
+    user_rows = [r for r in result["editor_rows"] if str(r.get("item_code", "")).startswith("USER_BOQ_")]
+    assert result["user_boq_count"] == 16
+    assert result["category"] == "Renovasi Sedang"
+    assert len(user_rows) == 16
+    assert [r["quantity"] for r in user_rows] == [1, 18, 18, 18, 12, 18, 14.4, 18, 50, 180, 30, 1, 9.6, 8, 15, 1]
+
+
+def test_plain_boq_rows_after_header_are_supported_when_tabs_are_flattened():
+    description = '''
+    BoQ pekerjaan renovasi
+    Item Pekerjaan Estimasi Volume Satuan
+    Pembersihan halaman dan puing 1,0 Ls
+    Pembongkaran penutup atap depan 18,0 m²
+    Pengecatan pagar besi 9,6 m²
+    '''
+    rows = parse_user_boq_table(description)
+    assert len(rows) == 3
+    assert [row["quantity"] for row in rows] == [1, 18, 9.6]
