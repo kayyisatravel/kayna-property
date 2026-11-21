@@ -34,6 +34,7 @@ st.markdown("""
 .block-container{max-width:1480px;padding-top:1.05rem;padding-bottom:3rem}
 [data-testid="stMetric"]{background:#F7FAFC;border:1px solid #E5EAF0;padding:.8rem 1rem;border-radius:14px;min-height:112px}
 [data-testid="stMetricLabel"]{color:#526174;font-weight:600}
+[data-testid="stMetricValue"]{color:var(--pfms-ink)}
 .hero{padding:1.35rem 1.5rem;border:1px solid #DCE8E7;border-radius:18px;background:linear-gradient(115deg,#F0F8F7,#F7FAFC);margin-bottom:1rem}
 .hero h1,.hero h2{color:var(--pfms-ink);margin-bottom:.3rem}
 .hero p{color:#526174;margin-bottom:0}
@@ -392,12 +393,12 @@ if page == "Executive Dashboard":
     active_budget_forecast = sum(max(0.0, to_float(b.get("forecast_remaining"))) for b in active_project_budget_rows)
     active_selling_budget_total = sum(max(0.0, to_float(b.get("budget_amount"))) for b in active_selling_rows)
     active_selling_forecast = sum(max(0.0, to_float(b.get("forecast_remaining"))) for b in active_selling_rows)
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4 = st.columns(4)
     k1.metric("Kas siap investasi", idr(liq["cash_available_for_new_project"]), help="Kas aktual saat ini dikurangi pengeluaran yang dikonfirmasi dan cadangan likuiditas.")
     k2.metric("Peluang tersimpan", len(opps))
     k3.metric("Aset aktif", len(active))
-    k4.metric("Anggaran proyek berjalan", idr(active_budget_total), help="Anggaran biaya sampai properti siap dijual; tidak termasuk biaya penjualan dan bukan biaya yang sudah dibayar.")
-    k5.metric("Profit terealisasi", idr(total_realized_profit))
+    k4.metric("Realisasi Budget proyek berjalan", idr(active_actual_cost), help="Biaya terealisasi pada project aktif sampai saat ini")
+    #k5.metric("Profit terealisasi", idr(total_realized_profit))
     st.caption(f"Anggaran proyek aktif: komitmen {idr(active_budget_committed)} · forecast tersisa {idr(active_budget_forecast)}. Anggaran biaya penjualan terpisah: {idr(active_selling_budget_total)} (forecast {idr(active_selling_forecast)}).")
     st.markdown("### Kondisi portofolio")
     c1, c2 = st.columns([1.1, 1])
