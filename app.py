@@ -33,6 +33,7 @@ st.markdown("""
 .block-container{max-width:1480px;padding-top:1.05rem;padding-bottom:3rem}
 [data-testid="stMetric"]{background:#F7FAFC;border:1px solid #E5EAF0;padding:.8rem 1rem;border-radius:14px;min-height:112px}
 [data-testid="stMetricLabel"]{color:#526174;font-weight:600}
+[data-testid="stMetricValue"]{color:var(--pfms-ink)}
 .hero{padding:1.35rem 1.5rem;border:1px solid #DCE8E7;border-radius:18px;background:linear-gradient(115deg,#F0F8F7,#F7FAFC);margin-bottom:1rem}
 .hero h1,.hero h2{color:var(--pfms-ink);margin-bottom:.3rem}
 .hero p{color:#526174;margin-bottom:0}
