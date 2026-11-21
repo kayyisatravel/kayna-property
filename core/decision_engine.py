@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Any
 from .utils import to_float
+from .renovation_engine import rab_item_is_in_scope
 
 
 def evaluate_decision(inputs: dict[str, Any], market: dict[str, Any], tiers: dict[str, Any], at_limit: dict[str, Any] | None = None, min_comps: int = 5) -> dict[str, Any]:
@@ -17,17 +18,22 @@ def evaluate_decision(inputs: dict[str, Any], market: dict[str, Any], tiers: dic
     if not legal.get("tax_rules_verified"): blockers.append("Tarif dan dasar BPHTB/biaya lelang belum diverifikasi untuk wilayah dan jenis transaksi ini.")
     if not inputs.get("risk_reviewed", False): blockers.append("Risk register belum ditinjau dan dikonfirmasi pengguna.")
     if not inputs.get("costs", {}).get("cost_estimates_reviewed", False): blockers.append("Seluruh estimasi biaya belum ditinjau/dikonfirmasi pengguna; pastikan tidak ada komponen yang dibiarkan nol tanpa alasan.")
-    # Mandatory RAB rows must have both a measurable quantity and conservative unit cost.
-    # Conditional/optional inspection rows can remain blank, but must not be priced as zero.
+    # Any item that the user keeps in the base budget (Wajib/Disarankan/Opsional)
+    # must have a measured positive quantity and conservative unit rate. A user
+    # may remove unconfirmed scope by selecting Bersyarat or Tidak diperlukan.
     renovation_items = inputs.get("costs", {}).get("renovation_items", []) or []
-    unpriced_required = [
-        str(r.get("work_item") or r.get("item_code") or "Pekerjaan wajib")
+    unpriced_in_scope = [
+        str(r.get("work_item") or r.get("item_code") or "Pekerjaan dalam anggaran")
         for r in renovation_items
-        if str(r.get("priority") or "").lower() == "wajib"
-        and (r.get("quantity") in (None, "") or r.get("unit_cost") in (None, ""))
+        if rab_item_is_in_scope(r)
+        and (r.get("quantity") in (None, "") or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") in (None, ""))
     ]
-    if unpriced_required:
-        blockers.append("RAB masih memiliki pekerjaan wajib tanpa volume/harga konservatif: " + "; ".join(unpriced_required[:5]) + ". Lengkapi atau verifikasi sebelum GO.")
+    if unpriced_in_scope:
+        blockers.append(
+            "RAB masih memiliki pekerjaan wajib atau item anggaran dasar tanpa volume/harga konservatif: "
+            + "; ".join(unpriced_in_scope[:5])
+            + ". Lengkapi volume dan harga, atau ubah menjadi Bersyarat/Tidak diperlukan jika belum disetujui setelah verifikasi."
+        )
     risk_summary = inputs.get("risk_summary", {})
     if risk_summary.get("invalid"):
         blockers.extend(risk_summary["invalid"][:5])

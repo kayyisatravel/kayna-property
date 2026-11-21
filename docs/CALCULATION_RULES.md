@@ -51,10 +51,11 @@ Selling costs must not be deducted twice. Closing ROI uses actual cash outflows 
 
 The numerical search tests bid prices from auction limit in confirmed increment steps.
 
-- Mid bid: highest bid that meets target ROI 35% under conservative ARV, cash and risk ceilings.
-- Maximum bid: highest bid that meets minimum project ROI 25% under conservative ARV, cash and risk ceilings.
-- Walk-away: maximum bid + one confirmed increment. If maximum bid is below auction limit, walk-away begins at the auction limit (do not place the opening bid).
-- If official bid increment is absent, the engine uses a clearly labelled Rp1,000 computation step only to estimate an economic ceiling. It does not claim an official walk-away increment; the user must confirm the lot's increment before bidding.
+- Target ROI 35%: highest admissible bid at or above the auction limit that meets 35% under conservative ARV. If the limit itself is below the 35% hurdle, no bid price is shown; the theoretical ceiling below the limit is displayed separately and must never be treated as a valid bid.
+- Maximum bid: highest admissible price on the ladder `auction_limit + n × increment` that meets the minimum 25% project ROI and any explicit risk-adjusted ceiling. The engine does not search or display an actionable bid below the auction limit.
+- Cash adequacy is a separate funding gate. A financially feasible bid ceiling is not automatically affordable; insufficient available cash produces HOLD for funding, not a lower economic bid ceiling.
+- Walk-away: maximum admissible bid + one confirmed official increment. No walk-away amount is issued when the official increment is unknown.
+- If official bid increment is absent, the engine may show a clearly labelled computation-only ceiling using a Rp1,000 step. It sets all legal/actionable bid and walk-away fields to blank until the user confirms the increment from the auction notice.
 - If the auction limit itself fails the 25% ROI hurdle, no viable maximum bid exists and the system returns DO NOT BID.
 - If the economic hurdle passes but available cash is insufficient, the decision is HOLD for funding, not a statement that market economics are unattractive.
 
@@ -85,10 +86,12 @@ These rules are conservative workflow controls, not legal/tax advice. Review rul
 
 - Gemini may draft itemized renovation work from uploaded auction PDF/screenshot, up to five survey photos, current user condition description and property context.
 - The model must use only visible findings and explicit user descriptions. Hidden structural, roof, electrical, plumbing or interior defects must not be stated as confirmed from facade-only images; they go to `items_to_inspect`.
-- Each line may include quantity/unit, low unit-cost estimate and conservative upper unit-cost estimate. Python uses the conservative upper unit cost in the editable `unit_cost` column.
-- Unit rates are indicative estimates, not live contractor quotations or verified local supplier prices. User must review measurements, unit rates and scope before confirming cost estimates.
+- Each line may include a unit-cost screening range. Python uses the conservative upper unit rate in the editable `unit_cost` column. AI-generated/custom work codes never supply quantities; those volumes must come from Python's approved guidance or user/contractor measurement.
+- Unit rates are indicative estimates, not live contractor quotations or verified local supplier prices. User must review scope, measurements and unit rates before confirming cost estimates. A custom work item remains Bersyarat until user review.
+- A subtotal of priced and measured items must never be labelled as a complete RAB. The RAB is complete only when every confirmed in-scope item has both a quantity and conservative unit rate.
+- Bersyarat items remain visible but do not enter the base RAB or create an incomplete-base-RAB blocker until the user changes their priority after inspection. Their costs belong in scenarios/contingency until confirmed.
 - Renovation contingency remains a separate Python calculation and must not be included in AI line items (avoid double counting).
-- If quantity or unit cost is unknown, keep it blank and require user input.
+- When a local defect package exists (e.g. front canopy or damp carport wall), do not also price a generic category package for the same surface; avoid duplicate scope.
 
 
 ## 8. Context-aware renovation estimator (V1.0.6)

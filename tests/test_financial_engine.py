@@ -94,12 +94,42 @@ def test_bpn_self_managed_notary_default_zero():
     assert result["legal_bpn_cost"] == 7_500_000
 
 
-def test_economic_bid_ceiling_is_shown_below_auction_limit():
+def test_economic_ceiling_below_limit_is_not_returned_as_an_actionable_bid():
     data = base_inputs()
     result = build_bid_tiers(500_000_000, 1_000_000, 300_000_000, 320_000_000, data, 1_000_000_000, 25, 35)
-    assert result["max_bid"] is not None
-    assert result["max_bid"] < 500_000_000
-    assert result["walk_away_from"] == 500_000_000
+    assert result["max_bid"] is None
+    assert result["max_economic_ceiling"] is not None
+    assert result["max_economic_ceiling"] < 500_000_000
+    assert result["walk_away_from"] is None
+    assert "JANGAN BID" in result["walk_away_reason"]
+
+
+def test_mid_roi_target_below_limit_is_not_shown_as_a_bid_price():
+    from core.calculator import calculate_project
+    data = {
+        "property": {"njop": 0, "npoptkp_eligible": False},
+        "survey": {"possession_cost": 10_000_000, "possession_months": 1},
+        "costs": {"renovation_cost": 20_000_000, "renovation_months": 1, "selling_months": 3, "legal_delay_months": 0, "monthly_holding_cost": 1_000_000, "marketing_cost": 2_000_000},
+        "rules": dict(DEFAULT_RULES),
+    }
+    roi_at_limit = calculate_project(160_000_000, 300_000_000, data)["roi_pct"]
+    result = build_bid_tiers(160_000_000, 1_000_000, 300_000_000, 320_000_000, data, None, 25, 35)
+    assert 25 <= roi_at_limit < 35
+    assert result["mid_bid"] is None
+    assert result["mid_economic_ceiling"] < 160_000_000
+    assert result["max_bid"] >= 160_000_000
+    assert result["max_result"]["roi_pct"] >= 25
+
+
+def test_bid_increment_grid_is_anchored_to_auction_limit_not_zero():
+    data = {
+        "property": {"njop": 0, "npoptkp_eligible": False},
+        "survey": {}, "costs": {}, "rules": dict(DEFAULT_RULES),
+    }
+    result = build_bid_tiers(160_500_000, 1_000_000, 500_000_000, 520_000_000, data, None, 25, 35)
+    assert result["max_bid"] >= 160_500_000
+    assert (result["max_bid"] - 160_500_000) % 1_000_000 == 0
+    assert result["walk_away_from"] == result["max_bid"] + 1_000_000
 
 
 def test_missing_arv_still_calculates_project_cost_without_false_zero_sale():
@@ -126,12 +156,17 @@ def test_safe_json_converts_non_finite_values_to_null():
     assert result == {"a": None, "b": [None, 2], "c": None}
 
 
-def test_missing_bid_increment_still_produces_indicative_economic_ceiling():
+def test_missing_bid_increment_never_exposes_simulation_as_a_legal_bid():
     data = base_inputs()
     result = build_bid_tiers(100_000_000, None, 500_000_000, 550_000_000, data, None, 25, 35)
-    assert result["max_bid"] is not None
+    assert result["max_bid"] is None
+    assert result["mid_bid"] is None
+    assert result["max_simulated_ceiling"] is not None
+    assert result["mid_simulated_ceiling"] is not None
+    assert result["max_economic_ceiling"] is None  # limit itself clears 25%; this is a simulation, not a below-limit ceiling
     assert result["increment_confirmed"] is False
     assert result["walk_away_from"] is None
+    assert "bukan harga bid" in result["walk_away_reason"].lower()
     assert "bukan increment resmi" in result["increment_note"]
 
 

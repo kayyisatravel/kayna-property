@@ -153,3 +153,19 @@ def test_mark_property_won_reads_existing_payload_json_when_payload_not_material
     assert updated["payload"]["latest_analysis"] == snapshot
     assert updated["payload"]["custom_history"] == {"kept": True}
     assert updated["lifecycle_status"] == "WON"
+
+
+def test_required_rab_zero_quantity_is_a_blocker_until_marked_not_needed():
+    inputs = {
+        "property": {"lot_code":"L1", "address":"Alamat", "auction_limit":100, "land_area":90, "building_area":70},
+        "survey": {"survey_status":"Sudah Survei - Kosong/Tidak Dihuni", "interior_inspected":True},
+        "legal": {"identity_verified":True, "dispute_detected":False, "tax_rules_verified":True},
+        "rules": {"minimum_roi_pct":25},
+        "costs": {"cost_estimates_reviewed":True, "renovation_items":[{"work_item":"Perbaikan atap depan", "priority":"Wajib", "quantity":0, "unit_cost":100000}]},
+        "finance": {"cash_confirmed":True, "cash_available_for_new_project":1_000_000},
+        "risk_reviewed": True,
+    }
+    market = {"valid_count":5, "go_grade_count":5, "confidence":85, "status":"READY"}
+    result = evaluate_decision(inputs, market, {"increment_confirmed":True,"max_bid":150}, {"roi_pct":35,"net_profit":35,"capital_before_sale":100})
+    assert result["status"] == "HOLD"
+    assert any("volume/harga konservatif" in x.lower() for x in result["blockers"])

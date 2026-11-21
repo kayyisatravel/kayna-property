@@ -1,8 +1,18 @@
-# Property Flipper Management System (PFMS) — V1.0.11
+# Property Flipper Management System (PFMS) — V1.0.12
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.12 — RAB Evidence Guardrails & Auction Bid Logic Audit
+
+- Renovation category follows the user's primary category statement; a conditional warning that defects could later require heavy renovation does not reclassify the current property by itself.
+- Local front-canopy roof, damp-wall, carport rabat, fence and facade-refresh scopes are separated to prevent overlapping work from being priced twice. Unknown dimensions remain blank until measured.
+- Structural replacement, whole-roof replacement, interior damage and occupancy status are not inferred from a facade photo. Interior and occupancy uncertainties are presented for inspection/confirmation.
+- Partial priced RAB values are explicitly labelled as subtotals, never a complete budget. Every item retained in the base budget must have a measured quantity and conservative unit price before GO.
+- Bidding tiers are anchored at the auction limit. A target-ROI ceiling below the limit is displayed only as a theoretical diagnostic, never as an actionable bid. Without a confirmed auction increment, legal bid and walk-away remain blank.
+- Occupancy reporting is grounded in the user's survey field; the AI is explicitly prevented from interpreting belongings, plants, cloths or dark interiors as proof of occupancy/vacancy.
+- Unit-rate estimates are disclosed as generic screening estimates unless a current official/local price book or verified contractor quotations are provided.
 
 ## V1.0.11 — Financial Ledger Safety & Condition-Driven Renovation RAB
 
@@ -43,7 +53,7 @@ Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelola
 - Data comparable yang tidak disebutkan (misalnya LB, kondisi, akses, URL langsung, tanggal publikasi) tetap kosong dan menurunkan confidence; tidak diisi tebakan. Nama portal/sumber yang disebut pengguna disimpan sebagai provenance. Untuk GO final, lima comparable harus memiliki URL listing langsung dan tanggal ditemukan; portal name saja hanya cukup untuk valuasi indikatif.
 - Analisis parsial tetap dapat dijalankan dengan data KPKNL seadanya. Sistem menghitung biaya yang sudah bisa dihitung; bila ARV belum tersedia, profit/ROI dibiarkan null dan status HOLD. Bila data pasar yang tersedia sudah menunjukkan ceiling bid di bawah limit, sistem dapat menampilkan DO NOT BID/Walk Away meski belum memenuhi gate GO.
 - Financial engine Python: bea lelang, BPHTB, PNBP/BPN/roya/admin, penguasaan, renovasi, contingency, holding, biaya penjualan, profit, ROI proyek dan annualized ROI.
-- Tangga bidding: limit, target ROI 35%, maximum bid ROI 25%, dan walk-away.
+- Tangga bidding: limit, target ROI 35%, maximum bid ROI 25%, dan walk-away. Setiap harga bid yang ditampilkan harus berada pada atau di atas limit dan mengikuti increment mulai dari limit. Ceiling teoritis di bawah limit hanya diagnostik, bukan harga bidding.
 - Investor cashflow: real cash diinput user, outflow mendatang hanya mengurangi kapasitas bila dikonfirmasi user, cadangan likuiditas 10–20%.
 - Simpan semua keputusan (GO, CONDITIONAL GO, HOLD, DO NOT BID) sebagai opportunity dan snapshot analisis.
 - Lifecycle aset WON/ACTIVE/SOLD, milestones, biaya aktual, closing, dan track record.

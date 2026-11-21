@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.0.12] - 2026-11-21
+
+### Fixed
+- Renovation category inference now honours an explicit primary classification in the user's description and ignores a later conditional caveat that says it may become heavier after inspection.
+- Local canopy/roof, damp-wall and rabat-carport work scopes now suppress overlapping generic roof/wall/floor tasks to prevent duplicate budgeting.
+- Photo-based quantities for bespoke local defects remain blank until measured; AI-proposed custom quantities are never accepted as measured quantities.
+- Structural work is not introduced for a medium renovation merely because the risk notes mention possible hidden structural damage. Heavy structural scope remains engineer-led.
+- Partial RAB subtotal is explicitly separated from a complete RAB. Unpriced base-budget work keeps the analysis provisional/HOLD instead of making total capital look complete.
+- Bid ladder cannot issue a target ROI bid below the auction limit. A below-limit theoretical ceiling is shown separately for diagnostics only.
+- Legal bid and walk-away remain blank if the official auction increment has not been confirmed.
+- Occupancy status cannot be inferred from photos or belongings; output now carries the user's survey status or explicit unknown status.
+
+### Added
+- Regression tests for the TAS 3 M6/12 RAB scenario, overlap prevention, hidden-work/occupancy guardrails, partial RAB completeness, and bid ceilings below the auction limit.
+- Logic audit notes and deployment smoke tests for RAB scope, partial totals and bid-ladder validation.
+
+### Changed
+- Renovation pricing disclosure explains that AI prices are generic screening estimates, not live Sidoarjo price-book rates or contractor quotes unless those sources have been supplied.
+- RAB documentation clarifies when inspections, conditional works and user-measured quantities enter the base budget.
+
+### Compatibility
+- No existing Google Sheets tab is renamed or removed. Existing table/column schema is unchanged by this audit patch; new AI explanatory fields are contained within existing JSON payloads.
+- Existing underwriting snapshots and ledger records remain readable.
+
+### Verification
+- `python -m compileall -q .`: passed.
+- `pytest -q`: 122 passed.
+- Live Google Sheets, Streamlit Cloud and live Gemini calls are not run in this environment.
+
 ## [1.0.11] - 2026-11-21
 
 ### Added

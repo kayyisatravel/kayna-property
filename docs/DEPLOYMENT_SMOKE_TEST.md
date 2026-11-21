@@ -102,3 +102,19 @@ Gunakan hanya angka dan dokumen yang sudah diverifikasi. Jangan mengisi biaya le
 - [ ] Pastikan AI/Python memunculkan scope lokal untuk atap depan, pemeriksaan plafon terdampak, dinding lembap, lantai carport, cat pagar dan pembersihan area depan; area yang harus diukur tidak diberi quantity seolah-olah sudah diketahui.
 - [ ] Pastikan interior yang tidak terlihat ditampilkan sebagai unknown + inspection plan + skenario sensitivitas terpisah; jangan otomatis dimasukkan sebagai kerusakan atau biaya dasar.
 - [ ] Periksa PATCH_NOTES V1.0.11 dan catat setiap perbedaan hasil sebelum penggunaan rutin.
+
+
+## 11. Regression V1.0.12 — RAB evidence and bidding logic audit
+- [ ] Use the TAS 3 M6/12 narrative with the primary statement Renovasi Sedang and a later caveat that it may become Renovasi Berat after inspection; ensure the current category remains Renovasi Sedang.
+- [ ] Ensure front-canopy sheet replacement is one local item and no generic whole-roof replacement is costed on the same area.
+- [ ] Ensure damp carport wall treatment is one item and no generic wall package duplicates the same wall area.
+- [ ] Ensure rabat beton cracks do not trigger ceramic installation without explicit tile-damage evidence.
+- [ ] Ensure fence repaint/facade repaint and hidden frame repair remain conditional until user confirms the scope.
+- [ ] Ensure custom measured volumes are blank unless entered from field measurement; AI must not infer m² from photo scale.
+- [ ] Ensure interior scenarios remain separate from base RAB and do not auto-add hidden defects to budget.
+- [ ] Ensure occupancy status is not inferred from plants, buckets, cloths, belongings or dark rooms; use survey field or show unknown.
+- [ ] If an in-scope base RAB item lacks measured quantity or conservative unit rate, label the RAB incomplete and prevent final GO. Partial subtotal must not be labelled total RAB.
+- [ ] Bid case: limit Rp160.000.000, conservative ARV Rp300.000.000, ROI target 35%; ensure no actionable bid below limit is shown. If theoretical ceiling is below limit, show it only in the diagnostic column.
+- [ ] Ensure maximum bid/ROI 25% is aligned to auction limit + confirmed official increment.
+- [ ] Clear the official increment: no legal mid bid, maximum bid or walk-away is issued; any computation-only ceiling must be explicitly labelled simulation.
+- [ ] Compare all displayed bid prices with official auction announcement and verify ROI against manual calculation before live bidding.

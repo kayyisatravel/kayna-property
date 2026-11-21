@@ -6,6 +6,7 @@ actual building, drawings and contractor measurement before approval.
 """
 from __future__ import annotations
 from math import ceil
+import re
 from typing import Any
 from .utils import to_float
 
@@ -47,28 +48,79 @@ def _item(code: str, name: str, unit: str, low: float | None, base: float | None
     }
 
 
-def infer_renovation_category(physical_condition: str = "", selected: str = "", condition_description: str = "") -> str:
-    """Infer a renovation scope only from explicit user condition/description.
-
-    Unknown condition defaults to an inspection-only package, not an assumed
-    light renovation. A user-selected category always takes precedence.
-    """
-    if selected and selected != "Auto sesuai kondisi umum":
-        return selected
-    text = f"{physical_condition or ''} {condition_description or ''}".lower()
-    if any(x in text for x in ["hitung tanah", "tanah kosong", "demolisi", "bangunan dianggap nol"]):
+def _normalise_renovation_category(value: str) -> str | None:
+    text = re.sub(r"[\*_`]+", "", str(value or "")).strip().lower()
+    mapping = {
+        "renovasi kosmetik": "Renovasi Kosmetik",
+        "renovasi ringan": "Renovasi Ringan",
+        "renovasi sedang": "Renovasi Sedang",
+        "renovasi berat": "Renovasi Berat",
+        "hitung tanah": "Hitung Tanah",
+    }
+    for label, canonical in mapping.items():
+        if label in text:
+            return canonical
+    if "tanah kosong" in text or "land only" in text:
         return "Hitung Tanah"
-    if any(x in text for x in ["renovasi berat", "perkuatan struktur", "tambah lantai", "ubah tata ruang", "fondasi baru", "kolom/balok"]):
-        return "Renovasi Berat"
-    if any(x in text for x in ["renovasi sedang", "ganti seluruh atap", "atap total", "renovasi total kamar mandi", "ganti seluruh plafon", "ganti seluruh keramik"]):
-        return "Renovasi Sedang"
-    if any(x in text for x in ["renovasi ringan", "perbaikan lokal", "genteng pecah", "keramik pecah", "kloset rusak", "atap bocor", "talang bocor"]):
-        return "Renovasi Ringan"
-    if any(x in text for x in ["renovasi kosmetik", "cat mengelupas", "pengecatan", "cat ulang", "plamir", "finishing kosmetik"]):
-        return "Renovasi Kosmetik"
-    if "siap huni" in text or "ready huni" in text:
-        return "Renovasi Kosmetik"
-    return "Auto sesuai kondisi umum"
+    return None
+
+
+def _infer_renovation_category_with_basis(
+    physical_condition: str = "", selected: str = "", condition_description: str = ""
+) -> tuple[str, str]:
+    """Resolve the primary renovation class without being hijacked by caveats.
+
+    Priority: explicit user selection, explicit survey condition, an explicit
+    primary category statement in the description, then conservative evidence
+    heuristics. Mentions inside a later risk/caveat section (e.g. "could shift to
+    heavy renovation if... ") must not override the main classification.
+    """
+    selected_category = _normalise_renovation_category(selected)
+    if selected_category and selected_category != "Auto sesuai kondisi umum":
+        return selected_category, "Pilihan kategori oleh pengguna"
+
+    physical_category = _normalise_renovation_category(physical_condition)
+    if physical_category:
+        return physical_category, "Kondisi fisik yang dipilih pengguna"
+
+    clean = re.sub(r"[\*_`]+", "", str(condition_description or "")).strip()
+    # Prefer an explicit statement about the primary category, usually near the
+    # beginning of the property description. Do not scan risk notes as if they
+    # describe current physical damage.
+    primary_patterns = [
+        r"(?:masuk\s+dalam\s+kategori|masuk\s+kategori|kategori(?:\s+renovasi)?|kelas\s+renovasi)\s*(?:adalah|:|-)?\s*(renovasi\s+(?:kosmetik|ringan|sedang|berat))",
+        r"(?:kondisi\s+bangunan|tingkat\s+renovasi)\s*(?:adalah|:|-)?\s*(renovasi\s+(?:kosmetik|ringan|sedang|berat))",
+    ]
+    for pattern in primary_patterns:
+        match = re.search(pattern, clean[:1800], flags=re.IGNORECASE)
+        if match:
+            return _normalise_renovation_category(match.group(1)) or "Auto sesuai kondisi umum", "Pernyataan kategori utama dalam deskripsi"
+
+    lower = clean.lower()
+    # Risk/caveat sections often mention more severe future possibilities. Exclude
+    # them from fallback classification unless the user explicitly selected a class.
+    cut_positions = [lower.find(token) for token in ["catatan kritis", "perhatian utama", "risiko utama", "skenario risiko"] if lower.find(token) >= 0]
+    evidence_text = lower[:min(cut_positions)] if cut_positions else lower
+
+    if any(x in evidence_text for x in ["hitung tanah", "tanah kosong", "demolisi total", "bangunan dianggap nol"]):
+        return "Hitung Tanah", "Indikasi lingkup demolisi/hitung tanah pada deskripsi"
+    if any(x in evidence_text for x in ["perkuatan struktur", "fondasi baru", "kolom patah", "balok utama rusak", "tambah lantai", "ubah tata ruang struktural"]):
+        return "Renovasi Berat", "Indikasi pekerjaan struktural eksplisit; wajib diverifikasi engineer"
+    if any(x in evidence_text for x in ["ganti seluruh atap", "atap total", "renovasi total kamar mandi", "ganti seluruh plafon", "ganti seluruh keramik"]):
+        return "Renovasi Sedang", "Indikasi penggantian sistem/elemen dalam lingkup luas"
+    if any(x in evidence_text for x in ["renovasi ringan", "perbaikan lokal", "genteng pecah", "keramik pecah", "kloset rusak", "atap bocor", "talang bocor"]):
+        return "Renovasi Ringan", "Indikasi perbaikan lokal; verifikasi keluasan pekerjaan"
+    if any(x in evidence_text for x in ["renovasi kosmetik", "cat mengelupas", "pengecatan", "cat ulang", "plamir", "finishing kosmetik"]):
+        return "Renovasi Kosmetik", "Indikasi pekerjaan finishing kosmetik"
+    if "siap huni" in evidence_text or "ready huni" in evidence_text:
+        return "Renovasi Kosmetik", "Indikasi kebutuhan persiapan/finishing ringan"
+    return "Auto sesuai kondisi umum", "Belum ada dasar yang cukup untuk menetapkan kelas renovasi"
+
+
+def infer_renovation_category(physical_condition: str = "", selected: str = "", condition_description: str = "") -> str:
+    """Infer the primary scope; later conditional risk notes do not override it."""
+    category, _basis = _infer_renovation_category_with_basis(physical_condition, selected, condition_description)
+    return category
 
 
 def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any]:
@@ -81,7 +133,7 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
     selected_category = str(context.get("renovation_category") or "Auto sesuai kondisi umum")
     physical_text = str(context.get("physical_condition") or "")
     description = str(context.get("condition_description") or "")
-    category = infer_renovation_category(physical_text, selected_category, description)
+    category, category_basis = _infer_renovation_category_with_basis(physical_text, selected_category, description)
     auto_mode = selected_category == "Auto sesuai kondisi umum"
     explicit_cosmetic_scope = (not auto_mode) or any(x in f"{physical_text} {description}".lower() for x in ["renovasi kosmetik", "cat mengelupas", "pengecatan", "cat ulang", "plamir"])
     explicit_ready_only = auto_mode and "siap huni" in physical_text.lower() and not description.strip()
@@ -139,9 +191,21 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
     elif category == "Renovasi Sedang":
         # A medium category describes complexity, not automatic whole-house replacement.
         # Full-area packages stay optional unless the description explicitly confirms them.
+        full_roof_confirmed = any(x in description.lower() for x in [
+            "ganti seluruh atap rumah", "penggantian seluruh atap", "seluruh atap utama rusak",
+            "atap utama harus diganti seluruh", "penggantian total atap rumah",
+        ])
+        medium_roof_low = roof_low if full_roof_confirmed else None
+        medium_roof_base = roof_base if full_roof_confirmed else None
+        medium_roof_high = roof_high if full_roof_confirmed else None
+        medium_roof_basis = (
+            "Luas tapak × faktor atap 1,25–1,35; tetap perlu ukur bidang atap dan desain"
+            if full_roof_confirmed else
+            "Volume dikosongkan sampai pengguna mengonfirmasi seluruh atap memang diganti; kerusakan lokal wajib diukur terpisah"
+        )
         items += [
-            _item("MED_DEM_ROOF", "Pembongkaran penutup/rangka atap eksisting (hanya area yang dikonfirmasi rusak)", "m2", roof_low, roof_base, roof_high, "Tapak bangunan × faktor atap 1,25–1,35 hanya sebagai pembanding luas atap keseluruhan; area bongkar wajib diukur", "Rendah", "Jangan gunakan luas seluruh atap untuk kerusakan kanopi/teras lokal. Wajib inspeksi rangka dan sambungan.", "Bersyarat", True),
-            _item("MED_NEW_ROOF", "Pemasangan rangka/penutup atap dan flashing pada area yang diperbaiki", "m2", roof_low, roof_base, roof_high, "Tapak bangunan × faktor atap sebagai konteks luasan keseluruhan; area perbaikan lokal harus diukur", "Rendah", "Pilih material dan hitung luas setelah pengukuran. Penggantian atap utama hanya jika inspeksi membuktikan kerusakan meluas.", "Bersyarat", True),
+            _item("MED_DEM_ROOF", "Pembongkaran penutup/rangka atap eksisting (hanya area yang dikonfirmasi rusak)", "m2", medium_roof_low, medium_roof_base, medium_roof_high, medium_roof_basis, "Rendah", "Jangan gunakan luas seluruh atap untuk kerusakan kanopi/teras lokal. Wajib inspeksi rangka dan sambungan.", "Bersyarat", True),
+            _item("MED_NEW_ROOF", "Pemasangan rangka/penutup atap dan flashing pada area yang diperbaiki", "m2", medium_roof_low, medium_roof_base, medium_roof_high, medium_roof_basis, "Rendah", "Pilih material dan hitung luas setelah pengukuran. Penggantian atap utama hanya jika inspeksi membuktikan kerusakan meluas.", "Bersyarat", True),
             _item("MED_CEILING", "Perbaikan/penggantian plafon pada area terdampak kebocoran", "m2", None, None, None, "Ukur luasan plafon yang lapuk/berjamur setelah sumber bocor diperbaiki", "Rendah", "Tidak otomatis seluruh LB; buka/inspeksi bagian yang berubah warna atau melendut.", "Bersyarat", True),
             _item("MED_FLOOR", "Perbaikan atau penggantian lantai/keramik pada area yang rusak", "m2", None, None, None, "Ukur area lantai rusak, bukan otomatis seluruh LB", "Rendah", "Pilih perbaikan lokal atau penggantian penuh berdasarkan kondisi keramik dan elevasi.", "Bersyarat", True),
             _item("MED_WALL", "Perbaikan plester, waterproofing dan finishing dinding yang lembap", "m2", None, None, None, "Ukur bidang dinding yang terkena lembap setelah sumber air ditemukan", "Rendah", "Jangan hanya mengecat sebelum sumber rembes ditemukan dan bidang cukup kering.", "Bersyarat", True),
@@ -189,15 +253,23 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
     roof_front_terms = any(x in desc for x in ["atap teras", "kanopi", "atap depan", "galvalum", "spandek", "atap seng"])
     roof_damage_terms = any(x in desc for x in ["jebol", "rusak", "terangkat", "keropos", "bocor", "retak", "hilang"])
     if roof_front_terms and roof_damage_terms:
+        explicit_ceiling_damage = any(x in desc for x in ["plafon lapuk", "plafon rusak", "plafon jebol", "plafon berjamur", "plafon melendut", "plafon mengelupas"])
         for existing in items:
-            if str(existing.get("item_code")) in {"MED_DEM_ROOF", "MED_NEW_ROOF"}:
+            code = str(existing.get("item_code"))
+            if code in {"MED_DEM_ROOF", "MED_NEW_ROOF", "LGT_ROOF"}:
                 existing["quantity_low"] = None
                 existing["quantity_base"] = None
                 existing["quantity_high"] = None
-                existing["quantity_basis"] = "Kerusakan yang disebut hanya lokal pada teras/kanopi depan; ukur panjang × lebar area rusak, jangan gunakan luas seluruh atap."
-                existing["notes"] = str(existing.get("notes") or "") + " Estimasi seluruh atap dinonaktifkan karena deskripsi menunjukkan kerusakan lokal."
-        add_custom_hint("VIS_FRONT_ROOF", "Perbaikan lokal atap teras/kanopi depan, rangka dan flashing", "m2", "Ukur panjang × lebar area kanopi/teras yang rusak di lapangan", "Scope dibatasi pada sisi/area depan yang dijelaskan. Jangan hitung seluruh atap rumah kecuali inspeksi menunjukkan kerusakan menyebar. Periksa tumpuan rangka, sambungan ke dinding dan aliran talang.")
-        add_custom_hint("VIS_ROOF_WATERPROOF", "Flashing, sealant dan detail waterproofing sambungan atap depan", "m'", "Ukur panjang sambungan dinding/atap dan tepi rawan bocor", "Volume panjang sambungan tidak dapat diukur akurat dari foto; ukur saat survei.", "Disarankan", True)
+                existing["quantity_basis"] = "Kerusakan yang disebut hanya lokal pada teras/kanopi depan; ukur panjang × lebar area rusak, jangan gunakan persentase atau luas seluruh atap."
+                existing["notes"] = str(existing.get("notes") or "") + " Volume allowance atap umum dinonaktifkan karena deskripsi menunjukkan kerusakan lokal; jangan hitung seluruh atap."
+            if code == "LGT_CEILING" and not explicit_ceiling_damage:
+                existing["quantity_low"] = None
+                existing["quantity_base"] = None
+                existing["quantity_high"] = None
+                existing["quantity_basis"] = "Plafon belum terlihat rusak; inspeksi bagian yang terkena bocor dan ukur setelah sumber air diperbaiki."
+                existing["notes"] = str(existing.get("notes") or "") + " Jangan menghitung plafon rusak hanya dari dugaan kebocoran atap."
+        add_custom_hint("VIS_FRONT_ROOF", "Bongkar dan ganti penutup atap galvalum lokal pada teras/kanopi depan, termasuk pemasangan flashing", "m2", "Ukur panjang × lebar proyeksi bidang kanopi/teras yang rusak di lapangan", "Gunakan satu scope lokal untuk penutup atap dan flashing. Tidak termasuk penggantian rangka; jangan hitung lagi item atap generik untuk bidang yang sama. Jangan gunakan luas seluruh atap rumah.")
+        add_custom_hint("VIS_FRONT_ROOF_FRAME", "Perbaikan/penggantian rangka atap teras/kanopi depan jika inspeksi membuktikan rusak", "m'", "Ukur panjang elemen rangka yang benar-benar perlu diperbaiki/diganti setelah pemeriksaan", "Bersyarat: foto penutup yang jebol tidak membuktikan rangka ikut rusak. Masukkan ke base RAB hanya setelah rangka diperiksa.", "Bersyarat", True)
         add_custom_hint("VIS_CEILING_CHECK", "Inspeksi plafon dan rangka area teras/carport yang mungkin terkena bocor", "ls", "1 paket inspeksi area terdampak", "Pemeriksaan wajib sebelum memutuskan bongkar/ganti plafon; penggantian plafon hanya jika ditemukan kerusakan.", "Disarankan", True)
         for inspection_item in items:
             if inspection_item.get("item_code") == "VIS_CEILING_CHECK":
@@ -205,13 +277,33 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
 
     damp_terms = any(x in desc for x in ["rembes", "lembap", "lembab", "jamur", "bercak putih", "cat mengelupas", "mengelupas parah"])
     if damp_terms:
-        add_custom_hint("VIS_DAMP_WALL", "Penanganan dinding lembap: telusuri sumber, kupas bagian rusak, treatment jamur, perbaikan plester, waterproofing dan cat ulang", "m2", "Ukur bidang terdampak per sisi/tinggi; pisahkan bidang luar dan dalam", "Jangan menutup kelembapan dengan cat saja. Periksa talang, sambungan atap, pipa dan dinding tetangga. Harga treatment dapat berbeda dari pengecatan biasa.")
+        add_custom_hint("VIS_DAMP_WALL", "Penanganan bidang dinding lembap: telusuri sumber air, kupas cat/plester rusak, treatment jamur, waterproofing, perbaikan plester dan cat ulang", "m2", "Ukur bidang terdampak per sisi dan tinggi; pisahkan bidang luar/dalam dan jangan menghitung seluruh dinding tanpa bukti", "Ini lingkup khusus untuk area lembap yang terlihat/disebut. Telusuri talang, sambungan atap, pipa dan dinding tetangga sebelum finishing. Jangan hitung ulang area yang sama pada paket dinding umum.")
 
     if any(x in desc for x in ["rabat beton", "lantai carport", "carport retak", "beton retak", "jalan masuk retak"]):
-        add_custom_hint("VIS_CARPORT_FLOOR", "Perbaikan rabat beton/lantai carport retak dan finishing", "m2", "Ukur bidang retak; tentukan apakah tambal lokal atau bongkar-pasang", "Periksa retak permukaan vs penurunan dasar. Jangan otomatis memasang keramik di seluruh area tanpa keputusan finishing.", "Disarankan", True)
+        add_custom_hint("VIS_CARPORT_FLOOR", "Perbaikan rabat beton/lantai carport retak dan finishing", "m2", "Ukur bidang retak; tentukan apakah tambal lokal atau bongkar-pasang", "Bersyarat: periksa retak permukaan vs penurunan dasar dan ukur area. Jangan otomatis memasang keramik; pindahkan ke base RAB setelah metode perbaikan dipilih.", "Bersyarat", True)
+
+
+    concrete_floor_terms = any(x in desc for x in ["rabat beton", "lantai carport retak", "carport retak", "beton retak"])
+    explicit_tile_damage = any(x in desc for x in ["keramik pecah", "keramik retak", "keramik terangkat", "keramik lepas", "ganti keramik"])
+    if concrete_floor_terms and not explicit_tile_damage:
+        for existing in items:
+            if str(existing.get("item_code")) == "LGT_TILE":
+                existing["quantity_low"] = None
+                existing["quantity_base"] = None
+                existing["quantity_high"] = None
+                existing["quantity_basis"] = "Permukaan yang disebut adalah rabat beton/carport, bukan keramik; ukur area retak dan tentukan tambal, recast atau finishing setelah inspeksi."
+                existing["notes"] = str(existing.get("notes") or "") + " Jangan otomatis mengusulkan pemasangan keramik untuk rabat beton yang retak."
 
     if any(x in desc for x in ["pagar besi", "cat pagar", "pagar kusam"]):
-        add_custom_hint("VIS_FENCE_PAINT", "Pembersihan karat ringan, primer dan pengecatan ulang pagar besi", "m2", "Ukur bidang pagar/teralis atau hitung paket setelah survei", "Pagar terlihat masih terpasang; verifikasi karat, engsel, rel dan mekanisme pintu sebelum menghitung perbaikan besar.", "Disarankan", True)
+        add_custom_hint("VIS_FENCE_PAINT", "Pembersihan karat ringan, primer dan pengecatan ulang pagar besi", "m2", "Ukur bidang pagar/teralis atau hitung paket setelah survei", "Bersyarat/opsional: pagar tampak masih lurus dan terpasang; cek karat, engsel, rel dan mekanisme pintu. Pengecatan tidak wajib jika pengguna tidak memilih perapian tampilan.", "Bersyarat", True)
+
+
+    # Whole-front facade colour refresh is an aesthetic option, not a repair fact.
+    # Keep it distinct from the damp-wall treatment and exclude that same surface
+    # to prevent double-counting paint/plaster on the carport wall.
+    facade_refresh_terms = any(x in desc for x in ["mencolok", "warna netral", "cat ulang seluruh fasad", "pengecatan ulang fasad", "kombinasi warna", "aksen merah"])
+    if facade_refresh_terms:
+        add_custom_hint("VIS_FACADE_REPAINT", "Pengecatan ulang fasad luar dengan warna pilihan pengguna", "m2", "Ukur setiap bidang fasad luar; kurangi bidang lembap yang sudah dihitung pada VIS_DAMP_WALL dan area bukaan", "Pekerjaan estetika/opsional, bukan kerusakan wajib. Tidak termasuk treatment rembesan dan tidak boleh menghitung ulang bidang yang sama dengan VIS_DAMP_WALL.", "Bersyarat", True)
 
     if any(x in desc for x in ["tumpukan", "puing", "sampah", "peti kayu", "barang bekas"]):
         add_custom_hint("VIS_FRONT_CLEAN", "Pembersihan dan pengangkutan barang/material bekas di area depan", "ls", "1 paket sesuai volume dan jenis barang", "Pisahkan barang milik pihak lain dari sampah; pastikan izin pengangkutan sebelum dibuang.", "Disarankan", True)
@@ -227,6 +319,7 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
 
     return {
         "category": category, "category_selected_by_user": selected_category,
+        "category_basis": category_basis,
         "land_area": lt or None, "building_area": lb or None,
         "floor_count": floors, "building_footprint_estimate": round(footprint, 2) if footprint else None,
         "footprint_basis": "Luas tapak yang diinput pengguna" if actual_footprint > 0 else "LB agregat ÷ jumlah lantai (estimasi)",
@@ -242,9 +335,18 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
 
 
 def rab_item_is_in_scope(item: dict[str, Any]) -> bool:
-    """Exclude explicitly rejected work from the calculated RAB total."""
+    """Return true only for confirmed base-budget work.
+
+    Conditional items remain visible in the RAB editor, but do not inflate the
+    base RAB or block completeness until a user confirms them by changing the
+    priority from "Bersyarat" to Wajib/Disarankan/Opsional.
+    """
     priority = str(item.get("priority") or "").strip().lower()
-    return not priority.startswith("tidak diperlukan")
+    if priority.startswith("tidak diperlukan"):
+        return False
+    if priority in {"bersyarat", "conditional", "belum dikonfirmasi"}:
+        return False
+    return True
 
 
 def _global_warnings(category: str, lb: float, lt: float, floors: int, explicit_footprint: float = 0) -> list[str]:

@@ -6,6 +6,7 @@ from .maximum_bid import build_bid_tiers
 from .decision_engine import evaluate_decision
 from .liquidity import evaluate_funding
 from .risk_engine import summarize_risks
+from .renovation_engine import rab_item_is_in_scope
 from .utils import to_float
 
 
@@ -33,6 +34,44 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
     funding = evaluate_funding(to_float(at_limit.get("cash_requirement_including_reserve")), to_float(prop.get("deposit_amount")), liquidity)
     decision_inputs = {**data, "risk_summary": risk_summary, "finance": {**liquidity, "cash_confirmed": bool(liquidity.get("cash_confirmed"))}}
     decision = evaluate_decision(decision_inputs, market, tiers, at_limit)
+    # Keep calculated ceilings visible for screening, but explicitly mark them
+    # provisional whenever core evidence/costs have not been reviewed. A partial
+    # RAB can understate capital and overstate ROI even though the decision gate
+    # correctly prevents a final GO.
+    provisional_reasons: list[str] = []
+    if market.get("status") != "READY":
+        provisional_reasons.append("data pasar belum memenuhi standar GO-grade")
+    elif to_float(market.get("confidence")) < 70:
+        provisional_reasons.append("confidence pasar masih di bawah rekomendasi kualitas 70/100")
+    if not bool(costs.get("cost_estimates_reviewed", False)):
+        provisional_reasons.append("estimasi biaya belum dikonfirmasi pengguna")
+    renovation_rows = costs.get("renovation_items", []) or []
+    in_scope_rab_unpriced = [
+        str(r.get("work_item") or r.get("item_code") or "Pekerjaan dalam anggaran")
+        for r in renovation_rows
+        if rab_item_is_in_scope(r)
+        and (r.get("quantity") in (None, "") or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") in (None, ""))
+    ]
+    required_rab_unpriced = [
+        str(r.get("work_item") or r.get("item_code") or "Pekerjaan wajib")
+        for r in renovation_rows
+        if str(r.get("priority") or "").lower() == "wajib"
+        and (r.get("quantity") in (None, "") or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") in (None, ""))
+    ]
+    if in_scope_rab_unpriced:
+        provisional_reasons.append("RAB wajib belum lengkap / item anggaran dasar belum lengkap: " + "; ".join(in_scope_rab_unpriced[:4]))
+    if not bool(data.get("risk_reviewed", False)):
+        provisional_reasons.append("risk register belum ditinjau pengguna")
+    if not bool(legal.get("identity_verified", False)):
+        provisional_reasons.append("identitas objek/legalitas belum diverifikasi")
+    if not bool(legal.get("tax_rules_verified", False)):
+        provisional_reasons.append("tarif pajak/biaya transaksi belum diverifikasi")
+    if not tiers.get("increment_confirmed"):
+        provisional_reasons.append("kelipatan bid resmi belum dikonfirmasi")
+    tiers["provisional"] = bool(provisional_reasons)
+    tiers["provisional_reasons"] = provisional_reasons
+    tiers["required_rab_unpriced"] = required_rab_unpriced
+    tiers["in_scope_rab_unpriced"] = in_scope_rab_unpriced
     # Suitability index is a transparent screening index, not probability of profit.
     roi = to_float(at_limit.get("roi_pct"), -100)
     financial_score = max(0, min(100, (roi / max(1, to_float(rules.get("minimum_roi_pct", 25)) * 1.5)) * 100))

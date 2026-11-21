@@ -33,7 +33,6 @@ st.markdown("""
 .block-container{max-width:1480px;padding-top:1.05rem;padding-bottom:3rem}
 [data-testid="stMetric"]{background:#F7FAFC;border:1px solid #E5EAF0;padding:.8rem 1rem;border-radius:14px;min-height:112px}
 [data-testid="stMetricLabel"]{color:#526174;font-weight:600}
-[data-testid="stMetricValue"]{color:var(--pfms-ink)}
 .hero{padding:1.35rem 1.5rem;border:1px solid #DCE8E7;border-radius:18px;background:linear-gradient(115deg,#F0F8F7,#F7FAFC);margin-bottom:1rem}
 .hero h1,.hero h2{color:var(--pfms-ink);margin-bottom:.3rem}
 .hero p{color:#526174;margin-bottom:0}
@@ -893,6 +892,7 @@ elif page == "New Auction Analysis":
                 "bedrooms": st.session_state.get("na_bedrooms"), "bathrooms": st.session_state.get("na_bathrooms"),
                 "physical_condition": st.session_state.get("na_physical_condition", ""),
                 "interior_inspected": bool(st.session_state.get("na_interior_inspected", False)),
+                "occupancy_status": st.session_state.get("na_survey_status", "Belum Survei"),
                 "renovation_category": st.session_state.get("na_renovation_category", "Auto sesuai kondisi umum"),
                 "road_width_m": st.session_state.get("na_road_width"), "access": st.session_state.get("na_access", ""),
                 "facade_description": st.session_state.get("na_facade_manual", ""),
@@ -927,7 +927,14 @@ elif page == "New Auction Analysis":
         if rab_estimate:
             with st.expander("Ringkasan asumsi dan batasan RAB dari Gemini", expanded=True):
                 st.write(f"Kategori RAB: **{rab_estimate.get('category', 'Belum ditentukan')}**")
-                st.metric("Total indikatif konservatif dari AI", idr(rab_estimate.get("total_conservative_indicative")))
+                if rab_estimate.get("category_basis"):
+                    st.caption("Dasar klasifikasi: " + str(rab_estimate.get("category_basis")))
+                if rab_estimate.get("total_conservative_complete", False):
+                    st.metric("Total RAB konservatif indikatif (seluruh item dalam lingkup terisi)", idr(rab_estimate.get("total_conservative_indicative")))
+                else:
+                    st.metric("Subtotal item yang sudah memiliki volume dan harga", idr(rab_estimate.get("subtotal_conservative_priced_items", rab_estimate.get("total_conservative_indicative"))))
+                    st.metric("Total RAB lengkap", "Belum dapat ditentukan")
+                    st.caption(f"Item terisi: {rab_estimate.get('priced_item_count', 0)} dari {rab_estimate.get('in_scope_item_count', 0)} item yang masih dalam lingkup.")
                 if rab_estimate.get("visual_findings"):
                     st.markdown("**Temuan yang benar-benar terlihat**")
                     for finding in rab_estimate["visual_findings"]: st.write(f"• {finding}")
@@ -937,6 +944,9 @@ elif page == "New Auction Analysis":
                 if rab_estimate.get("interior_unknowns"):
                     st.markdown("**Bagian interior yang belum dapat dinilai dari foto**")
                     for unknown in rab_estimate["interior_unknowns"]: st.write(f"• {unknown}")
+                if rab_estimate.get("occupancy_unknowns"):
+                    st.markdown("**Status hunian — tidak dapat disimpulkan dari foto**")
+                    for unknown in rab_estimate["occupancy_unknowns"]: st.write(f"• {unknown}")
                 if rab_estimate.get("inspection_plan"):
                     st.markdown("**Urutan pemeriksaan lapangan yang disarankan**")
                     for step in rab_estimate["inspection_plan"]: st.write(f"• {step}")
@@ -962,6 +972,8 @@ elif page == "New Auction Analysis":
                 if rab_estimate.get("items_to_inspect"):
                     st.warning("Perlu inspeksi sebelum final: " + "; ".join(rab_estimate["items_to_inspect"]))
                 if rab_estimate.get("overall_note"): st.caption(rab_estimate["overall_note"])
+                if rab_estimate.get("pricing_basis_disclosure"):
+                    st.warning(rab_estimate.get("pricing_basis_disclosure"))
                 st.caption(rab_estimate.get("estimation_basis", "Draft AI; wajib diverifikasi."))
         renovation_columns = ["item_code", "work_item", "quantity_low", "quantity", "quantity_high", "quantity_basis", "unit", "unit_cost_low", "unit_cost", "unit_cost_high", "priority", "evidence_basis", "confidence", "notes"]
         if "na_renovation_items_editor" not in st.session_state:
@@ -980,7 +992,7 @@ elif page == "New Auction Analysis":
             "unit_cost_low": st.column_config.NumberColumn("Harga satuan rendah (Rp)", min_value=0, format="Rp %.0f"),
             "unit_cost": st.column_config.NumberColumn("Harga satuan konservatif (Rp)", min_value=0, format="Rp %.0f", help="Nilai inilah yang dipakai Python untuk menghitung RAB."),
             "unit_cost_high": st.column_config.NumberColumn("Batas atas (Rp)", min_value=0, format="Rp %.0f"),
-            "priority": st.column_config.SelectboxColumn("Prioritas", options=["Wajib", "Disarankan", "Opsional", "Tidak diperlukan setelah ditinjau"]),
+            "priority": st.column_config.SelectboxColumn("Prioritas", options=["Wajib", "Disarankan", "Bersyarat", "Opsional", "Tidak diperlukan setelah ditinjau"]),
             "evidence_basis": st.column_config.SelectboxColumn("Dasar", options=["Fakta visual", "Deskripsi pengguna", "Asumsi kuantitas"]),
             "confidence": st.column_config.SelectboxColumn("Keyakinan", options=["Tinggi", "Sedang", "Rendah"]),
             "notes": st.column_config.TextColumn("Catatan / asumsi / sumber"),
@@ -999,7 +1011,16 @@ elif page == "New Auction Analysis":
             set_default("na_legal_delay_months", 1.0); st.number_input("Estimasi delay legalitas (bulan)", min_value=0.0, step=0.5, key="na_legal_delay_months")
             set_default("na_marketing_cost", 1_000_000); st.number_input("Biaya marketing (Rp)", min_value=0, step=250_000, key="na_marketing_cost")
         renovation_total = renovation_item_total + to_float(st.session_state.na_renovation_extra)
-        st.metric("TOTAL RAB RENOVASI", idr(renovation_total), help="Total volume × harga satuan seluruh item + tambahan di luar daftar.")
+        in_scope_rab_rows = [r for r in renovation_items if rab_item_is_in_scope(r)]
+        unpriced_rab_rows = [r for r in in_scope_rab_rows if r.get("quantity") in (None, "") or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") in (None, "")]
+        if unpriced_rab_rows:
+            st.metric("Subtotal RAB terisi (belum total akhir)", idr(renovation_total))
+            st.warning(f"RAB belum lengkap: {len(unpriced_rab_rows)} item dalam lingkup belum memiliki volume atau harga satuan. Total biaya renovasi belum dapat dipastikan.")
+            with st.expander("Lihat pekerjaan yang belum dapat dihitung"):
+                for row in unpriced_rab_rows:
+                    st.write(f"• {row.get('work_item', 'Pekerjaan tanpa nama')} — volume: {row.get('quantity') or 'belum diisi'} {row.get('unit') or ''}; harga satuan: {idr(row.get('unit_cost')) if row.get('unit_cost') not in (None, '') else 'belum diisi'}")
+        else:
+            st.metric("TOTAL RAB RENOVASI (seluruh item dalam lingkup sudah terisi)", idr(renovation_total), help="Total volume × harga satuan seluruh item dalam lingkup + tambahan di luar daftar.")
         c1,c2 = st.columns(2)
         with c1:
             set_default("na_other_presale", 0); st.number_input("Biaya lain sebelum penjualan (Rp)", min_value=0, step=500_000, key="na_other_presale")
@@ -1106,34 +1127,84 @@ elif page == "New Auction Analysis":
                 for point in snap["market_ai_assessment"].get("key_value_drivers", []): st.write("•", point)
                 for limitation in snap["market_ai_assessment"].get("limitations", []): st.caption("Batasan: " + str(limitation))
                 st.caption("Saran AI yang sudah diterapkan tercatat pada kolom penyesuaian listing. Hasil ini bukan verifikasi transaksi dan bukan appraisal.")
+        required_rab_missing = tiers.get("required_rab_unpriced", [])
+        in_scope_rab_missing = tiers.get("in_scope_rab_unpriced", required_rab_missing)
+        cost_review_pending = not bool(snap.get("costs", {}).get("cost_estimates_reviewed", False))
+        financial_inputs_partial = bool(in_scope_rab_missing or cost_review_pending)
         k1,k2,k3,k4,k5 = st.columns(5)
         k1.metric("ARV konservatif", idr(mkt.get("conservative_exit")), help="Estimasi harga keluar konservatif setelah quick-sale discount.")
         k2.metric("ARV dasar", idr(mkt.get("base_exit")), help="Estimasi nilai pasar dasar dari comparable dan, bila tersedia, referensi NJOP terkalibrasi.")
-        k3.metric("Total modal proyek", idr(at.get("capital_before_sale")), help="Biaya proyek sebelum penjualan; cadangan risiko dan biaya penjualan disajikan terpisah.")
-        k4.metric("Estimasi profit bersih", idr(at.get("net_profit")))
-        k5.metric("ROI proyek", pct(at.get("roi_pct")))
+        k3.metric("Modal sementara / data terisi" if financial_inputs_partial else "Total modal proyek", idr(at.get("capital_before_sale")), help="Jika RAB wajib belum lengkap atau biaya belum dikonfirmasi, angka ini hanya total komponen yang sudah terdata; belum merupakan total modal akhir.")
+        k4.metric("Profit indikatif" if financial_inputs_partial else "Estimasi profit bersih", idr(at.get("net_profit")))
+        k5.metric("ROI indikatif" if financial_inputs_partial else "ROI proyek", pct(at.get("roi_pct")))
+        if tiers.get("provisional_reasons"):
+            st.warning("Tangga bidding dan hasil profit/ROI masih INDIKATIF. Dasar yang belum final: " + "; ".join(tiers.get("provisional_reasons", [])) + ". Jangan gunakan sebagai instruksi bidding final.")
         st.markdown("### Tangga bidding")
         tier_rows = []
-        for label, bid, res in [
-            ("Batas bawah / Limit", tiers.get("min_bid"), at),
-            ("Batas tengah / Target ROI 35%", tiers.get("mid_bid"), tiers.get("mid_result")),
-            ("Maximum bid / ROI 25%", tiers.get("max_bid"), tiers.get("max_result")),
-        ]:
+        tier_specs = [
+            ("Nilai limit (patokan awal)", tiers.get("min_bid"), None, None, at, "LIMIT_REFERENCE", True),
+            ("Target ROI 35%", tiers.get("mid_bid"), tiers.get("mid_economic_ceiling"), tiers.get("mid_simulated_ceiling"), tiers.get("mid_result"), 35.0, tiers.get("mid_limit_feasible", False)),
+            ("Maximum bid / ROI 25%", tiers.get("max_bid"), tiers.get("max_economic_ceiling"), tiers.get("max_simulated_ceiling"), tiers.get("max_result"), 25.0, tiers.get("max_limit_feasible", False)),
+        ]
+        cash_available_now = to_float(snap.get("liquidity", {}).get("cash_available_for_new_project"))
+        auction_limit_now = to_float(snap["property"].get("auction_limit"))
+        for label, bid, economic_ceiling, simulated_ceiling, res, hurdle, feasible in tier_specs:
             cash_need_tier = res.get("cash_requirement_including_reserve") if res else None
-            cash_available_now = to_float(snap.get("liquidity", {}).get("cash_available_for_new_project"))
-            hurdle = 35 if "tengah" in label.lower() else 25
-            if not res or bid is None or bid < to_float(snap["property"].get("auction_limit")):
-                tier_status = "OVERPRICE / SKIP"
+            if hurdle == "LIMIT_REFERENCE":
+                limit_roi = to_float(res.get("roi_pct"), -999) if res else -999
+                min_roi_target = to_float(snap.get("rules", {}).get("minimum_roi_pct", 25))
+                if limit_roi < 0:
+                    tier_status = "ROI LIMIT BELUM DAPAT DIHITUNG"
+                elif limit_roi < min_roi_target:
+                    tier_status = f"ROI LIMIT {limit_roi:.1f}% DI BAWAH TARGET {min_roi_target:.1f}% — JANGAN BID"
+                elif cash_need_tier is not None and cash_need_tier > cash_available_now:
+                    tier_status = "ROI LIMIT MEMENUHI TARGET, TETAPI KAS TIDAK CUKUP"
+                elif tiers.get("provisional"):
+                    tier_status = f"ROI LIMIT MEMENUHI {min_roi_target:.1f}%, TETAPI ANALISIS MASIH INDIKATIF"
+                else:
+                    tier_status = f"ROI LIMIT MEMENUHI TARGET MINIMUM {min_roi_target:.1f}%"
+            elif not tiers.get("increment_confirmed"):
+                tier_status = "INCREMENT RESMI BELUM DIKONFIRMASI — BELUM ADA BID LEGAL"
+            elif bid is None or not feasible:
+                tier_status = f"TIDAK ADA BID LEGAL YANG MEMENUHI ROI {hurdle:.0f}%"
+            elif bid < auction_limit_now:
+                # Defensive guard: an impossible sub-limit price must never be shown
+                # as an actionable bid, even if an older snapshot has legacy values.
+                tier_status = "TIDAK VALID — DI BAWAH LIMIT"
+                bid = None
             elif cash_need_tier is not None and cash_need_tier > cash_available_now:
                 tier_status = "KAS TIDAK CUKUP"
-            elif res.get("roi_pct", -999) >= hurdle:
-                tier_status = "LAYAK BID"
+            elif not res or to_float(res.get("roi_pct"), -999) < hurdle:
+                tier_status = "HURDLE TIDAK TERCAPAI"
+            elif tiers.get("provisional"):
+                tier_status = "SIMULASI INDIKATIF — DATA PENDUKUNG BELUM FINAL"
             else:
-                tier_status = "OVERPRICE / SKIP"
-            tier_rows.append({"Tier": label, "Harga bid": bid, "Total modal": res.get("capital_before_sale") if res else None, "Kebutuhan kas + cadangan": cash_need_tier, "Profit bersih": res.get("net_profit") if res else None, "ROI": res.get("roi_pct") if res else None, "Status": tier_status})
-        st.dataframe(pd.DataFrame(tier_rows), use_container_width=True, hide_index=True, column_config={"Harga bid": st.column_config.NumberColumn(format="Rp %.0f"), "Total modal": st.column_config.NumberColumn(format="Rp %.0f"), "Kebutuhan kas + cadangan": st.column_config.NumberColumn(format="Rp %.0f"), "Profit bersih": st.column_config.NumberColumn(format="Rp %.0f"), "ROI": st.column_config.NumberColumn(format="%.1f%%")})
-        st.caption("Status tier menilai ROI dan kecukupan kas pada snapshot analisis ini. Keputusan final tetap mengikuti seluruh hard gate di bawah.")
-        st.metric("WALK-AWAY — bidding harus berhenti mulai", idr(tiers.get("walk_away_from")))
+                tier_status = "LAYAK SECARA EKONOMI"
+            tier_rows.append({
+                "Tier": label,
+                "Harga bid / nilai acuan": bid,
+                "Ceiling teoritis di bawah limit (bukan harga bid)": economic_ceiling if bid is None else None,
+                "Ceiling simulasi (increment belum resmi)": simulated_ceiling if not tiers.get("increment_confirmed") else None,
+                "Total modal pada referensi": res.get("capital_before_sale") if res else None,
+                "Kebutuhan kas + cadangan": cash_need_tier,
+                "Profit bersih pada referensi": res.get("net_profit") if res else None,
+                "ROI pada referensi": res.get("roi_pct") if res else None,
+                "Status": tier_status,
+            })
+        st.dataframe(pd.DataFrame(tier_rows), use_container_width=True, hide_index=True, column_config={
+            "Harga bid / nilai acuan": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Ceiling teoritis di bawah limit (bukan harga bid)": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Ceiling simulasi (increment belum resmi)": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Total modal pada referensi": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Kebutuhan kas + cadangan": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Profit bersih pada referensi": st.column_config.NumberColumn(format="Rp %.0f"),
+            "ROI pada referensi": st.column_config.NumberColumn(format="%.1f%%"),
+        })
+        st.caption("Bid legal selalu dimulai dari nilai limit dan mengikuti kelipatan resmi. Jika increment belum dikonfirmasi, sistem hanya menampilkan ceiling simulasi komputasi; angka tersebut bukan bid resmi dan tidak boleh dipakai sebagai walk-away.")
+        if tiers.get("walk_away_from") is not None:
+            st.metric("WALK-AWAY — bid berikutnya yang harus dihindari", idr(tiers.get("walk_away_from")))
+        else:
+            st.error(tiers.get("walk_away_reason", "Tidak ada harga bid yang memenuhi kriteria. Jangan ikut bidding sebelum syarat diperbaiki."))
         f1, f2, f3 = st.columns(3)
         f1.metric("Uang jaminan", idr(snap["property"].get("deposit_amount")))
         f2.metric("Estimasi kebutuhan kas proyek + cadangan risiko", idr(at.get("cash_requirement_including_reserve")))

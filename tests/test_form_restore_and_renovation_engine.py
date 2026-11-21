@@ -47,9 +47,10 @@ def test_two_storey_roof_estimate_uses_footprint_not_total_floor_area():
     })
     roof = next(x for x in guidance["items"] if x["item_code"] == "MED_NEW_ROOF")
     assert guidance["building_footprint_estimate"] == 80
-    assert roof["quantity_low"] == 100
-    assert roof["quantity_base"] == 104
-    assert roof["quantity_high"] == 108
+    # Medium category alone is not enough to assume whole-roof replacement.
+    assert roof["quantity_low"] is None
+    assert roof["quantity_base"] is None
+    assert roof["quantity_high"] is None
 
 
 def test_mid_repair_does_not_assume_full_roof_or_electrical_replacement():
@@ -156,9 +157,11 @@ def test_explicit_floor_footprint_takes_precedence_for_roof_area():
     })
     roof = next(x for x in guidance["items"] if x["item_code"] == "MED_NEW_ROOF")
     assert guidance["building_footprint_estimate"] == 75
-    assert roof["quantity_low"] == 93.75
-    assert roof["quantity_base"] == 97.5
-    assert roof["quantity_high"] == 101.25
+    # Explicit footprint remains available as context, but full roof quantity
+    # is only supplied once the description confirms whole-roof replacement.
+    assert roof["quantity_low"] is None
+    assert roof["quantity_base"] is None
+    assert roof["quantity_high"] is None
     assert "diinput pengguna" in guidance["footprint_basis"]
 
 

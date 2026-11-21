@@ -1,4 +1,4 @@
-# Renovation Estimator — PFMS V1.0.11
+# Renovation Estimator — PFMS V1.0.12
 
 Dokumen ini menjelaskan cara PFMS menggunakan profil objek dan kondisi bangunan untuk menyiapkan **draft RAB awal**. Ini bukan AHSP final, appraisal teknis, atau penawaran kontraktor.
 
@@ -12,7 +12,7 @@ Dokumen ini menjelaskan cara PFMS menggunakan profil objek dan kondisi bangunan 
 - Deskripsi kondisi aktual, deskripsi fasad hasil AI/survei, catatan survei.
 - Foto yang diunggah (maksimal enam berkas dalam proses RAB, sesuai UI).
 
-Gemini 3.5 Flash-Lite memilih lingkup pekerjaan yang didukung bukti dan menyarankan harga satuan rendah/konservatif. Python menghitung volume screening secara deterministik dari katalog; model tidak boleh mengganti formula volume untuk kode item yang dikenal.
+Gemini 3.5 Flash-Lite memilih lingkup pekerjaan yang didukung bukti dan dapat menyarankan kisaran harga satuan screening. Python menghitung volume screening secara deterministik dari katalog; model tidak boleh mengganti formula volume untuk kode item yang dikenal. Jika ukuran pekerjaan lokal tidak dapat diperoleh dari pengukuran atau katalog yang tepat, volume tetap kosong dan harus diukur pengguna/kontraktor.
 
 ### Peran setiap input
 
@@ -56,9 +56,9 @@ Perbaikan lokal, bukan penggantian seluruh sistem. Katalog Python memberi allowa
 Allowance persentase tersebut adalah heuristic internal untuk estimasi awal, **bukan koefisien resmi**. Jika tidak ada bukti kerusakan, AI seharusnya tidak memasukkan item tersebut sebagai pekerjaan yang pasti.
 
 ### Renovasi Sedang
-Label Renovasi Sedang menunjukkan tingkat kompleksitas, bukan instruksi untuk mengganti semua elemen secara penuh. AI harus membaca temuan spesifik dari deskripsi/foto dan hanya memasukkan pekerjaan yang didukung bukti. Sebagai contoh, atap kanopi depan yang jebol dapat menghasilkan pekerjaan lokal atap/rangka/flashing, bukan otomatis penggantian seluruh atap utama. Dinding lembap menghasilkan pekerjaan mencari sumber rembes, pengeringan, treatment jamur, perbaikan plester/waterproofing dan finishing pada bidang yang diukur. Plafon, lantai, kamar mandi, listrik dan pipa dibuat kondisional sampai inspeksi mendukung scope tersebut.
+Label Renovasi Sedang menunjukkan tingkat kompleksitas, bukan instruksi untuk mengganti semua elemen secara penuh. Jika deskripsi utama secara eksplisit menyatakan Renovasi Sedang, kalimat peringatan bahwa renovasi *mungkin* bergeser menjadi berat setelah inspeksi tidak boleh mengubah kategori saat ini. AI harus membaca temuan spesifik dari deskripsi/foto dan hanya memasukkan pekerjaan yang didukung bukti. Sebagai contoh, atap kanopi depan yang jebol dapat menghasilkan pekerjaan lokal atap/rangka/flashing, bukan otomatis penggantian seluruh atap utama. Dinding lembap menghasilkan pekerjaan mencari sumber rembes, pengeringan, treatment jamur, perbaikan plester/waterproofing dan finishing pada bidang yang diukur. Plafon, lantai, kamar mandi, listrik dan pipa dibuat kondisional sampai inspeksi mendukung scope tersebut.
 
-V1.0.11 menambahkan item visual-spesifik jika deskripsi mengandung indikasi terkait: kerusakan atap depan/kanopi, dinding lembap/jamur, lantai carport retak, pagar kusam, serta pembersihan area depan. Untuk item lokal yang ukurannya tidak diketahui, quantity dibiarkan kosong dan pengguna harus mengisi hasil pengukuran. Jika kerusakan atap hanya lokal di depan, formula luas atap keseluruhan tidak diterapkan ke item perbaikan lokal.
+V1.0.12 mempertahankan kategori utama dari pernyataan pengguna, melarang inferensi status hunian dari barang/tanaman/kegelapan bagian dalam foto, dan menambahkan pengaman duplikasi scope. Item visual-spesifik jika deskripsi mengandung indikasi terkait: kerusakan atap depan/kanopi, dinding lembap/jamur, lantai carport retak, pagar kusam, serta pembersihan area depan. Untuk item lokal yang ukurannya tidak diketahui, quantity dibiarkan kosong dan pengguna harus mengisi hasil pengukuran. Jika kerusakan atap hanya lokal di depan, formula luas atap keseluruhan tidak diterapkan ke item perbaikan lokal.
 
 ### Renovasi Berat
 Pekerjaan struktur, pondasi, kolom, balok, dak, perubahan denah dan penambahan lantai tidak dapat diestimasi aman hanya dari LT/LB atau foto. Volume/harga item struktur dibiarkan kosong sampai ada pemeriksaan engineer, desain dan RAB penyedia jasa. Item struktur wajib yang belum dikuantifikasi akan membuat keputusan tetap HOLD.
@@ -87,7 +87,9 @@ Menggunakan scope pemutusan utilitas, demolisi, pembuangan puing dan land cleari
 
 ## 5. Status RAB dan persetujuan pengguna
 
-- Harga satuan dari Gemini adalah estimasi konservatif indikatif, bukan harga vendor real-time, bukan HSPK/HSP resmi, dan bukan penawaran kontraktor.
+- Harga satuan dari Gemini adalah estimasi screening generik, bukan harga vendor real-time, bukan HSPK/SSH resmi Sidoarjo, dan bukan penawaran kontraktor. Dalam pemanggilan RAB saat ini Gemini tidak menerima database harga lokal, penawaran tukang atau browsing harga. Jangan menyebut hasil tersebut sebagai standar upah/material lokal.
+- Untuk akurasi biaya lebih baik, bangun Price Book terpisah yang memuat kode pekerjaan, spesifikasi, komponen bahan/upah/alat, satuan, tanggal berlaku, wilayah, sumber harga resmi/quotation dan confidence. Python menghitung analisis harga satuan; AI hanya mengklasifikasikan deskripsi pekerjaan dan menyarankan item, bukan menciptakan asal harga.
+- SSH/standar harga satuan Pemerintah Kabupaten Sidoarjo TA 2026 dapat menjadi referensi pembanding publik, tetapi tidak otomatis setara dengan harga penawaran kontraktor rumah tinggal swasta atau harga aktual toko/tukang. Kalibrasi dengan minimal dua quotation lokal untuk scope, material dan metode kerja yang sama.
 - Volume item yang memiliki katalog Python memakai quantity hint/rentang dari Python; volume item tersembunyi/tidak terukur tetap kosong. Untuk pekerjaan lokal tanpa ukuran, AI tidak menebak skala dari foto.
 - Scope wajib yang terlewat AI muncul sebagai placeholder tanpa harga.
 - Baris dengan prioritas `Tidak diperlukan setelah ditinjau` tidak dihitung ke total RAB.
@@ -104,3 +106,18 @@ Penyusunan estimasi biaya konstruksi pemerintah Indonesia mengacu antara lain pa
 
 - JDIH PUPR: https://jdih.pu.go.id/
 - Untuk objek Sidoarjo, periksa SSH/HSPK dan standar harga pemerintah daerah yang berlaku pada tahun anggaran terkait, kemudian bandingkan dengan penawaran tukang/kontraktor setempat.
+
+## 7. Audit kasus TAS 3 Blok M6/12 (V1.0.12)
+
+Untuk deskripsi: kategori Renovasi Sedang; kerusakan penutup atap galvalum lokal di sisi kiri kanopi depan; dinding sisi dalam carport lembap/jamur; pagar besi tampak utuh tetapi cat kusam; rabat beton carport retak; interior belum terlihat:
+
+- Kategori tetap Renovasi Sedang. Catatan bahwa kebocoran dapat merembet ke atap utama adalah risiko untuk inspeksi, bukan bukti bahwa renovasi saat ini berat.
+- `VIS_FRONT_ROOF` mewakili scope penutup atap lokal dan flashing. Luas tetap kosong sampai panjang × lebar area diukur. Penggantian rangka adalah item Bersyarat sampai rangka diperiksa. Item atap utama generik untuk bidang yang sama disupresi.
+- `VIS_DAMP_WALL` mewakili bidang dinding lembap; ukur luas masing-masing sisi. Item dinding umum untuk bidang yang sama disupresi. Sumber air harus dicari sebelum finishing.
+- `VIS_CEILING_CHECK` adalah inspeksi plafon area terdampak, bukan bukti plafon harus diganti. Plafon baru masuk biaya perbaikan bila ditemukan rusak dan diukur.
+- `VIS_CARPORT_FLOOR` berstatus Bersyarat; retak rabat beton tidak otomatis menjadi pemasangan keramik. Pilih tambal, recast atau finishing setelah pemeriksaan retak/subbase.
+- Pengecatan pagar dan seluruh fasad merupakan pekerjaan estetika/bersyarat, bukan perbaikan wajib. Bidang lembap yang sudah dihitung tidak boleh dihitung dua kali dalam cat fasad.
+- Pemeriksaan interior, listrik, pipa dan kamar mandi ditampilkan sebagai unknown/inspection. Biaya skenario interior terpisah dan tidak masuk RAB dasar sampai temuan nyata dikonfirmasi.
+- Status hunian tidak ditentukan dari kain, ember, pot, kondisi gelap atau foto fasad. Gunakan hasil survei pengguna.
+- Pekerjaan struktur tidak dimasukkan dari deskripsi ini. Bila ditemukan indikasi retak/kerusakan struktur, minta penilaian engineer dan RAB terpisah.
+- Karena ukuran lokal belum diberikan, RAB harus tetap berstatus parsial. Subtotal untuk item yang sudah memiliki jumlah dan harga tidak boleh disajikan sebagai total renovasi selesai.
