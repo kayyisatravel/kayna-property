@@ -336,7 +336,7 @@ if page == "Executive Dashboard":
     active_budget_total = sum(max(0.0, to_float(b.get("budget_amount"))) for b in active_budget_rows)
     active_budget_committed = sum(max(0.0, to_float(b.get("committed_unpaid"))) for b in active_budget_rows)
     active_budget_forecast = sum(max(0.0, to_float(b.get("forecast_remaining"))) for b in active_budget_rows)
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4 = st.columns(4)
     k1.metric("Kas siap investasi", idr(liq["cash_available_for_new_project"]), help="Kas aktual dikurangi pengeluaran yang dikonfirmasi dan cadangan likuiditas.")
     k2.metric("Peluang tersimpan", len(opps))
     k3.metric("Aset aktif", len(active))
