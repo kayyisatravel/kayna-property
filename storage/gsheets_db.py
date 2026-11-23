@@ -28,6 +28,8 @@ SCHEMA: dict[str, list[str]] = {
     "RULES_CONFIG": ["rule_key", "value_json", "updated_at", "source_note"],
     "DOCUMENTS": ["document_id", "property_id", "file_name", "mime_type", "source_url", "document_hash", "uploaded_at", "notes", "extraction_json"],
     "HISTORY": ["history_id", "timestamp", "entity", "entity_id", "action", "details_json"],
+    # Additive overflow storage for exceptionally large JSON snapshots.
+    "PAYLOAD_CHUNKS": ["chunk_id", "chunk_index", "chunk_count", "data", "created_at"],
 }
 
 
@@ -49,12 +51,15 @@ def _as_bool(v: Any) -> bool:
 # and input evidence can exceed this limit. Compress long JSON cells while
 # keeping them transparently readable by older application code.
 _JSON_GZIP_PREFIX = "__PFMS_GZIP_JSON_V1__:"
+_JSON_CHUNK_PREFIX = "__PFMS_CHUNKED_JSON_V1__:"
+_PAYLOAD_CHUNK_CHARS = 40_000
 _GOOGLE_SHEETS_MAX_CELL_CHARS = 50_000
 _SAFE_CELL_CHARS = 49_000  # margin below the documented cell limit
 _JSON_COMPRESS_THRESHOLD = 12_000
 
 
-def _encode_json_cell(raw_value: Any, *, tab: str, column: str) -> str:
+def _prepare_json_cell(raw_value: Any) -> str:
+    """Serialize and compress JSON where possible, without applying cell limits."""
     if raw_value is None or raw_value == "":
         return ""
     if isinstance(raw_value, (dict, list, tuple)):
@@ -63,7 +68,6 @@ def _encode_json_cell(raw_value: Any, *, tab: str, column: str) -> str:
         raw = str(raw_value)
     if len(raw) >= _JSON_COMPRESS_THRESHOLD:
         try:
-            # Compress only valid JSON strings; ordinary text remains unchanged.
             json.loads(raw)
             compressed = _JSON_GZIP_PREFIX + base64.b64encode(
                 gzip.compress(raw.encode("utf-8"), compresslevel=9, mtime=0)
@@ -72,11 +76,16 @@ def _encode_json_cell(raw_value: Any, *, tab: str, column: str) -> str:
                 raw = compressed
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass
+    return raw
+
+
+def _encode_json_cell(raw_value: Any, *, tab: str, column: str) -> str:
+    raw = _prepare_json_cell(raw_value)
     if len(raw) > _SAFE_CELL_CHARS:
         raise ValueError(
             f"Data kolom {tab}.{column} masih {len(raw):,} karakter setelah kompresi. "
             f"Google Sheets membatasi satu sel sekitar {_GOOGLE_SHEETS_MAX_CELL_CHARS:,} karakter. "
-            "Kurangi lampiran/teks berulang atau arsipkan dokumen biner di Google Drive; jangan hapus snapshot analisis."
+            "Payload ini perlu disimpan sebagai beberapa chunk agar snapshot tetap utuh."
         )
     return raw
 
@@ -89,6 +98,34 @@ def _decode_json_cell(raw_value: Any) -> str:
         return gzip.decompress(base64.b64decode(payload)).decode("utf-8")
     except Exception as exc:
         raise ValueError("Payload JSON terkompresi di Google Sheets rusak atau tidak lengkap.") from exc
+
+
+def _decode_chunked_json_cell(marker: str, chunk_rows: list[dict[str, Any]]) -> str:
+    """Reassemble a chunk-pointer cell, verify its checksum, then return packed JSON text."""
+    if not isinstance(marker, str) or not marker.startswith(_JSON_CHUNK_PREFIX):
+        return str(marker or "")
+    parts = marker.split(":")
+    if len(parts) != 3:
+        raise ValueError("Penanda payload berpotongan tidak valid; snapshot tidak boleh dianggap kosong.")
+    chunk_id, expected_count_text = parts[1], parts[2]
+    try:
+        expected_count = int(expected_count_text)
+    except ValueError as exc:
+        raise ValueError("Jumlah chunk payload tidak valid.") from exc
+    selected = [r for r in (chunk_rows or []) if str(r.get("chunk_id")) == chunk_id]
+    selected.sort(key=lambda r: int(r.get("chunk_index") or 0))
+    if len(selected) != expected_count:
+        raise ValueError(
+            f"Snapshot terpotong: ditemukan {len(selected)} dari {expected_count} chunk. "
+            "Periksa tab PAYLOAD_CHUNKS; jangan menimpa snapshot ini."
+        )
+    if [int(r.get("chunk_index") or 0) for r in selected] != list(range(1, expected_count + 1)):
+        raise ValueError("Urutan chunk snapshot tidak lengkap atau tidak berurutan.")
+    packed = "".join(str(r.get("data") or "") for r in selected)
+    import hashlib
+    if hashlib.sha256(packed.encode("utf-8")).hexdigest()[:32] != chunk_id:
+        raise ValueError("Checksum chunk snapshot tidak cocok; payload tidak dibaca agar data tidak rusak.")
+    return packed
 
 
 def _google_error_detail(exc: Exception) -> str:
@@ -119,7 +156,7 @@ def _raise_sheet_write_error(exc: Exception, *, tab: str, operation: str, range_
         context += f" ({range_name})"
     low = detail.lower()
     if "50,000" in detail or "50000" in detail or "maximum cell size" in low:
-        hint = "Payload satu sel melebihi batas Google Sheets. PFMS V1.0.7 mengompresi JSON panjang; periksa apakah repository sudah memakai storage/gsheets_db.py terbaru."
+        hint = "Payload melewati batas satu sel. PFMS V1.0.16 menyimpan JSON besar pada tab PAYLOAD_CHUNKS; periksa apakah tab ini tersedia dan repository memakai storage/gsheets_db.py terbaru."
     elif "permission" in low or "forbidden" in low or "403" in detail:
         hint = "Periksa akses Editor Service Account dan proteksi tab/range."
     elif "unable to parse range" in low or "not found" in low or "404" in detail:
@@ -180,20 +217,72 @@ class GoogleSheetsDB:
             else:
                 raise RuntimeError(f"Header tab {title} tidak sesuai template. Urutan/label kolom yang ada berbeda; jangan mengubah header secara manual.")
 
+    def _store_chunked_payload(self, packed: str) -> str:
+        """Persist large JSON across safe cells; repair interrupted chunk writes idempotently."""
+        import hashlib
+        chunk_id = hashlib.sha256(packed.encode("utf-8")).hexdigest()[:32]
+        chunks = [packed[i:i + _PAYLOAD_CHUNK_CHARS] for i in range(0, len(packed), _PAYLOAD_CHUNK_CHARS)]
+        if not chunks:
+            return ""
+        ws = self.sheets["PAYLOAD_CHUNKS"]
+        raw_rows = _retry_google(ws.get_all_values)
+        existing: dict[int, tuple[str, int]] = {}
+        for raw in raw_rows[1:]:
+            padded = raw + [""] * (len(SCHEMA["PAYLOAD_CHUNKS"]) - len(raw))
+            record = dict(zip(SCHEMA["PAYLOAD_CHUNKS"], padded[:len(SCHEMA["PAYLOAD_CHUNKS"])]))
+            if str(record.get("chunk_id")) != chunk_id:
+                continue
+            try:
+                index = int(record.get("chunk_index") or 0)
+                count = int(record.get("chunk_count") or 0)
+            except (TypeError, ValueError):
+                raise ValueError("Metadata chunk payload lama rusak; snapshot tidak ditimpa.")
+            if index in existing and existing[index][0] != str(record.get("data") or ""):
+                raise ValueError("Terdapat dua isi berbeda untuk indeks chunk yang sama; snapshot tidak ditimpa.")
+            existing[index] = (str(record.get("data") or ""), count)
+        for _index, (_data, count) in existing.items():
+            if count != len(chunks):
+                raise ValueError("Jumlah chunk tersimpan berbeda dari snapshot yang akan disimpan; snapshot tidak ditimpa.")
+        missing_records = []
+        for index, part in enumerate(chunks, start=1):
+            old = existing.get(index)
+            if old:
+                if old[0] != part:
+                    raise ValueError("Isi chunk tersimpan tidak cocok dengan checksum snapshot; snapshot tidak ditimpa.")
+                continue
+            missing_records.append({
+                "chunk_id": chunk_id, "chunk_index": index, "chunk_count": len(chunks),
+                "data": part, "created_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+            })
+        if missing_records:
+            self.append_records("PAYLOAD_CHUNKS", missing_records)
+        return f"{_JSON_CHUNK_PREFIX}{chunk_id}:{len(chunks)}"
+
     def read_table(self, title: str) -> list[dict[str, Any]]:
         if title not in SCHEMA: raise KeyError(f"Tab tidak dikenal: {title}")
         rows = _retry_google(self.sheets[title].get_all_values)
         if len(rows) <= 1: return []
         headers = SCHEMA[title]
         output = []
-        for row in rows[1:]:
+        raw_data_rows = rows[1:]
+        json_cols = ("payload_json", "value_json", "extraction_json", "details_json")
+        has_chunk_pointers = any(
+            str(row[headers.index(col)]) .startswith(_JSON_CHUNK_PREFIX)
+            for row in raw_data_rows if len(row) > 0
+            for col in json_cols if col in headers and headers.index(col) < len(row)
+        )
+        chunk_rows = self.read_table("PAYLOAD_CHUNKS") if has_chunk_pointers and title != "PAYLOAD_CHUNKS" else []
+        for row in raw_data_rows:
             if not any(str(x).strip() for x in row): continue
             padded = row + [""] * (len(headers) - len(row))
             record = dict(zip(headers, padded[:len(headers)]))
             # Transparently unpack long JSON fields stored with gzip/base64 prefix.
-            for json_col in ("payload_json", "value_json", "extraction_json", "details_json"):
+            for json_col in json_cols:
                 if json_col in record and record.get(json_col):
-                    record[json_col] = _decode_json_cell(record[json_col])
+                    packed = record[json_col]
+                    if isinstance(packed, str) and packed.startswith(_JSON_CHUNK_PREFIX):
+                        packed = _decode_chunked_json_cell(packed, chunk_rows)
+                    record[json_col] = _decode_json_cell(packed)
             if "payload_json" in record:
                 try: record["payload"] = json.loads(record.get("payload_json") or "{}")
                 except Exception: record["payload"] = {}
@@ -224,7 +313,13 @@ class GoogleSheetsDB:
             else:
                 value = sheet_cell_value(value)
             if col in json_columns:
-                value = _encode_json_cell(value, tab=title, column=col)
+                try:
+                    value = _encode_json_cell(value, tab=title, column=col)
+                except ValueError as exc:
+                    if "setelah kompresi" not in str(exc):
+                        raise
+                    packed = _prepare_json_cell(value)
+                    value = self._store_chunked_payload(packed)
             else:
                 if isinstance(value, str) and len(value) > _SAFE_CELL_CHARS:
                     raise ValueError(

@@ -1,8 +1,19 @@
-# Property Flipper Management System (PFMS) — V1.0.15
+# Property Flipper Management System (PFMS) — V1.0.16
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.16 — Scope Deduplication, Durable Sheets Payloads & Practical Market Estimates
+
+- Explicit user BoQ rows are authoritative. Generated Python/AI rows that overlap the same work surface or task are removed with an audit reason; distinct protection, inspection, waterproofing and repair work remain separate.
+- Site cleanup is distinguished from site protection. If BoQ includes debris/old-item removal only, the generic preparation allowance is re-scoped to protection and preparation; if the BoQ already includes both, the generated pack is suppressed.
+- Large JSON snapshots are compressed and, when still above the safe single-cell size, stored in 40,000-character chunks on an additive `PAYLOAD_CHUNKS` tab. Reads transparently reassemble and checksum-verify the original snapshot; partial writes can be repaired on retry.
+- Comparable parsing accepts escaped Markdown numbering (`1\.`), exact URLs and portal root domains. Root-domain sources remain usable for an indicative estimate but are not treated as verified individual listing pages.
+- The market engine separates indicative valuation from the final GO audit gate: three valid cash-market comparables can produce an indicative range; READY/GO-grade evidence still requires at least five individual listing URLs with a captured date and sufficient data-quality index.
+- Comparables can use Haversine straight-line distance or a manually entered distance in metres. Administrative village/district borders do not disqualify a nearby property.
+- Primary/developer listings, secondary/resale listings and unknown market segments receive different weights. Over-credit/take-over schemes are kept separately and are not blended into cash asking-price comparables.
+- All dashboard and result metric rows use no more than four columns; the customised active-project realised-budget metric remains intact.
 
 ## V1.0.15 — Auction-Grade RAB Allowances & Geographic Comparable Valuation
 

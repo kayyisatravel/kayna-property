@@ -116,7 +116,7 @@ def test_missing_listing_publication_date_is_uncertainty_not_automatic_rejection
     row.update({"source_platforms":"Rumah123", "source_url":"https://example.com/listing", "date_found":date.today().isoformat(), "listing_date":None, "price_type":"Asking aktif"})
     market = assess_comparables([row], {"land_area":123,"building_area":100})
     assert market["valid_count"] == 1
-    assert market["valid"][0]["recency_score"] == 55
+    assert market["valid"][0]["recency_score"] == 65
     assert market["listing_date_missing_count"] == 1
     assert market["valid_count"] == 1
     assert market["go_grade_count"] == 0  # URL exists, but no individual-listing scope confirmation

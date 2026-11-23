@@ -167,7 +167,7 @@ def build_renovation_quantity_guidance(context: dict[str, Any]) -> dict[str, Any
         wall_priority = "Wajib" if explicit_cosmetic_scope else "Disarankan"
         ceiling_priority = "Wajib" if explicit_cosmetic_scope else "Disarankan"
         items += [
-            _item("COS_PREP", "Pembersihan dan proteksi area kerja", "ls", 1, 1, 1, "Paket persiapan proyek", "Sedang", "Lumpsum; sesuaikan dengan luas, barang dan akses area kerja.", "Wajib" if explicit_cosmetic_scope else "Disarankan"),
+            _item("COS_PREP", "Proteksi dan penyiapan area kerja sebelum renovasi", "ls", 1, 1, 1, "Paket persiapan proyek; tidak termasuk pembersihan/angkut barang bila sudah tercantum pada BoQ", "Sedang", "Penutup lantai/kusen, pengamanan area, penataan material dan persiapan kerja. Tidak menggantikan biaya pembersihan/angkut sampah yang sudah di-BoQ.", "Wajib" if explicit_cosmetic_scope else "Disarankan"),
             _item("COS_WALL", "Kupas cat lepas, plamir/aci lokal dan cat ulang dinding interior-eksterior", "m2", wall_low, wall_base, wall_high, f"LB × 2,5–3,0; titik tengah disesuaikan secara kasar dengan jumlah kamar tidur ({bedrooms or 'belum diisi'})", "Rendah", "Koefisien penyaringan awal, bukan pengukuran dinding. Koreksi setelah ukur keliling, tinggi, bukaan dan partisi.", wall_priority),
             _item("COS_CEILING", "Pengecatan plafon dan perbaikan nat/retak rambut lokal", "m2", floor_ceiling, floor_ceiling, floor_ceiling, "LB × 1,0 untuk cakupan plafon penuh", "Sedang", "Kurangi bila terdapat void, area terbuka atau plafon tidak seluruhnya dicat.", ceiling_priority),
             _item("COS_FLOOR", "Poles lantai ATAU pemasangan finishing vinyl/SPC di atas lantai eksisting", "m2", floor_ceiling, floor_ceiling, floor_ceiling, "LB × 1,0 jika seluruh lantai dipilih; pilih satu metode", "Sedang", "Conditional: pilih poles ATAU vinyl/SPC sesuai kondisi lantai; jangan hitung keduanya.", conditional=True),
@@ -414,6 +414,114 @@ def summarize_rab_totals(items: list[dict[str, Any]] | None) -> dict[str, Any]:
         ),
     }
 
+
+
+def deduplicate_generated_rab_rows(
+    rows: list[dict[str, Any]], user_boq_rows: list[dict[str, Any]] | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Remove generated generic rows already budgeted explicitly in user BoQ.
+
+    User BoQ rows are authoritative and are never removed. Only AI/Python
+    generated rows are screened. Matching is intentionally conservative and
+    uses both the generated code and the scope words; unrelated preparation,
+    waterproofing, repair and replacement scopes remain separate.
+    """
+    user_rows = [r for r in (user_boq_rows or []) if isinstance(r, dict)]
+    user_text = [re.sub(r"\s+", " ", str(r.get("work_item") or "").lower()).strip() for r in user_rows]
+    all_user = " ".join(user_text)
+
+    def has(pattern: str, text: str) -> bool:
+        return bool(re.search(pattern, text, flags=re.IGNORECASE))
+
+    # Scope evidence explicitly present in the user's own BoQ.
+    user_wall_paint = has(r"(cat|pengecatan|pengecatan ulang|cat ulang)", all_user) and has(r"(dinding|tembok|fasad)", all_user)
+    user_wall_interior = any(has(r"(cat|pengecatan)", t) and has(r"(interior|dalam|ruang utama)", t) and has(r"(dinding|tembok)", t) for t in user_text)
+    user_wall_exterior = any(has(r"(cat|pengecatan)", t) and has(r"(fasad|eksterior|luar)", t) for t in user_text)
+    user_ceiling_paint = any(has(r"(cat|pengecatan)", t) and has(r"(plafon|langit.?langit)", t) for t in user_text)
+    user_electrical = any(has(r"(listrik|saklar|stop.?kontak|fitting|armatur)", t) and has(r"(peremajaan|pengecekan|pemeriksaan|perbaikan|penggantian|titik|instalasi)", t) for t in user_text)
+    user_joinery_maintenance = any(has(r"(engsel|kunci|handle|karet kusen|kusen pintu|daun pintu|jendela)", t) and has(r"(pembersihan|pelumasan|servis|perawatan|pengecekan|perbaikan)", t) for t in user_text)
+    user_floor_cleaning = any(has(r"(keramik|lantai|nat)", t) and has(r"(pembersihan|pembersihan|bersihkan|cek|pengecekan|pemeriksaan)", t) for t in user_text)
+    user_sanitary_service = any(has(r"(sanitair|saniter|keran|kamar mandi|saluran air|plumbing)", t) and has(r"(servis|service|pembersihan|pengecekan|pemeriksaan|perbaikan)", t) for t in user_text)
+    user_site_prep = any(has(r"(pembersihan|proteksi|pengamanan)", t) and has(r"(area kerja|area depan|peti kayu|sampah|barang bekas)", t) for t in user_text)
+    user_site_protection = any(
+        has(r"(proteksi|pengamanan|penutup)", t) and has(r"(area kerja|lantai|kusen|furnitur|material)", t)
+        for t in user_text
+    )
+
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, str]] = []
+    for original in rows or []:
+        row = dict(original)
+        code = str(row.get("item_code") or "").strip().upper()
+        if code.startswith("USER_BOQ_"):
+            kept.append(row)
+            continue
+        name = re.sub(r"\s+", " ", str(row.get("work_item") or "").lower()).strip()
+        target = f"{code} {name}"
+        reason = ""
+
+        # Generic whole-house wall paint must not duplicate a user-budgeted
+        # surface. If the user covered only one side (inside OR outside), keep a
+        # narrowed allowance for the other side instead of either double-counting
+        # the covered half or silently dropping the uncovered half.
+        if code == "COS_WALL" and user_wall_interior and user_wall_exterior:
+            reason = "Paket cat dinding interior-eksterior sudah dipecah dan dimasukkan pada BoQ pengguna."
+        elif code == "COS_WALL" and user_wall_interior != user_wall_exterior:
+            missing_surface = "eksterior/fasad" if user_wall_interior else "interior"
+            row["work_item"] = f"Allowance pengecatan dinding {missing_surface} yang belum tercantum pada BoQ (estimasi 50% paket generik)"
+            for quantity_key in ("quantity_low", "quantity", "quantity_high"):
+                quantity_value = to_float(row.get(quantity_key))
+                if quantity_value > 0:
+                    row[quantity_key] = round(quantity_value * 0.5, 2)
+            row["quantity_basis"] = (str(row.get("quantity_basis") or "") + "; kuantitas dipersempit 50% sebagai allowance untuk permukaan yang belum tercantum, wajib diukur ulang").strip("; ")
+            row["notes"] = (str(row.get("notes") or "") + f" BoQ pengguna sudah mencakup dinding {'interior' if user_wall_interior else 'eksterior'}; baris ini hanya allowance permukaan {missing_surface} yang belum dicakup. Faktor 50% adalah pembagian screening, bukan hasil ukur. ").strip()
+        elif user_wall_paint and has(r"(cat|pengecatan)", name) and has(r"(dinding|tembok|fasad)", name) and not has(r"(waterproof|rembes|lembap|jamur|plester rusak|kupas plester)", name):
+            # More local AI rows are suppressed only when the exact surface is
+            # already budgeted in the user's BoQ.
+            if (code in {"MED_WALL", "WALL_PAINT", "AI_WALL_PAINT"} and (
+                (has(r"(fasad|eksterior|luar)", name) and user_wall_exterior)
+                or (has(r"(interior|dalam|ruang utama)", name) and user_wall_interior)
+            )):
+                reason = "Pengecatan bidang dinding yang sama sudah tercantum pada BoQ pengguna."
+        if not reason and user_ceiling_paint and code in {"COS_CEILING", "CEILING_PAINT", "AI_CEILING_PAINT"}:
+            reason = "Pengecatan plafon sudah tercantum pada BoQ pengguna."
+        if not reason and user_electrical and (
+            code in {"LGT_ELEC", "MED_ELEC", "COS_ELECTRICAL", "ELECTRICAL_SERVICE"}
+            or (has(r"(listrik|saklar|stop.?kontak|fitting|armatur)", name) and has(r"(peremajaan|pengecekan|pemeriksaan|servis|service|titik)", name))
+        ):
+            reason = "Pemeriksaan/peremajaan titik listrik sudah tercantum pada BoQ pengguna."
+        if not reason and user_joinery_maintenance and (
+            code in {"JOINERY_MAINTENANCE", "DOOR_SERVICE", "WINDOW_SERVICE"}
+            or (has(r"(engsel|kunci|handle|karet kusen)", name) and has(r"(pembersihan|pelumasan|servis|perawatan|pengecekan)", name))
+        ):
+            reason = "Servis aksesori/kusen pintu-jendela sudah tercantum pada BoQ pengguna."
+        if not reason and user_floor_cleaning and (
+            code in {"FLOOR_CLEANING", "TILE_CLEANING"}
+            or (has(r"(pembersihan|bersihkan|cek|pengecekan)", name) and has(r"(keramik|lantai|nat)", name))
+        ):
+            reason = "Pembersihan/pengecekan keramik dan nat sudah tercantum pada BoQ pengguna."
+        if not reason and user_sanitary_service and (
+            code in {"LGT_SANITARY", "SANITARY_SERVICE"}
+            or (has(r"(sanitair|saniter|keran|kamar mandi)", name) and has(r"(servis|service|pengecekan|pemeriksaan)", name) and not has(r"(renovasi total|bongkar total|penggantian seluruh)", name))
+        ):
+            reason = "Servis ringan sanitair/keran sudah tercantum pada BoQ pengguna."
+        if not reason and user_site_prep and code in {"COS_PREP", "VIS_FRONT_CLEAN", "SITE_CLEANING"}:
+            # Site protection is distinct from debris removal. Keep only the
+            # protection component when the user budgeted cleanup, unless the
+            # user's own BoQ already explicitly includes site protection too.
+            if code == "COS_PREP" and user_site_protection:
+                reason = "Proteksi/penyiapan area kerja sudah tercantum pada BoQ pengguna."
+            elif code == "COS_PREP":
+                row["work_item"] = "Proteksi dan penyiapan area kerja (di luar pembersihan/angkut barang yang sudah di-BoQ)"
+                row["notes"] = (str(row.get("notes") or "") + " Komponen pembersihan/angkut yang sama telah dianggarkan pada BoQ pengguna; baris ini hanya untuk proteksi dan persiapan kerja.").strip()
+            elif has(r"(pembersihan|cleaning)", name):
+                reason = "Pembersihan area kerja/barang bekas yang sama sudah tercantum pada BoQ pengguna."
+
+        if reason:
+            removed.append({"item_code": code, "work_item": str(row.get("work_item") or ""), "reason": reason})
+        else:
+            kept.append(row)
+    return kept, removed
 
 def _global_warnings(category: str, lb: float, lt: float, floors: int, explicit_footprint: float = 0) -> list[str]:
     warnings = []

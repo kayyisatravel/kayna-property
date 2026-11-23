@@ -1,3 +1,30 @@
+## [1.0.16] - 2026-11-23
+
+### Fixed
+- Generated renovation rows that overlap explicit user BoQ tasks are removed by work-scope matching, while every user BoQ row is retained.
+- Site preparation now distinguishes debris/old-item cleanup from protection of floors, doors, windows and work areas. COS_PREP is narrowed or suppressed according to what the user already budgets.
+- A comparable URL review confirmation is invalidated when its property name, address, price, land area, building area or URL changes.
+- Listing parser accepts backslash-escaped Markdown headings and URLs, bare portal domains, price ranges for building area, and over-credit text.
+- Portal-root URLs no longer block indicative valuation. URL traceability remains a separate GO-grade evidence gate.
+- Primary developer/new-build comparables have a lower weight than secondary/resale comparables. Over-credit/take-over listings are reported separately from cash-market comparables.
+
+### Added
+- Google Sheets `PAYLOAD_CHUNKS` tab for large compressed JSON payloads that exceed the single-cell limit; reads reassemble and checksum-verify the original content.
+- Idempotent recovery for interrupted chunk writes, without deleting or truncating existing snapshots.
+- Manual straight-line distance in metres for comparable listings when coordinates are unavailable; administrative boundaries are not hard filters.
+- Separate `estimate_status` for indicative market estimation and `status` for final evidence readiness.
+
+### Changed
+- At least three valid cash-market comparables can produce an indicative range; final READY status still requires at least five confirmed individual listing URLs with captured dates and confidence index of at least 55.
+- Market confidence is labelled as a data-quality index, not a probability that a sale will be achieved at the estimated value.
+- All metric layouts remain at four columns maximum.
+
+### Verification
+- `pytest -q`: 160 passed.
+- `python -m compileall -q .`: passed.
+- Full ZIP and patch ZIP integrity checked after packaging.
+- Live Streamlit Cloud, Gemini API and Google Sheets credentials were not tested in this environment.
+
 ## [1.0.15] - 2026-11-23
 
 ### Fixed

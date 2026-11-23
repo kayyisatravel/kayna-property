@@ -500,7 +500,7 @@ elif page == "New Auction Analysis":
                 st.session_state[k] = v
             st.session_state.na_last_occupancy = mapping.get("na_survey_status", "Belum Survei")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", latest_saved.get("risk_reviewed", False)))
-            comparable_columns = ["name", "address", "latitude", "longitude", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
+            comparable_columns = ["name", "address", "latitude", "longitude", "distance_m", "market_segment", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
             risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "mitigation", "status"]
             loaded_comps = data.get("comparables", [])
             loaded_risks = data.get("risk_register", [])
@@ -784,11 +784,11 @@ elif page == "New Auction Analysis":
             st.caption(f"Parsing terakhir: {summary.get('count')} listing · tanggal tangkap sistem {summary.get('captured_at')}. Tanggal ini bukan tanggal publikasi iklan.")
             for note in st.session_state.get("na_comparable_parse_notes", []):
                 st.warning(note)
-        default_cols = ["name", "address", "complex_name", "latitude", "longitude", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
-        if st.session_state.get("na_comparable_schema_version") != 4:
+        default_cols = ["name", "address", "complex_name", "latitude", "longitude", "distance_m", "market_segment", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
+        if st.session_state.get("na_comparable_schema_version") != 6:
             if "na_comparables_editor_widget" in st.session_state:
                 del st.session_state["na_comparables_editor_widget"]
-            st.session_state.na_comparable_schema_version = 4
+            st.session_state.na_comparable_schema_version = 6
         if "na_comparables_editor" not in st.session_state:
             st.session_state.na_comparables_editor = pd.DataFrame([{c: None for c in default_cols} for _ in range(5)])
         else:
@@ -797,7 +797,7 @@ elif page == "New Auction Analysis":
                 if column not in comp_frame.columns:
                     comp_frame[column] = None
             st.session_state.na_comparables_editor = comp_frame[default_cols]
-        st.caption("Baris dapat digunakan untuk valuasi indikatif jika nama, harga, minimal salah satu LT/LB, dan sumber listing tersedia. Untuk GO final, setiap comparable harus memiliki URL iklan individual dan tanggal ditemukan. URL pencarian, agregator, dan halaman kompleks tidak dihitung sebagai iklan individual. Kondisi, akses, LB, dan tanggal publikasi yang tidak disebutkan tidak akan ditebak; kekurangannya menurunkan confidence.")
+        st.caption("Untuk estimasi indikatif: nama, harga, minimal salah satu LT/LB dan sumber listing/platform sudah dapat digunakan. Domain utama portal dapat menjadi bukti sumber awal. Untuk audit GO final: perlukan URL iklan individual dan tanggal ditemukan. Koordinat Haversine atau jarak lurus manual (meter) dapat dipakai; perbedaan desa/kecamatan tidak otomatis menggugurkan pembanding.")
         comparable_editor_input = st.session_state.na_comparables_editor.copy()
         # Streamlit DateColumn expects date-like values; normalize back to ISO strings after editing.
         for date_col in ("listing_date", "date_found"):
@@ -808,16 +808,18 @@ elif page == "New Auction Analysis":
             "address": st.column_config.TextColumn("Alamat/lokasi"),
             "latitude": st.column_config.NumberColumn("Latitude", min_value=-90.0, max_value=90.0, format="%.6f", help="Koordinat pin properti dari Google Maps. Opsional, tetapi diperlukan untuk mengukur jarak lintas desa/kecamatan."),
             "longitude": st.column_config.NumberColumn("Longitude", min_value=-180.0, max_value=180.0, format="%.6f", help="Koordinat pin properti dari Google Maps. Opsional, tetapi diperlukan untuk mengukur jarak lintas desa/kecamatan."),
+            "distance_m": st.column_config.NumberColumn("Jarak lurus (meter)", min_value=0, step=50, help="Isi jarak garis lurus dari objek target ke pembanding bila koordinat tidak diisi. Batas desa/kecamatan tidak membatasi pembanding."),
+            "market_segment": st.column_config.SelectboxColumn("Segmen pasar", options=["Tidak diketahui", "Secondary / resale", "Primary / developer"], help="Pisahkan unit developer/rumah baru dari rumah second/resale. Unit primary diberi bobot lebih rendah ketika target yang dinilai adalah rumah resale."),
             "price": st.column_config.NumberColumn("Harga listing (Rp)", min_value=0, format="Rp %.0f"),
             "njop": st.column_config.NumberColumn("NJOP pembanding (Rp, opsional)", min_value=0, format="Rp %.0f", help="Isi hanya bila Anda benar-benar memiliki NJOP/SPPT pembanding tersebut."),
             "land_area": st.column_config.NumberColumn("LT (m²)", min_value=0),
             "building_area": st.column_config.NumberColumn("LB (m²)", min_value=0, help="Boleh kosong bila tidak tercantum; sistem dapat memakai pendekatan LT saja."),
             "condition": st.column_config.SelectboxColumn("Kondisi", options=["", "Siap Huni", "Butuh Renovasi", "Hitung Tanah"]),
             "access": st.column_config.SelectboxColumn("Akses", options=["", "2 Mobil", "1 Mobil", "Gang"]),
-            "price_type": st.column_config.SelectboxColumn("Jenis harga", options=["Asking aktif", "Marked sold / perlu verifikasi", "Transaksi terverifikasi"]),
+            "price_type": st.column_config.SelectboxColumn("Jenis harga", options=["Asking aktif", "Marked sold / perlu verifikasi", "Transaksi terverifikasi", "Over kredit / skema kewajiban"]),
             "source_platforms": st.column_config.TextColumn("Portal/platform sumber"),
             "source_url": st.column_config.TextColumn("URL sumber (dari input)"),
-            "source_url_scope": st.column_config.SelectboxColumn("Jenis halaman sumber", options=["", "Listing individual", "Portal pencarian/kategori", "Halaman venue/kompleks", "Perlu verifikasi"], help="Untuk GO final, pilih Listing individual hanya bila URL benar-benar membuka iklan rumah tertentu."),
+            "source_url_scope": st.column_config.SelectboxColumn("Jenis halaman sumber", options=["", "Listing individual", "Portal/domain only", "Portal pencarian/kategori", "Halaman venue/kompleks", "Perlu verifikasi"], help="Domain utama portal cukup sebagai sumber untuk valuasi indikatif, tetapi hanya URL listing individual yang dapat dihitung untuk audit gate GO."),
             "listing_date": st.column_config.DateColumn("Tanggal terbit iklan (opsional)", format="DD/MM/YYYY", help="Kosongkan bila tanggal publikasi tidak tersedia."),
             "date_found": st.column_config.DateColumn("Tanggal ditemukan / dikumpulkan", format="DD/MM/YYYY", help="Tanggal Anda menemukan/mencatat listing; gunakan tombol isi tanggal untuk mengisi tanggal hari ini bila sesuai."),
             "date_found_basis": st.column_config.TextColumn("Dasar tanggal ditemukan", disabled=True),
@@ -911,26 +913,45 @@ elif page == "New Auction Analysis":
                 st.success(f"Tanggal ditemukan diisi untuk {changed} baris. Tanggal publikasi iklan tetap tidak diubah.")
                 st.rerun()
         with market_action_2:
+            # Any material comparable change invalidates prior URL review. A user
+            # must not be able to confirm a URL once, then edit price/area/address
+            # and accidentally keep that old confirmation attached to new facts.
             url_review_material = [
-                {"name": str(row.get("name") or "").strip(), "url": str(row.get("source_url") or "").strip()}
+                {
+                    "name": str(row.get("name") or "").strip(),
+                    "address": str(row.get("address") or "").strip(),
+                    "price": to_float(row.get("price")),
+                    "land_area": to_float(row.get("land_area")),
+                    "building_area": to_float(row.get("building_area")),
+                    "url": str(row.get("source_url") or "").strip(),
+                }
                 for row in edited_normalized.to_dict(orient="records")
                 if str(row.get("source_url") or "").strip()
             ]
             url_review_signature = hashlib.sha256(safe_json(url_review_material).encode("utf-8")).hexdigest()
             sync_review_confirmation(st.session_state, "na_confirm_individual_urls", "na_confirm_individual_urls_signature", url_review_signature)
-            confirm_individual_urls = st.checkbox("Saya sudah membuka URL dan memastikan setiap link yang relevan adalah iklan properti individual.", key="na_confirm_individual_urls")
-            if st.button("Konfirmasi URL sebagai listing individual", disabled=not confirm_individual_urls, use_container_width=True, key="na_confirm_url_scope"):
+            confirm_individual_urls = st.checkbox(
+                "Saya sudah membuka satu per satu URL dan memastikan halaman tersebut menampilkan rumah yang sesuai dengan nama, harga, LT/LB dan lokasi pada barisnya (bukan homepage portal atau halaman pencarian).",
+                key="na_confirm_individual_urls",
+            )
+            if st.button("Konfirmasi URL detail yang benar-benar cocok", disabled=not confirm_individual_urls, use_container_width=True, key="na_confirm_url_scope"):
+                from urllib.parse import urlparse
                 rows_to_update = edited_normalized.to_dict(orient="records")
                 changed = 0
+                skipped = 0
                 for comp in rows_to_update:
                     url = str(comp.get("source_url") or "").strip()
                     scope = str(comp.get("source_url_scope") or "")
-                    if url.startswith(("http://", "https://")) and scope not in {"Portal pencarian/kategori", "Halaman venue/kompleks"}:
+                    path = (urlparse(url).path or "").strip("/") if url.startswith(("http://", "https://")) else ""
+                    explicitly_portal = scope in {"Portal/domain only", "Portal pencarian/kategori", "Halaman venue/kompleks"}
+                    if url.startswith(("http://", "https://")) and path and not explicitly_portal:
                         comp["source_url_scope"] = "Listing individual"
                         changed += 1
+                    elif url:
+                        skipped += 1
                 st.session_state.na_comparables_editor = pd.DataFrame(rows_to_update)
                 if "na_comparables_editor_widget" in st.session_state: del st.session_state["na_comparables_editor_widget"]
-                st.success(f"{changed} URL ditandai sebagai listing individual berdasarkan konfirmasi Anda.")
+                st.success(f"{changed} URL dengan halaman detail ditandai sebagai listing individual. {skipped} URL homepage/portal tetap bukan listing individual.")
                 st.rerun()
         set_default("na_negotiation_discount", DEFAULT_RULES["negotiation_discount_pct"])
         set_default("na_quick_sale_discount", DEFAULT_RULES["quick_sale_discount_pct"])
@@ -979,7 +1000,7 @@ elif page == "New Auction Analysis":
                 "condition_description": st.session_state.get("na_rab_condition_description", ""),
             }
             rab_description = "\n".join(x for x in [st.session_state.na_rab_condition_description.strip(), "Deskripsi fasad: " + context["facade_description"] if context["facade_description"] else "", "Catatan survei: " + context["survey_notes"] if context["survey_notes"] else ""] if x)
-            cache_material = "RAB_PARSER_V1.0.15|" + rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
+            cache_material = "RAB_PARSER_V1.0.16|" + rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
             cache_key = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
             cache = st.session_state.setdefault("na_rab_cache", {})
             try:
@@ -1008,6 +1029,10 @@ elif page == "New Auction Analysis":
                 st.write(f"Kategori RAB: **{rab_estimate.get('category', 'Belum ditentukan')}**")
                 if rab_estimate.get("category_basis"):
                     st.caption("Dasar klasifikasi: " + str(rab_estimate.get("category_basis")))
+                if rab_estimate.get("rab_deduplication"):
+                    with st.expander(f"Pemeriksaan duplikasi scope ({len(rab_estimate.get('rab_deduplication', []))} baris generik disatukan dengan BoQ)", expanded=False):
+                        for duplicate in rab_estimate.get("rab_deduplication", []):
+                            st.write(f"• {duplicate.get('item_code')}: {duplicate.get('work_item')} — {duplicate.get('reason')}")
                 if rab_estimate.get("user_boq_count", 0):
                     st.success(f"BoQ pengguna terbaca: {rab_estimate.get('user_boq_count')} baris. {rab_estimate.get('user_boq_priced_count', rab_estimate.get('user_boq_model_priced_count', 0))} baris sudah memiliki harga konservatif; {rab_estimate.get('user_boq_catalog_priced_count', 0)} di antaranya diisi katalog screening Python. Kuantitas BoQ dipertahankan persis.")
                     st.caption("Baris BoQ eksplisit tetap menjadi allowance modal meskipun interior/komponen belum dapat diinspeksi. Keyakinan diturunkan untuk pekerjaan tersembunyi; keluarkan hanya setelah inspeksi membuktikan tidak diperlukan. Harga katalog/Gemini adalah rentang screening, bukan quotation atau HSPK all-in.")
@@ -1016,7 +1041,7 @@ elif page == "New Auction Analysis":
                             for unpriced_name in rab_estimate.get("user_boq_unpriced_items", []):
                                 st.write(f"• {unpriced_name}")
                 elif "estimasi volume" in str(st.session_state.get("na_rab_condition_description", "")).lower():
-                    st.error("BoQ belum terbaca. V1.0.15 mendukung tabel Markdown (|) dan tabel tab-separated hasil salin dari Excel/Google Sheets. Periksa header Item Pekerjaan, Estimasi Volume, Satuan serta setiap baris memiliki volume dan satuan.")
+                    st.error("BoQ belum terbaca. V1.0.16 mendukung tabel Markdown (|) dan tabel tab-separated hasil salin dari Excel/Google Sheets. Periksa header Item Pekerjaan, Estimasi Volume, Satuan serta setiap baris memiliki volume dan satuan.")
                 for category_note in rab_estimate.get("category_warnings", []):
                     st.warning(category_note)
                 for geometry_note in rab_estimate.get("geometry_warnings", []):
@@ -1288,14 +1313,20 @@ elif page == "New Auction Analysis":
         decision = snap["decision"]; mkt = snap["market"]; tiers = snap["bidding"]; at = snap["at_limit"]
         st.subheader("Ringkasan hasil analisis")
         if mkt.get("conservative_exit") is None:
-            st.info("Analisis biaya tetap berhasil dihitung, tetapi ARV belum dapat diperkirakan karena data harga pembanding atau luas objek belum cukup. Lengkapi data pasar sebelum memakai simulasi bidding sebagai dasar keputusan.")
-        elif mkt.get("status") != "READY":
-            st.warning(
-                f"Estimasi ARV dan simulasi bidding masih bersifat indikatif. Saat ini terdapat {mkt.get('valid_count', 0)} comparable yang dapat dihitung, "
-                f"{mkt.get('go_grade_count', 0)} dari minimal 5 memiliki URL listing individual yang terkonfirmasi dan tanggal ditemukan, "
-                f"serta confidence {mkt.get('confidence', 0)}/100 (batas minimum 55). "
-                "Tanggal publikasi iklan boleh tidak tersedia; yang diperlukan adalah tanggal ketika listing dikumpulkan/ditemukan."
+            st.info("ARV belum dapat dihitung karena belum ada listing dengan harga dan luas yang dapat dinormalisasi. Anda tetap dapat menyimpan draft dan memperbaiki data pembanding.")
+        else:
+            st.info(
+                f"{mkt.get('estimate_label', 'Estimasi pasar indikatif tersedia')}: {mkt.get('valid_count', 0)} pembanding masuk ke perhitungan. "
+                f"Indikasi dasar {idr(mkt.get('base_exit'))}; konservatif {idr(mkt.get('conservative_exit'))}; "
+                f"rentang model {idr(mkt.get('market_range_low'))}–{idr(mkt.get('market_range_high'))}. "
+                "Ini estimasi underwriting, bukan appraisal resmi atau harga transaksi terverifikasi."
             )
+            if mkt.get("status") != "READY":
+                st.warning(
+                    f"Estimasi sudah tersedia, tetapi bukti belum memenuhi gate audit keputusan GO: "
+                    f"{mkt.get('go_grade_count', 0)} dari minimal 5 URL listing individual yang dapat ditelusuri. "
+                    f"Indeks kualitas bukti {mkt.get('confidence', 0)}/100 ({mkt.get('confidence_band', 'Rendah')}); bukan probabilitas harga tercapai. Status HOLD pada tahap ini membatasi keputusan bidding final, bukan menghapus hasil estimasi harga pasar."
+                )
         if decision["status"] == "GO": st.success("GO — SELURUH GATE UTAMA TERPENUHI")
         elif decision["status"] == "CONDITIONAL GO": st.warning("CONDITIONAL GO — ADA SYARAT YANG HARUS DIPENUHI")
         elif decision["status"] == "DO NOT BID": st.error("DO NOT BID / TIDAK LAYAK")
@@ -1399,7 +1430,7 @@ elif page == "New Auction Analysis":
         market_cols = st.columns(4)
         market_cols[0].metric("Comparable terpakai", f"{mkt.get('valid_count', 0)} listing")
         market_cols[1].metric("URL individual", f"{mkt.get('go_grade_count', 0)} / 5")
-        market_cols[2].metric("Confidence pasar", f"{mkt.get('confidence', 0)}/100")
+        market_cols[2].metric("Indeks kualitas data", f"{mkt.get('confidence', 0)}/100")
         market_cols[3].metric("Sebaran estimasi", f"{mkt.get('dispersion_pct', 0)}%")
         if mkt.get("quality_notes"):
             for note in mkt["quality_notes"]: st.caption("• " + note)
@@ -1415,13 +1446,16 @@ elif page == "New Auction Analysis":
         elif mkt.get("njop_indicated_exit"):
             st.info(f"Indikasi berbasis NJOP pembanding: {idr(mkt.get('njop_indicated_exit'))}. Isi NJOP objek agar referensi ini dapat dihitung untuk properti target.")
         if mkt.get("valid"):
-            with st.expander("Lihat seluruh comparable, penyesuaian dan dasar confidence", expanded=False):
+            with st.expander("Lihat seluruh comparable, penyesuaian dan dasar kualitas data", expanded=False):
                 market_view = pd.DataFrame(mkt["valid"])
-                preferred_market_cols = [c for c in ["name", "address", "price", "negotiated_price", "land_area", "building_area", "njop", "source_url", "source_url_scope", "date_found", "listing_date", "distance_km", "distance_band", "proximity_score", "similarity_score", "missing_quality_fields", "subject_normalized_value", "market_to_njop_ratio"] if c in market_view.columns]
+                preferred_market_cols = [c for c in ["name", "address", "price", "negotiated_price", "land_area", "building_area", "njop", "source_url", "source_url_scope", "date_found", "listing_date", "market_segment", "market_segment_factor", "distance_km", "distance_band", "proximity_score", "similarity_score", "missing_quality_fields", "subject_normalized_value", "market_to_njop_ratio"] if c in market_view.columns]
                 st.dataframe(market_view[preferred_market_cols], use_container_width=True, hide_index=True)
         if mkt.get("invalid"):
             with st.expander("Listing yang belum dapat dihitung", expanded=False):
                 st.dataframe(pd.DataFrame(mkt["invalid"]), use_container_width=True, hide_index=True)
+        if mkt.get("secondary_only"):
+            with st.expander("Referensi sekunder — tidak dicampur sebagai harga tunai", expanded=False):
+                st.dataframe(pd.DataFrame(mkt["secondary_only"]), use_container_width=True, hide_index=True)
         st.markdown("### Rincian total modal pada nilai limit")
         cost_rows = [
             {"Kelompok": "Akuisisi", "Komponen": "Harga bid / nilai limit", "Nilai": at.get("bid_price")},

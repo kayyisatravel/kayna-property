@@ -633,7 +633,10 @@ def estimate_renovation_rab(
                 "Baris visual/inspeksi dari katalog Python ditampilkan agar tidak hilang bila AI tidak mengembalikannya. "
             ) + str(hint.get("notes", "")),
         })
+    from core.renovation_engine import deduplicate_generated_rab_rows
+    editor_rows, rab_deduplication = deduplicate_generated_rab_rows(editor_rows, user_boq_rows)
     editor_rows = apply_regional_screening_rates(editor_rows)
+    data["rab_deduplication"] = rab_deduplication
     data["editor_rows"] = editor_rows
     data["user_boq_rows"] = user_boq_rows
     data["user_boq_count"] = len(user_boq_rows)
@@ -815,6 +818,8 @@ def _standard_price_type(value: Optional[str]) -> str:
     if not value:
         return "Asking aktif"
     text = value.strip().lower()
+    if any(x in text for x in ["over kredit", "oper kredit", "take over", "take-over", "lanjut cicilan", "alih debitur"]):
+        return "Over kredit / skema kewajiban"
     if any(x in text for x in ["transaksi terverifikasi", "verified transaction", "harga transaksi"]):
         return "Transaksi terverifikasi"
     if any(x in text for x in ["marked sold", "perlu verifikasi", "ditandai terjual", "terjual"]):
@@ -859,19 +864,31 @@ def _standard_access(value: Optional[str]) -> Optional[str]:
     return None
 
 
+def _unescape_markdown_punctuation(text: str) -> str:
+    """Undo Markdown backslash escaping before heading/URL detection and AI parsing."""
+    return re.sub(r"\\([\\`*_{}\[\]()#+\-.!|>~:])", r"\1", str(text or ""))
+
+
 def _detect_numbered_listing_sections(text: str) -> list[str]:
-    """Split top-level numbered listing headings, including Markdown bold/link headings."""
+    r"""Split top-level headings including Markdown-escaped ``1\.`` numbering."""
+    text = _unescape_markdown_punctuation(text)
     lines = text.splitlines()
-    heading = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*(\d{1,2})[.)]\s+(.+?)\s*(?:\*\*|__)?\s*$")
+    heading = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*(\d{1,2})(?:[.)]|\\\.)\s+(.+?)\s*(?:\*\*|__)?\s*$")
     starts: list[tuple[int, int]] = []
     for index, line in enumerate(lines):
         match = heading.match(line)
         if match:
             starts.append((index, int(match.group(1))))
-    if len(starts) >= 2 and [number for _, number in starts] == list(range(1, len(starts) + 1)):
+    # A title such as "10 Listing Pembanding Terpercaya" may be detected as
+    # a heading numbered 10. Ignore preamble candidates before the first real
+    # listing numbered 1, then require a clean 1..N sequence.
+    first_listing_pos = next((i for i, (_, number) in enumerate(starts) if number == 1), None)
+    candidate_starts = starts[first_listing_pos:] if first_listing_pos is not None else starts
+    candidate_numbers = [number for _, number in candidate_starts]
+    if len(candidate_starts) >= 2 and candidate_numbers == list(range(1, len(candidate_starts) + 1)):
         sections = []
-        for pos, (line_index, _) in enumerate(starts):
-            end = starts[pos + 1][0] if pos + 1 < len(starts) else len(lines)
+        for pos, (line_index, _) in enumerate(candidate_starts):
+            end = candidate_starts[pos + 1][0] if pos + 1 < len(candidate_starts) else len(lines)
             block = "\n".join(lines[line_index:end]).strip()
             if block:
                 sections.append(block)
@@ -890,9 +907,11 @@ def _classify_source_url_scope(url: str) -> str:
         return "Tidak diketahui"
     if "/venue/" in path:
         return "Halaman venue/kompleks"
-    if any(x in path for x in ["/iklan/", "/listing/", "/property/", "/properti/", "/rumah-dijual/"]):
+    if "/view/" in path or any(x in path for x in ["/iklan/", "/listing/", "/property/", "/properti/", "/rumah-dijual/"]):
         return "Listing individual"
-    if "kgmid=" in query or path in {"", "/"} or any(x in path for x in ["/search", "/q/", "/sidoarjo_g", "/properti"]):
+    if path in {"", "/"}:
+        return "Portal/domain only"
+    if "kgmid=" in query or any(x in path for x in ["/search", "/q/", "/sidoarjo_g", "/properti"]):
         return "Portal pencarian/kategori"
     if "trovit" in host or ("olx" in host and ("q=" in query or "/q/" in path)):
         return "Portal pencarian/kategori"
@@ -900,9 +919,22 @@ def _classify_source_url_scope(url: str) -> str:
 
 
 def _extract_section_urls(section: str) -> list[str]:
-    """Extract exact URLs from user text; exclude Google knowledge-panel/search links."""
+    """Extract exact URLs and labelled bare domains without inventing listing paths.
+
+    A bare portal domain is normalized to its HTTPS homepage and classified as
+    portal/domain-only, never promoted to an individual listing URL.
+    """
     from urllib.parse import urlparse
+    section = _unescape_markdown_punctuation(section)
     found = re.findall(r"https?://[^\s<>\]\)]+", section, flags=re.IGNORECASE)
+    if not found:
+        labelled = re.search(
+            r"URL\s*(?:individual)?\s*(?:valid)?\s*[:.]?\s*((?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s<>\])]+)?)",
+            section, flags=re.IGNORECASE,
+        )
+        if labelled:
+            candidate = labelled.group(1).rstrip(".,;:!?'\"*_")
+            found = [candidate if candidate.lower().startswith(("http://", "https://")) else "https://" + candidate]
     urls: list[str] = []
     for raw in found:
         url = raw.strip().rstrip(".,;:!?\"'")
@@ -935,7 +967,7 @@ def _comparable_prompt(sections: list[str], start_index: int) -> str:
         "c hanya Siap Huni, Butuh Renovasi, Hitung Tanah jika eksplisit; frasa 'full renovasi' masuk cd/nt dan bukan otomatis siap huni. "
         "ac hanya 2 Mobil, 1 Mobil, Gang jika eksplisit; lebar jalan tulis di ad. Hook/carport tidak membuktikan akses. "
         "Sumber platform masuk src. Jangan membuat URL/tanggal publikasi; URL dipasangkan Python dari teks asli. "
-        "pt: Asking aktif untuk harga penawaran/nego; Marked sold / perlu verifikasi bila disebut terjual tanpa bukti; Transaksi terverifikasi hanya bila harga final eksplisit. "
+        "pt: Asking aktif untuk harga penawaran/nego; Marked sold / perlu verifikasi bila disebut terjual tanpa bukti; Transaksi terverifikasi hanya bila harga final eksplisit. Jika harga berupa DP + pengambilalihan sisa cicilan/over kredit, tandai 'Over kredit / skema kewajiban' dan jangan setarakan dengan harga jual tunai. "
         "Simpan arah hadap, listrik, air, jumlah lantai, carport, dimensi, agen, kode listing dan fasilitas ringkas di nt (maksimal 180 karakter). "
         "Kembalikan JSON saja, tanpa penjelasan panjang.\n\nURUTAN BLOK:\n" + manifest + "\n\nTEKS ASLI:\n" + numbered_blocks
     )
@@ -976,13 +1008,41 @@ def _parse_comparable_response(raw_result: Any, expected_count: int, start_index
     return parsed
 
 
+def _extract_area_range_midpoint(section: str, label: str) -> tuple[float, float, float] | None:
+    """Return low, high and midpoint for an explicitly stated LT/LB range."""
+    text = _unescape_markdown_punctuation(section)
+    pattern = (
+        rf"\b{re.escape(label)}\s*[:=]?\s*"
+        r"(\d+(?:[.,]\d+)?)\s*(?:-|–|—|s\.d\.|hingga)\s*"
+        r"(\d+(?:[.,]\d+)?)\s*(?:m2|m²)?"
+    )
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    low = float(match.group(1).replace(",", "."))
+    high = float(match.group(2).replace(",", "."))
+    if low <= 0 or high <= 0 or high < low:
+        return None
+    return low, high, round((low + high) / 2, 2)
+
+
+def _detect_market_segment(section: str, price_type: str = "") -> str:
+    """Separate new developer supply from resale evidence when the text says so."""
+    text = _unescape_markdown_punctuation(section).lower()
+    if price_type == "Over kredit / skema kewajiban" or re.search(r"rumah\s+second|secondary|resale|rumah\s+bekas|sudah\s+renovasi|baru\s+direnovasi", text):
+        return "Secondary / resale"
+    if re.search(r"rumah\s+baru|unit\s+baru|proyek\s+baru|primary|developer|unit\s+resmi\s+klaster|dalam\s+pembangunan", text):
+        return "Primary / developer"
+    return "Tidak diketahui"
+
+
 def parse_comparable_narrative(api_key: str, narrative: str, model: str = DEFAULT_MODEL) -> dict[str, Any]:
     """Parse numbered multi-listing prose into one row per property.
 
     Markdown headings and URLs are detected from original text. The response schema
     uses compact keys and a larger output allowance to avoid incomplete JSON.
     """
-    text = (narrative or "").strip()
+    text = _unescape_markdown_punctuation((narrative or "").strip())
     if len(text) < 40:
         raise ValueError("Teks comparable terlalu pendek. Tempel uraian listing yang lebih lengkap.")
     sections = _detect_numbered_listing_sections(text)
@@ -1023,10 +1083,26 @@ def parse_comparable_narrative(api_key: str, narrative: str, model: str = DEFAUL
                     row["notes"] = ((row.get("notes") or "").strip() + " | URL lain: " + " ; ".join(urls[1:])).strip(" |")
             row["source_url_scope"] = _classify_source_url_scope(row.get("source_url")) if row.get("source_url") else "Tidak ada URL langsung"
             row["complex_name"] = item.complex_name or ""
+            lb_range = _extract_area_range_midpoint(section_batch[local_index], "LB")
+            lt_range = _extract_area_range_midpoint(section_batch[local_index], "LT")
+            if lb_range:
+                row["building_area"] = lb_range[2]
+                range_note = f"LB ditulis rentang {lb_range[0]:g}–{lb_range[1]:g} m²; midpoint {lb_range[2]:g} m² dipakai untuk normalisasi dan tetap perlu diverifikasi."
+                row["notes"] = ((row.get("notes") or "").strip() + " | " + range_note).strip(" |")
+            if lt_range:
+                row["land_area"] = lt_range[2]
+                range_note = f"LT ditulis rentang {lt_range[0]:g}–{lt_range[1]:g} m²; midpoint {lt_range[2]:g} m² dipakai untuk normalisasi dan tetap perlu diverifikasi."
+                row["notes"] = ((row.get("notes") or "").strip() + " | " + range_note).strip(" |")
             row["orientation"] = item.orientation or ""
             row["electricity_watt"] = item.electricity_watt
             row["water_source"] = item.water_source or ""
-            row["price_type"] = _standard_price_type(item.price_type)
+            section_text = section_batch[local_index].lower()
+            is_overcredit = bool(re.search(
+                r"over\s*kredit|oper\s*kredit|ganti\s*dp|lanjut\s*cicilan|ambil\s*alih.{0,30}cicilan|take[- ]over|alih\s*debitur",
+                section_text,
+            ))
+            row["price_type"] = "Over kredit / skema kewajiban" if is_overcredit else _standard_price_type(item.price_type)
+            row["market_segment"] = _detect_market_segment(section_batch[local_index], row["price_type"])
             row["njop"] = item.njop
             row["listing_date"] = _standard_optional_date(item.listing_date)
             from datetime import date

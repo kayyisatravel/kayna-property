@@ -5,9 +5,10 @@ from typing import Any
 from datetime import date, datetime
 from .utils import to_float, is_blank, normalize_text
 
-VALID_PRICE_TYPES = {"Asking aktif", "Marked sold / perlu verifikasi", "Transaksi terverifikasi"}
+VALID_PRICE_TYPES = {"Asking aktif", "Marked sold / perlu verifikasi", "Transaksi terverifikasi", "Over kredit / skema kewajiban"}
 VALID_CONDITIONS = {"Siap Huni", "Butuh Renovasi", "Hitung Tanah"}
 VALID_ACCESS = {"2 Mobil", "1 Mobil", "Gang"}
+VALID_MARKET_SEGMENTS = {"Secondary / resale", "Primary / developer", "Tidak diketahui"}
 
 
 def validate_comparable(row: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -127,6 +128,15 @@ def haversine_distance_km(a: dict[str, Any], b: dict[str, Any]) -> float | None:
     return 6371.0088 * 2 * math.asin(math.sqrt(min(1.0, h)))
 
 
+def _manual_distance_km(row: dict[str, Any]) -> float | None:
+    """Read a user-entered straight-line distance when paired coordinates are unavailable."""
+    meters = to_float(row.get("distance_m"))
+    if meters > 0:
+        return meters / 1000.0
+    km = to_float(row.get("distance_km"))
+    return km if km > 0 else None
+
+
 def _proximity_score(distance_km: float | None) -> float | None:
     if distance_km is None:
         return None
@@ -151,7 +161,7 @@ def assess_comparables(
     subject_bathrooms = to_float(subject.get("bathrooms"))
     subject_road_width = to_float(subject.get("road_width_m"))
     subject_orientation = normalize_text(subject.get("orientation"))
-    rows, invalid, seen = [], [], set()
+    rows, invalid, secondary_only, seen = [], [], [], set()
     for original in comparables:
         row = dict(original)
         ok, errors = validate_comparable(row)
@@ -160,7 +170,21 @@ def assess_comparables(
         if bool(row.get("ai_exclude_from_primary", False)):
             invalid.append({"name": row.get("name", "(tanpa nama)"), "errors": ["dikeluarkan dari indikasi utama setelah pengguna meninjau saran AI"]})
             continue
-        url_key = normalize_text(row.get("source_url")) if not is_blank(row.get("source_url")) else ""
+        price_type = row.get("price_type") if not is_blank(row.get("price_type")) else "Asking aktif"
+        if price_type == "Over kredit / skema kewajiban":
+            secondary_only.append({
+                "name": row.get("name", "(tanpa nama)"),
+                "price": to_float(row.get("price")),
+                "land_area": to_float(row.get("land_area")) or None,
+                "building_area": to_float(row.get("building_area")) or None,
+                "source_url": row.get("source_url", ""),
+                "reason": "Skema DP + sisa kewajiban/cicilan bukan harga tunai yang setara. Perlu saldo pokok terkini, biaya take-over, tunggakan dan persetujuan kreditur sebelum dapat dikonversi.",
+            })
+            continue
+        url_scope = str(row.get("source_url_scope") or "")
+        # A shared portal root is source provenance, not a unique listing URL;
+        # use the property fingerprint for de-duplication in that case.
+        url_key = normalize_text(row.get("source_url")) if not is_blank(row.get("source_url")) and url_scope == "Listing individual" else ""
         fallback_key = "|".join([
             normalize_text(row.get("address") or row.get("name")),
             str(round(to_float(row.get("price")) / 1_000_000)),
@@ -174,6 +198,11 @@ def assess_comparables(
         lt, lb, price = to_float(row.get("land_area")), to_float(row.get("building_area")), to_float(row.get("price"))
         score = 100.0
         distance_km = haversine_distance_km(subject, row)
+        distance_source = "Koordinat Haversine (jarak garis lurus)" if distance_km is not None else ""
+        if distance_km is None:
+            distance_km = _manual_distance_km(row)
+            if distance_km is not None:
+                distance_source = "Jarak garis lurus diinput pengguna (meter/km)"
         proximity_score = _proximity_score(distance_km)
         target_complex = normalize_text(subject.get("complex_name"))
         if proximity_score is not None:
@@ -188,7 +217,7 @@ def assess_comparables(
                 "Wilayah sekitar (≤10 km)" if distance_km <= 10 else
                 "Perlu penyesuaian jarak (>10 km)"
             )
-            location_method = "Koordinat Haversine (jarak garis lurus)"
+            location_method = distance_source
         else:
             distance_band = "Jarak belum terukur — koordinat diperlukan"
             location_method = "Nama/alamat; tidak ada koordinat berpasangan"
@@ -218,7 +247,6 @@ def assess_comparables(
         if target_access and not is_blank(row.get("access")) and target_access != normalize_text(row.get("access")): score -= 5
         target_condition = normalize_text(subject.get("physical_condition"))
         if target_condition and not is_blank(row.get("condition")) and target_condition not in normalize_text(row.get("condition")): score -= 5
-        price_type = row.get("price_type") if not is_blank(row.get("price_type")) else "Asking aktif"
         # Only verified transaction prices avoid negotiation discount; asking/marked-sold
         # listings remain unverified price indications and receive the discount.
         negotiated = price if price_type == "Transaksi terverifikasi" else price * (1 - negotiation_discount_pct / 100)
@@ -237,33 +265,53 @@ def assess_comparables(
         # moderate freshness score and a modest uncertainty penalty rather than
         # treating the listing as very old. This keeps genuine current research usable.
         recency_value = _recency_score(row.get("listing_date"))
-        recency = recency_value if recency_value is not None else 55
+        # Missing publication dates are common in portal snippets. They lower
+        # freshness confidence modestly, but must not count twice as a severe
+        # evidence defect when the user has just captured an active listing.
+        recency = recency_value if recency_value is not None else 65
         recency_penalty = (100 - recency) * 0.20
         missing_penalty = 0
         missing_fields = []
         for key, penalty, label in [
-            ("condition", 7, "kondisi"), ("access", 5, "akses"),
-            ("certificate", 3, "sertifikat"), ("building_area", 7, "LB"),
-            ("source_url", 6, "URL sumber"), ("date_found", 3, "tanggal ditemukan"),
-            ("listing_date", 2, "tanggal publikasi iklan (tidak diketahui)"),
+            ("condition", 4, "kondisi"), ("access", 3, "akses"),
+            ("certificate", 2, "sertifikat"), ("building_area", 5, "LB"),
+            ("source_url", 5, "URL sumber"), ("date_found", 3, "tanggal ditemukan"),
+            ("listing_date", 1, "tanggal publikasi iklan (tidak diketahui)"),
         ]:
             if is_blank(row.get(key)):
                 missing_penalty += penalty
                 missing_fields.append(label)
         url_scope = str(row.get("source_url_scope") or "")
         if str(row.get("source_url") or "").startswith(("http://", "https://")) and url_scope != "Listing individual":
-            missing_penalty += 6
-            missing_fields.append("URL belum membuktikan halaman listing individual")
+            # A portal home page is usable provenance for indicative valuation;
+            # it is weaker than an individual listing link, but not a reason to
+            # withhold the estimate. The stronger individual-URL requirement
+            # belongs to the final GO audit gate below.
+            scope_penalty = 2 if url_scope == "Portal/domain only" else 4
+            missing_penalty += scope_penalty
+            missing_fields.append("URL portal belum membuktikan halaman listing individual")
+        market_segment = str(row.get("market_segment") or "Tidak diketahui")
+        if market_segment not in VALID_MARKET_SEGMENTS:
+            market_segment = "Tidak diketahui"
+        market_segment_factor = {
+            "Secondary / resale": 1.00,
+            "Primary / developer": 0.75,
+            "Tidak diketahui": 0.90,
+        }[market_segment]
+        if market_segment == "Tidak diketahui":
+            missing_penalty += 2
+            missing_fields.append("segmen primary/secondary belum diketahui")
         source_adjustment = 5 if price_type == "Transaksi terverifikasi" else (-8 if price_type == "Marked sold / perlu verifikasi" else -2)
         row_score = max(5.0, min(100.0, score - recency_penalty - missing_penalty + source_adjustment))
         source_weight = 1.20 if price_type == "Transaksi terverifikasi" else (0.80 if price_type == "Marked sold / perlu verifikasi" else 1.00)
-        weight = row_score / 100 * source_weight
+        weight = row_score / 100 * source_weight * market_segment_factor
         parsed_date = _parse_listing_date(row.get("date_found"))
         age_days = max(0, (date.today() - parsed_date).days) if parsed_date else None
         comparable_njop = to_float(row.get("njop"))
         row.update({
             "similarity_score": round(row_score, 1), "recency_score": recency, "age_days": age_days,
-            "source_weight": source_weight, "missing_quality_fields": missing_fields,
+            "source_weight": source_weight, "market_segment": market_segment,
+            "market_segment_factor": market_segment_factor, "missing_quality_fields": missing_fields,
             "negotiated_price": round(negotiated), "adjusted_price": round(adjusted),
             "land_unit_price": round(adjusted / lt) if lt > 0 else None,
             "building_unit_price": round(adjusted / lb) if lb > 0 else None,
@@ -280,7 +328,8 @@ def assess_comparables(
     count = len(rows)
     if count == 0:
         return {
-            "valid_count": 0, "go_grade_count": 0, "valid": [], "invalid": invalid,
+            "valid_count": 0, "go_grade_count": 0, "valid": [], "invalid": invalid, "secondary_only": secondary_only,
+            "estimate_status": "INSUFFICIENT", "estimate_label": "Belum ada cukup data harga dan luas yang dapat dihitung",
             "base_exit": None, "comparable_base_exit": None, "njop_indicated_exit": None,
             "njop_comparable_count": 0, "njop_market_ratio": None, "subject_njop": subject_njop or None,
             "njop_weight_pct_used": 0.0, "conservative_exit": None, "optimistic_exit": None,
@@ -335,9 +384,14 @@ def assess_comparables(
     dispersion = spread / max(comparable_base, 1)
     dispersion_iqr_pct = (iqr / max(comparable_base, 1)) * 100
     avg_score = sum(r["similarity_score"] for r in rows) / count
-    sample_score = min(18.0, count * 3.0)
+    sample_score = min(30.0, count * 3.3)
     dispersion_penalty = min(28.0, max(0.0, dispersion - 0.15) * 35.0)
-    confidence = max(0.0, min(100.0, avg_score * 0.55 + sample_score - dispersion_penalty))
+    # Separate estimate confidence from final GO traceability. For a practical
+    # screening estimate, a good sample of several active portal listings should
+    # reach a meaningful confidence band even when some individual ad URLs or
+    # publication dates are unavailable. The GO gate still independently checks
+    # at least five traceable individual URLs.
+    confidence = max(0.0, min(100.0, avg_score * 0.56 + sample_score - dispersion_penalty))
     land_unit_median = median([r["land_unit_price"] for r in rows if r.get("land_unit_price")]) if any(r.get("land_unit_price") for r in rows) else None
     building_unit_median = median([r["building_unit_price"] for r in rows if r.get("building_unit_price")]) if any(r.get("building_unit_price") for r in rows) else None
     # Data uncertainty is separate from the user's quick-sale preference. Sparse
@@ -386,7 +440,9 @@ def assess_comparables(
         quality_notes.append(f"{unconfirmed_url_count} URL belum dikonfirmasi sebagai halaman listing individual.")
 
     return {
-        "valid_count": count, "go_grade_count": go_grade_count, "valid": rows, "invalid": invalid,
+        "valid_count": count, "go_grade_count": go_grade_count, "valid": rows, "invalid": invalid, "secondary_only": secondary_only,
+        "estimate_status": "INDICATIVE_AVAILABLE" if count >= 3 else "LOW_SAMPLE" if count > 0 else "INSUFFICIENT",
+        "estimate_label": "Estimasi indikatif tersedia" if count >= 3 else "Estimasi awal dengan sampel terbatas" if count > 0 else "Belum ada cukup data harga dan luas yang dapat dihitung",
         "base_exit": round(base), "comparable_base_exit": round(comparable_base),
         "njop_indicated_exit": round(njop_indicated) if njop_indicated is not None else None,
         "njop_comparable_count": len(njop_pairs), "njop_market_ratio": round(njop_market_ratio, 4) if njop_market_ratio is not None else None,
@@ -398,7 +454,9 @@ def assess_comparables(
         "dispersion_iqr_pct": round(dispersion_iqr_pct, 1),
         "valuation_method": "Weighted median + normalized land/building indicators + NJOP calibration (if paired local data exists)",
         "valuation_note": "ARV indikatif. Haircut konservatif meningkat saat sampel sedikit, data tersebar, atau kualitas sumber lemah. Bukan appraisal dan bukan kepastian harga transaksi.",
-        "confidence": round(confidence, 1), "simple_median": round(simple_median),
+        "confidence": round(confidence, 1),
+        "confidence_band": "Baik" if confidence >= 70 else "Cukup" if confidence >= 55 else "Rendah",
+        "simple_median": round(simple_median),
         "land_unit_price_median": round(land_unit_median) if land_unit_median else None,
         "building_unit_price_median": round(building_unit_median) if building_unit_median else None,
         "dispersion_pct": round(dispersion * 100, 1), "direct_url_count": direct_url_count,
