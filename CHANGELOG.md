@@ -1,3 +1,33 @@
+## [1.0.15] - 2026-11-23
+
+### Fixed
+- Every explicit user BoQ row with a valid positive quantity and compatible unit remains in the underwriting RAB allowance by default. Omission of an optional quantity-basis note no longer makes a visible work item conditional.
+- Hidden interior/MEP scopes are retained in the budget with lower confidence; they are not labelled as damage proven by the facade photo.
+- Regional Python screening rates fill recognized work scopes when Gemini omits rates or returns incomplete prices. Original quantities and units remain unchanged; incompatible units are never silently coerced.
+- Duplicate visual allowances for a new canopy frame and fence repaint are suppressed when those scopes already appear in the user's BoQ.
+- Interior risk scenarios are labelled as sensitivity cases, not automatic add-ons, to reduce double counting with BoQ rows.
+- Comparable scoring now uses subject/listing coordinates and Haversine distance across village/district/complex boundaries. Added bedroom, bathroom, road-width and orientation similarity indicators.
+
+### Added
+- Configurable hidden-condition reserve (default 7.5% of renovation base) when the interior is marked as not inspected; this is separate from the ordinary renovation contingency.
+- Comparable-import aliases for latitude and longitude; the editor accepts subject and listing coordinates.
+- Low/base/high deterministic screening rates for common TAS 3 style work scopes and distinct allowances for inspection of the terrace ceiling/rangka and unseen interior.
+- Regression tests for explicit BoQ retention, regional price coverage, duplicate suppression and 500m cross-village comparables.
+
+### Changed
+- Dashboard, RAB and valuation metric rows use no more than four columns. User-customised dashboard label/layout remains intact.
+- RAB total can be considered complete when all in-scope allowances have a valid quantity and base price, including explicit user BoQ items; additional excluded conditional guidance does not block completion.
+
+### Compatibility
+- Existing Google Sheets tabs and existing headers are preserved. No destructive migration is required. Existing per-project analysis snapshots and manually entered data remain readable.
+- `.streamlit/secrets.toml` and credentials are not included in the package.
+
+### Verification
+- `pytest -q`: 148 passed.
+- `python -m compileall -q .`: passed.
+- ZIP integrity: checked.
+- Live Streamlit Cloud, Gemini API and Google Sheets credential tests were not run in this environment.
+
 ## [1.0.13] - 2026-11-21
 
 ### Added

@@ -40,10 +40,12 @@ def test_user_boq_rows_are_injected_even_if_gemini_omits_them():
     ]}, {}, rows)
     assert len(mapped) == len(rows)
     assert mapped[0]["quantity"] == 1.0
-    assert mapped[0]["unit_cost"] == 700_000
+    assert mapped[0]["unit_cost"] == 900_000
+    assert str(mapped[0]["price_source"]).startswith("Katalog screening regional")
     assert mapped[1]["quantity"] == 18.0
-    assert mapped[1]["unit_cost"] is None
-    assert "AI belum mengusulkan harga satuan" in mapped[1]["notes"]
+    # The Python regional screening catalogue fills mapped roof-demolition scope.
+    assert mapped[1]["unit_cost"] is not None
+    assert str(mapped[1]["price_source"]).startswith("Katalog screening regional")
 
 
 def test_explicit_medium_description_wins_over_generic_light_physical_dropdown_when_auto_selected():
@@ -66,10 +68,11 @@ def test_explicit_boq_scope_assigns_visible_damage_and_hidden_interior_separatel
     flashing = by_name["Pemasangan flashing seng/waterproofing sambungan dinding tetangga"]
     damp_wall = by_name["Pelapisan waterproofing anti-rembes (dinding samping carport)"]
     interior_paint = by_name["Pengecatan ulang dinding interior rumah utama"]
-    assert roof_demo["priority"] == "Wajib"
-    assert flashing["priority"] == "Wajib"
-    assert damp_wall["priority"] == "Wajib"
-    assert interior_paint["priority"] == "Bersyarat"
+    assert roof_demo["priority"] == "Disarankan"
+    assert flashing["priority"] == "Disarankan"
+    assert damp_wall["priority"] == "Disarankan"
+    assert interior_paint["priority"] == "Disarankan"
+    assert interior_paint["conditional"] is True
     assert roof_demo["subcategory"] == "Persiapan & Bongkaran"
 
 
@@ -108,10 +111,12 @@ def test_tas3_example_boq_keeps_all_16_rows_and_separates_known_from_assumed_sco
     assert len(rows) == 16
     assert [r["quantity"] for r in rows] == [1, 18, 24, 18, 12, 18, 9, 24, 45, 112.5, 21, 1, 9.6, 6, 11, 1]
     by_name = {r["work_item"]: r for r in rows}
-    assert by_name["Pembongkaran atap kanopi/teras depan yang jebol & keropos"]["priority"] == "Wajib"
-    assert by_name["Pelapisan waterproofing anti-rembes (dinding samping carport)"]["priority"] == "Wajib"
-    assert by_name["Pengecatan ulang dinding interior rumah utama"]["priority"] == "Bersyarat"
-    assert by_name["Peremajaan titik instalasi listrik"]["priority"] == "Bersyarat"
+    assert by_name["Pembongkaran atap kanopi/teras depan yang jebol & keropos"]["priority"] == "Disarankan"
+    assert by_name["Pelapisan waterproofing anti-rembes (dinding samping carport)"]["priority"] == "Disarankan"
+    assert by_name["Pengecatan ulang dinding interior rumah utama"]["priority"] == "Disarankan"
+    assert by_name["Peremajaan titik instalasi listrik"]["priority"] == "Disarankan"
+    assert by_name["Pengecatan ulang dinding interior rumah utama"]["conditional"] is True
+    assert by_name["Peremajaan titik instalasi listrik"]["conditional"] is True
 
 
 def test_ai_boq_rows_match_by_exact_work_name_when_it_omits_user_item_code():
@@ -124,9 +129,10 @@ def test_ai_boq_rows_match_by_exact_work_name_when_it_omits_user_item_code():
     first = mapped[0]
     assert first["item_code"] == "USER_BOQ_001"
     assert first["quantity"] == 1.0
-    assert first["unit_cost_low"] == 450_000
-    assert first["unit_cost"] == 600_000
-    assert first["unit_cost_high"] == 750_000
+    assert first["unit_cost_low"] == 500_000
+    assert first["unit_cost"] == 900_000
+    assert first["unit_cost_high"] == 1_500_000
+    assert "Cross-check Gemini" in first["notes"]
     assert sum(1 for row in mapped if row["work_item"] == rows[0]["work_item"]) == 1
 
 
@@ -137,7 +143,7 @@ def test_assumption_based_interior_ceiling_repair_stays_conditional_even_if_text
     | Atap & Plafon | Perbaikan/tambal sulam plafon interior akibat rembesan | 9,0 | m² | Asumsi 20% luas bangunan induk, interior belum diperiksa. |
     """
     row = parse_user_boq_table(description)[0]
-    assert row["priority"] == "Bersyarat"
+    assert row["priority"] == "Disarankan"
     assert row["conditional"] is True
 
 
@@ -189,8 +195,9 @@ def test_all_16_user_boq_rows_keep_exact_quantity_when_gemini_returns_rates():
     assert len(mapped) == 3
     assert [r["quantity"] for r in mapped] == [18.0, 12.0, 9.0]
     assert len({r["item_code"] for r in mapped}) == 3
-    assert all(r["unit_cost"] == 125_000 for r in mapped)
-    assert mapped[2]["priority"] == "Bersyarat"
+    assert [r["unit_cost"] for r in mapped] == [45_000, 95_000, 155_000]
+    assert mapped[2]["priority"] == "Disarankan"
+    assert mapped[2]["conditional"] is True
 
 
 def tas3_full_boq_tsv():
@@ -277,3 +284,77 @@ def test_plain_boq_rows_after_header_are_supported_when_tabs_are_flattened():
     rows = parse_user_boq_table(description)
     assert len(rows) == 3
     assert [row["quantity"] for row in rows] == [1, 18, 9.6]
+
+
+LATEST_TAS3_BOQ = """
+Kategori Kondisi: Renovasi Sedang
+| No | Kelompok Pekerjaan | Item Pekerjaan | Estimasi Volume | Satuan |
+|---|---|---|---:|---|
+| 1 | Persiapan | Pembersihan peti kayu, sampah, area depan | 1.0 | Ls |
+| 2 | Kanopi | Pembongkaran atap kanopi/teras depan jebol & keropos | 18.0 | m² |
+| 3 | Dinding | Pengikisan cat mengelupas & jamur dinding dalam teras | 18.0 | m² |
+| 4 | Kanopi | Pemasangan atap kanopi baru (rangka hollow/baja ringan + spandek) | 18.0 | m² |
+| 5 | Kanopi | Pemasangan flashing seng/waterproofing sambungan dinding | 12.0 | m' |
+| 6 | Plafon | Penggantian plafon teras/carport (rangka hollow + PVC/GRC) | 18.0 | m² |
+| 7 | Plafon | Perbaikan/tambal sulam plafon interior akibat rembesan | 14.4 | m² |
+| 8 | Dinding | Waterproofing anti-rembes dinding samping carport | 18.0 | m² |
+| 9 | Cat | Cat ulang fasad dan teras weatherproof | 50.0 | m² |
+| 10 | Cat | Cat ulang dinding interior rumah utama | 180.0 | m² |
+| 11 | Lantai | Pemasangan keramik carport/teras/jalan masuk | 30.0 | m² |
+| 12 | Taman | Perapian taman kecil dan kanstin depan | 1.0 | Ls |
+| 13 | Besi | Cat pagar besi dorong + teralis | 9.6 | m² |
+| 14 | Kusen | Cat kusen/daun pintu/jendela | 8.0 | Unit |
+| 15 | Listrik | Peremajaan instalasi listrik | 15.0 | Titik |
+| 16 | Sanitair | Servis ringan sanitair | 1.0 | Ls |
+"""
+
+def test_latest_tas3_boq_all_16_items_get_regional_python_screening_rates():
+    from core.renovation_pricing import lookup_unit_rate
+    from core.renovation_engine import rab_item_is_in_scope
+    rows = parse_user_boq_table(LATEST_TAS3_BOQ)
+    assert len(rows) == 16
+    mapped = renovation_estimate_to_rows({"items": []}, {}, rows)
+    assert len(mapped) == 16
+    assert all(rab_item_is_in_scope(r) for r in mapped)
+    assert all(r["quantity"] == rows[i]["quantity"] for i, r in enumerate(mapped))
+    assert all(r["unit_cost"] and r["unit_cost_low"] and r["unit_cost_high"] for r in mapped)
+    assert all(str(r["price_source"]).startswith("Katalog screening regional") for r in mapped)
+    assert sum(r["quantity"] * r["unit_cost"] for r in mapped) > 0
+
+def test_unknown_hidden_boq_rows_remain_budgeted_but_low_confidence():
+    rows = parse_user_boq_table(LATEST_TAS3_BOQ)
+    interior = [r for r in rows if any(x in r["work_item"].lower() for x in ["interior", "listrik", "sanitair"]) ]
+    assert interior
+    assert all(r["priority"] == "Disarankan" for r in interior)
+    assert all(r["conditional"] for r in interior)
+    # Missing narrative quantity-basis text alone must not make visible work
+    # conditional. Explicit quantity + unit remains a budget allowance.
+    visible = [r for r in rows if r["work_item"].startswith(("Pembersihan", "Pembongkaran", "Pemasangan atap kanopi baru", "Waterproofing anti-rembes"))]
+    assert visible
+    assert all(not r["conditional"] for r in visible)
+    assert all(r["confidence"] == "Sedang" for r in visible)
+    assert all(r["confidence"] == "Rendah" for r in interior)
+
+def test_catalog_does_not_price_mismatched_units():
+    from core.renovation_pricing import lookup_unit_rate
+    assert lookup_unit_rate("Pemasangan atap kanopi baru (rangka hollow + spandek)", "ls") is None
+    assert lookup_unit_rate("Pemasangan atap kanopi baru (rangka hollow + spandek)", "m²")["unit_cost"] > 0
+
+
+def test_rab_summary_recalculates_range_and_totals_after_editable_rate_changes():
+    from core.renovation_engine import summarize_rab_totals
+    rows = [
+        {"item_code":"USER_BOQ_001", "work_item":"Cat interior", "quantity":10, "unit_cost_low":None, "unit_cost":50000, "unit_cost_high":None, "priority":"Disarankan"},
+        {"item_code":"USER_BOQ_002", "work_item":"Cat fasad", "quantity":20, "unit_cost_low":40000, "unit_cost":60000, "unit_cost_high":80000, "priority":"Disarankan"},
+    ]
+    partial = summarize_rab_totals(rows)
+    assert partial["total_conservative_indicative"] == 1_700_000
+    assert partial["total_conservative_complete"] is True
+    assert partial["total_range_complete"] is False
+    rows[0]["unit_cost_low"] = 30000
+    rows[0]["unit_cost_high"] = 70000
+    complete = summarize_rab_totals(rows)
+    assert complete["total_low_indicative"] == 1_100_000
+    assert complete["total_conservative_indicative"] == 1_700_000
+    assert complete["total_high_indicative"] == 2_300_000
+    assert complete["total_range_complete"] is True

@@ -312,3 +312,78 @@ def test_occupancy_survey_status_is_echoed_as_user_evidence_not_ai_photo_conclus
         {"occupancy_status": status, "physical_condition": "Renovasi Sedang"},
     )
     assert any(status in x and "pilihan survei pengguna" in x.lower() for x in result["occupancy_unknowns"])
+
+
+def test_tas3_explicit_boq_suppresses_duplicate_visual_allowances(monkeypatch):
+    import json
+    import services.gemini_parser as gp
+
+    description = """
+    Kategori Kondisi: Renovasi Sedang
+    Lokasi Perum TAS 3 Blok M6 No. 12, Sidoarjo. Atap kanopi jebol, pagar besi kusam. Interior belum diperiksa.
+    | No | Item Pekerjaan | Estimasi Volume | Satuan |
+    |---|---|---:|---|
+    | 1 | Pembersihan peti kayu dan sampah area depan | 1 | Ls |
+    | 2 | Pemasangan atap kanopi baru rangka hollow dan spandek | 18 | m² |
+    | 3 | Cat pagar besi dorong dan teralis | 9.6 | m² |
+    """
+    response = {
+        "items": [
+            {"item_code":"USER_BOQ_001", "work_item":"Pembersihan peti kayu dan sampah area depan", "unit":"ls", "unit_cost_low":500000, "unit_cost_conservative":900000, "unit_cost_high":1500000},
+            {"item_code":"USER_BOQ_002", "work_item":"Pemasangan atap kanopi baru rangka hollow dan spandek", "unit":"m2", "unit_cost_low":320000, "unit_cost_conservative":410000, "unit_cost_high":500000},
+            {"item_code":"USER_BOQ_003", "work_item":"Cat pagar besi dorong dan teralis", "unit":"m2", "unit_cost_low":45000, "unit_cost_conservative":65000, "unit_cost_high":95000},
+            {"item_code":"VIS_FRONT_ROOF_FRAME", "work_item":"Ganti rangka kanopi depan", "unit":"m", "unit_cost_low":100000, "unit_cost_conservative":150000, "unit_cost_high":200000, "priority":"Bersyarat"},
+            {"item_code":"VIS_FENCE_PAINT", "work_item":"Pengecatan pagar besi", "unit":"m2", "unit_cost_low":45000, "unit_cost_conservative":65000, "unit_cost_high":95000, "priority":"Bersyarat"},
+        ],
+        "assumptions": [], "items_to_inspect": [], "overall_note": "Draft screening."
+    }
+    monkeypatch.setattr(gp, "_client_call", lambda *args, **kwargs: json.dumps(response))
+    result = gp.estimate_renovation_rab(
+        "fake-key", [], description,
+        {"address":"Perum TAS 3, Tulangan, Sidoarjo", "land_area":102, "building_area":90,
+         "floor_count":1, "physical_condition":"Belum diketahui",
+         "renovation_category":"Auto sesuai kondisi umum", "interior_inspected":False},
+    )
+    codes = [row.get("item_code") for row in result["editor_rows"]]
+    assert "USER_BOQ_001" in codes and "USER_BOQ_002" in codes and "USER_BOQ_003" in codes
+    assert "VIS_FRONT_ROOF_FRAME" not in codes
+    assert "VIS_FENCE_PAINT" not in codes
+    assert len([row for row in result["editor_rows"] if str(row.get("item_code", "")).startswith("USER_BOQ_")]) == 3
+
+
+def test_full_tas3_16_row_boq_yields_complete_screening_total_with_two_inspection_allowances(monkeypatch):
+    import json
+    import services.gemini_parser as gp
+    from tests.test_user_boq import LATEST_TAS3_BOQ
+
+    description = LATEST_TAS3_BOQ + """
+    Atap teras depan galvalum tampak jebol/terangkat. Dinding samping carport cat mengelupas dan berjamur.
+    Pagar besi kokoh namun kusam. Terdapat tumpukan peti kayu/sampah di area depan.
+    Interior dan instalasi belum dapat diinspeksi. Status hunian dari survei: Dihuni (Minta Kompensasi).
+    """
+    response = {"items": [], "assumptions": [], "items_to_inspect": [], "overall_note": "Draft RAB screening."}
+    monkeypatch.setattr(gp, "_client_call", lambda *args, **kwargs: json.dumps(response))
+    result = gp.estimate_renovation_rab(
+        "fake-key", [], description,
+        {"address":"Perum TAS 3 Blok M6 No. 12, Tulangan, Sidoarjo", "land_area":102,
+         "building_area":90, "floor_count":1, "bedrooms":3, "bathrooms":2,
+         "physical_condition":"Renovasi Sedang", "renovation_category":"Auto sesuai kondisi umum",
+         "interior_inspected":False, "occupancy_status":"Sudah Survei - Dihuni (Minta Kompensasi)"},
+    )
+    rows = result["editor_rows"]
+    user_rows = [r for r in rows if str(r.get("item_code", "")).startswith("USER_BOQ_")]
+    scope = [r for r in rows if gp._is_rab_item_in_scope(r)] if hasattr(gp, "_is_rab_item_in_scope") else rows
+    assert len(user_rows) == 16
+    assert len([r for r in user_rows if r.get("unit_cost") and r.get("unit_cost_low") and r.get("unit_cost_high")]) == 16
+    assert "VIS_FENCE_PAINT" not in [r.get("item_code") for r in rows]
+    assert "VIS_FRONT_ROOF_FRAME" not in [r.get("item_code") for r in rows]
+    assert "VIS_CEILING_CHECK" in [r.get("item_code") for r in rows]
+    assert "INSPECT_INTERIOR" in [r.get("item_code") for r in rows]
+    assert result["total_conservative_complete"] is True
+    assert result["total_range_complete"] is True
+    assert result["in_scope_item_count"] == 18
+    assert result["priced_item_count"] == 18
+    assert result["user_boq_priced_count"] == 16
+    assert result["total_low_indicative"] == 36_372_000
+    assert result["total_conservative_indicative"] == 52_261_000
+    assert result["total_high_indicative"] == 72_757_000

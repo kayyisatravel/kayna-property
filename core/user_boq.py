@@ -86,48 +86,28 @@ def _header_indexes(cells: list[str]) -> dict[str, int] | None:
 
 
 def _priority(item_name: str, group_name: str, basis: str = "") -> tuple[str, bool]:
-    """Assign a conservative default scope from the BoQ text, not class alone."""
+    """Keep explicit user BoQ scopes in the underwriting budget by default.
+
+    Auction properties often cannot be inspected fully. A user-entered BoQ row
+    is therefore treated as a planned allowance (Disarankan), even where the
+    underlying damage is not yet confirmed. Confidence/notes retain uncertainty;
+    the user may explicitly remove a row after inspection.
+    """
     text = f"{group_name} {item_name} {basis}".lower()
-    evidence = str(basis or "").lower()
-
-    interior_terms = [
-        "interior", "ruang utama", "plafon interior", "kamar mandi",
-        "sanitair", "instalasi listrik", "titik listrik", "mcb", "pipa",
-        "kusen", "daun pintu", "jendela",
+    # Only scopes that are materially unobservable without interior access or
+    # a functional test are flagged as hidden. Missing quantity-basis prose is
+    # NOT, by itself, evidence that the work is conditional: users often enter
+    # a complete quantity/unit BoQ in a compact table.
+    hidden_patterns = [
+        r"interior", r"ruang utama", r"kamar mandi",
+        r"sanitair", r"instalasi listrik", r"titik listrik", r"mcb",
+        r"stop ?kontak", r"saklar", r"kabel", r"pipa", r"plumbing",
+        r"plafon.*(interior|dalam|ruang utama)",
+        r"(interior|dalam|ruang utama).*plafon",
+        r"rangka atap.*(utama|induk|dalam)",
     ]
-    confirmed_interior = any(token in evidence for token in [
-        "hasil inspeksi", "hasil pemeriksaan", "sudah diperiksa",
-        "terkonfirmasi di lapangan", "kerusakan aktual", "hasil ukur lapangan",
-    ])
-    if any(k in text for k in interior_terms):
-        if not confirmed_interior:
-            return "Bersyarat", True
-        if any(k in text for k in ["rusak", "bocor", "lembap", "rembes", "perbaikan", "penggantian", "peremajaan"]):
-            return "Wajib", False
-        return "Disarankan", False
-
-    if any(k in text for k in [
-        "pembongkaran atap", "atap kanopi", "atap teras", "atap depan",
-        "flashing", "pengikisan cat mengelupas", "dinding lembap",
-        "waterproofing", "jamur", "rembesan", "anti-rembes",
-    ]):
-        if "pemasangan atap kanopi baru" in text or "penggantian atap kanopi" in text:
-            return "Disarankan", False
-        return "Wajib", False
-
-    if any(k in text for k in [
-        "pembersihan tumpukan", "pembersihan area", "perapian taman",
-        "penggantian plafon area teras", "tambal sulam plafon teras",
-    ]):
-        return "Disarankan", False
-
-    if any(k in text for k in [
-        "seluruh fasad", "pengecatan ulang fasad", "keramik", "lantai carport",
-        "pagar besi", "cat ulang seluruh",
-    ]):
-        return "Bersyarat", True
-
-    return "Bersyarat", True
+    hidden_scope = any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in hidden_patterns)
+    return "Disarankan", hidden_scope
 
 
 def _build_row(
@@ -155,8 +135,8 @@ def _build_row(
         "priority": priority,
         "conditional": conditional,
         "evidence_basis": "BoQ/dimensi yang diberikan pengguna",
-        "confidence": "Sedang" if basis else "Rendah",
-        "notes": "Volume dipertahankan persis dari BoQ pengguna. Harga satuan ditaksir terpisah atau diverifikasi dengan penawaran lokal.",
+        "confidence": "Rendah" if conditional else "Sedang",
+        "notes": "Volume dipertahankan persis dari BoQ pengguna. Baris masuk sebagai allowance modal walau belum terkonfirmasi; keyakinan diturunkan untuk scope tersembunyi. Keluarkan hanya setelah inspeksi menyimpulkan tidak diperlukan. Harga satuan adalah estimasi screening/quotation lokal.",
         "quantity_source": "USER_SUPPLIED_BOQ",
     }
 

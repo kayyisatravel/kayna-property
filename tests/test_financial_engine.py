@@ -186,3 +186,19 @@ def test_calculator_exposes_legal_cost_components_without_changing_legal_total()
     result = calculate_project(100_000_000, None, inputs)
     assert result["legal_bpn_cost"] == 3_750_000
     assert result["bpn_pnbp_cost"] + result["roya_cost"] + result["other_acquisition_admin"] + result["other_legal_cost"] + result["acquisition_notary_ppat_fee"] == result["legal_bpn_cost"]
+
+
+def test_hidden_condition_reserve_is_added_only_when_interior_not_inspected():
+    from core.calculator import calculate_project
+    from config import DEFAULT_RULES
+    base = {"property": {"njop": 0, "npoptkp_eligible": False}, "survey": {"interior_inspected": False},
+            "costs": {"renovation_cost": 40_000_000}, "rules": dict(DEFAULT_RULES)}
+    unseen = calculate_project(100_000_000, None, base)
+    assert unseen["hidden_condition_reserve"] == 3_000_000
+    assert unseen["capital_before_sale"] >= unseen["acquisition_cost"] + 40_000_000 + unseen["renovation_contingency"] + 3_000_000
+    inspected = {**base, "survey": {"interior_inspected": True}}
+    known = calculate_project(100_000_000, None, inspected)
+    assert known["hidden_condition_reserve"] == 0
+    legacy = {**base, "survey": {}}
+    legacy_result = calculate_project(100_000_000, None, legacy)
+    assert legacy_result["hidden_condition_reserve"] == 0

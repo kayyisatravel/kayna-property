@@ -101,6 +101,43 @@ def _percentile(values: list[float], percentile: float) -> float:
     return clean[lo] * (1 - frac) + clean[hi] * frac
 
 
+
+def _coordinate_pair(record: dict[str, Any]) -> tuple[float, float] | None:
+    """Return valid decimal-degree coordinates when both values are present."""
+    try:
+        lat = float(record.get("latitude"))
+        lon = float(record.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return lat, lon
+
+
+def haversine_distance_km(a: dict[str, Any], b: dict[str, Any]) -> float | None:
+    """Straight-line distance between two property pins (not road distance)."""
+    import math
+    ca, cb = _coordinate_pair(a), _coordinate_pair(b)
+    if not ca or not cb:
+        return None
+    lat1, lon1 = map(math.radians, ca)
+    lat2, lon2 = map(math.radians, cb)
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 6371.0088 * 2 * math.asin(math.sqrt(min(1.0, h)))
+
+
+def _proximity_score(distance_km: float | None) -> float | None:
+    if distance_km is None:
+        return None
+    if distance_km <= 0.5: return 100.0
+    if distance_km <= 1: return 95.0
+    if distance_km <= 2: return 90.0
+    if distance_km <= 5: return 80.0
+    if distance_km <= 10: return 65.0
+    if distance_km <= 20: return 45.0
+    return 25.0
+
 def assess_comparables(
     comparables: list[dict[str, Any]],
     subject: dict[str, Any],
@@ -110,6 +147,10 @@ def assess_comparables(
 ) -> dict[str, Any]:
     subject_lt = to_float(subject.get("land_area")); subject_lb = to_float(subject.get("building_area"))
     subject_njop = to_float(subject.get("njop"))
+    subject_bedrooms = to_float(subject.get("bedrooms"))
+    subject_bathrooms = to_float(subject.get("bathrooms"))
+    subject_road_width = to_float(subject.get("road_width_m"))
+    subject_orientation = normalize_text(subject.get("orientation"))
     rows, invalid, seen = [], [], set()
     for original in comparables:
         row = dict(original)
@@ -132,11 +173,45 @@ def assess_comparables(
         seen.add(key)
         lt, lb, price = to_float(row.get("land_area")), to_float(row.get("building_area")), to_float(row.get("price"))
         score = 100.0
+        distance_km = haversine_distance_km(subject, row)
+        proximity_score = _proximity_score(distance_km)
         target_complex = normalize_text(subject.get("complex_name"))
-        if target_complex and target_complex not in normalize_text(row.get("name")) and target_complex not in normalize_text(row.get("address")):
-            score -= 15
+        if proximity_score is not None:
+            # Geographic proximity overrides administrative/complex-name mismatch:
+            # a comparable 500m away remains highly relevant across village lines.
+            score -= (100.0 - proximity_score) * 0.25
+            distance_band = (
+                "Sangat dekat (≤500 m)" if distance_km <= 0.5 else
+                "Dekat (≤1 km)" if distance_km <= 1 else
+                "Radius lokal (≤2 km)" if distance_km <= 2 else
+                "Sekitar area (≤5 km)" if distance_km <= 5 else
+                "Wilayah sekitar (≤10 km)" if distance_km <= 10 else
+                "Perlu penyesuaian jarak (>10 km)"
+            )
+            location_method = "Koordinat Haversine (jarak garis lurus)"
+        else:
+            distance_band = "Jarak belum terukur — koordinat diperlukan"
+            location_method = "Nama/alamat; tidak ada koordinat berpasangan"
+            if target_complex and target_complex not in normalize_text(row.get("name")) and target_complex not in normalize_text(row.get("address")):
+                # Keep cross-complex listings eligible. This is only a mild
+                # uncertainty penalty when coordinates cannot be compared.
+                score -= 3
         if subject_lt > 0: score -= min(20, abs(lt - subject_lt) / subject_lt * 30)
         if subject_lb > 0 and lb > 0: score -= min(15, abs(lb - subject_lb) / subject_lb * 25)
+        # Additional physical attributes used as similarity indicators; they
+        # do not automatically alter price without an explicit adjustment.
+        comp_bedrooms = to_float(row.get("bedrooms"))
+        comp_bathrooms = to_float(row.get("bathrooms"))
+        if subject_bedrooms > 0 and comp_bedrooms > 0:
+            score -= min(5, abs(comp_bedrooms - subject_bedrooms) * 2.0)
+        if subject_bathrooms > 0 and comp_bathrooms > 0:
+            score -= min(4, abs(comp_bathrooms - subject_bathrooms) * 2.0)
+        comp_road_width = to_float(row.get("road_width_m"))
+        if subject_road_width > 0 and comp_road_width > 0:
+            score -= min(5, abs(comp_road_width - subject_road_width) * 1.5)
+        comp_orientation = normalize_text(row.get("orientation"))
+        if subject_orientation and comp_orientation and subject_orientation != comp_orientation:
+            score -= 1.5
         target_cert = normalize_text(subject.get("certificate_type"))
         if target_cert and not is_blank(row.get("certificate")) and target_cert != normalize_text(row.get("certificate")): score -= 5
         target_access = normalize_text(subject.get("access"))
@@ -196,6 +271,10 @@ def assess_comparables(
             "building_normalized_value": round(building_prediction) if building_prediction else None,
             "subject_normalized_value": round(predicted_total), "weight": round(weight, 3),
             "market_to_njop_ratio": round(adjusted / comparable_njop, 4) if comparable_njop > 0 else None,
+            "distance_km": round(distance_km, 3) if distance_km is not None else None,
+            "distance_band": distance_band,
+            "proximity_score": round(proximity_score, 1) if proximity_score is not None else None,
+            "location_method": location_method,
         })
         rows.append(row)
     count = len(rows)
@@ -298,7 +377,7 @@ def assess_comparables(
         if str(r.get("source_url") or "").startswith(("http://", "https://"))
         and str(r.get("source_url_scope") or "") != "Listing individual"
     )
-    quality_notes = []
+    quality_notes = ["Pembanding tidak dibatasi oleh desa/kecamatan/kompleks. Jika koordinat target dan pembanding tersedia, jarak garis lurus Haversine dipakai sebagai faktor relevansi; jarak 500 m mendapat skor kedekatan tertinggi. Jika koordinat tidak tersedia, jarak tidak dapat diklaim dan pengguna dianjurkan mengisinya."]
     if listing_date_missing_count:
         quality_notes.append(f"{listing_date_missing_count} listing tidak mencantumkan tanggal publikasi; ini mengurangi kepastian umur iklan, tetapi bukan syarat GO.")
     if date_found_missing_count:

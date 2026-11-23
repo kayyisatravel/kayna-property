@@ -106,6 +106,8 @@ def form_state_from_input_data(data: dict[str, Any] | None, latest_analysis: dic
         "na_rights_expiry": _pick(prop, keys=("rights_expiry", "masa_berlaku_hak"), default=""),
         "na_land": _pick(prop, keys=("land_area", "luas_tanah", "lt")),
         "na_building": _pick(prop, keys=("building_area", "luas_bangunan", "lb")),
+        "na_latitude": _pick(prop, keys=("latitude", "lat")),
+        "na_longitude": _pick(prop, keys=("longitude", "lon", "lng")),
         "na_building_footprint": _pick(prop, keys=("building_footprint_m2", "building_footprint", "luas_tapak")),
         "na_njop": _pick(prop, keys=("njop", "nilai_njop")),
         "na_bedrooms": bedrooms,

@@ -355,6 +355,66 @@ def rab_item_is_in_scope(item: dict[str, Any]) -> bool:
     return True
 
 
+def summarize_rab_totals(items: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Recompute RAB subtotals/completeness from the editable line items.
+
+    Used after the initial AI pass and again after manual/second-pass rate edits,
+    so the displayed totals cannot remain stale after a user changes a price.
+    """
+    rows = [dict(row) for row in (items or []) if isinstance(row, dict)]
+    in_scope = [row for row in rows if rab_item_is_in_scope(row)]
+
+    def priced(field: str) -> list[dict[str, Any]]:
+        return [
+            row for row in in_scope
+            if to_float(row.get("quantity")) > 0 and to_float(row.get(field)) > 0
+        ]
+
+    low_rows = priced("unit_cost_low")
+    base_rows = priced("unit_cost")
+    high_rows = priced("unit_cost_high")
+    unpriced = [
+        str(row.get("work_item") or "Pekerjaan tanpa nama")
+        for row in in_scope
+        if to_float(row.get("quantity")) <= 0 or to_float(row.get("unit_cost")) <= 0
+    ]
+    base_complete = bool(in_scope) and not unpriced
+    range_complete = base_complete and len(low_rows) == len(in_scope) and len(high_rows) == len(in_scope)
+
+    def amount(group: list[dict[str, Any]], field: str) -> int | None:
+        if not group:
+            return None
+        return round(sum(to_float(row.get("quantity")) * to_float(row.get(field)) for row in group))
+
+    return {
+        "total_low_indicative": amount(low_rows, "unit_cost_low"),
+        "total_conservative_indicative": amount(base_rows, "unit_cost"),
+        "total_high_indicative": amount(high_rows, "unit_cost_high"),
+        "subtotal_low_priced_items": amount(low_rows, "unit_cost_low"),
+        "subtotal_conservative_priced_items": amount(base_rows, "unit_cost"),
+        "unpriced_items": unpriced,
+        "unpriced_item_count": len(unpriced),
+        "priced_item_count": len(base_rows),
+        "in_scope_item_count": len(in_scope),
+        "excluded_items": [
+            str(row.get("work_item") or "Pekerjaan tanpa nama")
+            for row in rows if not rab_item_is_in_scope(row)
+        ],
+        "total_conservative_complete": base_complete,
+        "total_range_complete": range_complete,
+        "user_boq_priced_count": sum(
+            1 for row in in_scope
+            if str(row.get("item_code") or "").startswith("USER_BOQ_")
+            and to_float(row.get("quantity")) > 0 and to_float(row.get("unit_cost")) > 0
+        ),
+        "user_boq_catalog_priced_count": sum(
+            1 for row in in_scope
+            if str(row.get("item_code") or "").startswith("USER_BOQ_")
+            and str(row.get("price_source") or "").startswith("Katalog screening")
+        ),
+    }
+
+
 def _global_warnings(category: str, lb: float, lt: float, floors: int, explicit_footprint: float = 0) -> list[str]:
     warnings = []
     if lb <= 0:

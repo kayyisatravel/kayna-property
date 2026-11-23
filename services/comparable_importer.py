@@ -19,6 +19,8 @@ ALIASES = {
     "source_evidence": ["kutipan sumber", "keterangan sumber", "source evidence"],
     "date_found": ["tanggal ditemukan", "tanggal input", "date found"],
     "listing_date": ["tanggal iklan", "tanggal publikasi", "listing date"],
+    "latitude": ["latitude", "lat", "lintang", "koordinat latitude"],
+    "longitude": ["longitude", "lon", "lng", "bujur", "koordinat longitude"],
 }
 
 
@@ -88,6 +90,9 @@ def parse_comparable_paste(text: str) -> list[dict[str, Any]]:
             "price_type": pt_map.get(_norm(pt), pt), "certificate": get("certificate"),
             "source_url": get("source_url"), "source_platforms": get("source_platforms"),
             "source_evidence": get("source_evidence"), "date_found": get("date_found"),
-            "listing_date": get("listing_date"), "adjustment_pct": 0.0,
+            "listing_date": get("listing_date"),
+            "latitude": to_float(get("latitude"), 0) or None,
+            "longitude": to_float(get("longitude"), 0) or None,
+            "adjustment_pct": 0.0,
         })
     return output

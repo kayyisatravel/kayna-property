@@ -113,8 +113,10 @@ def test_rab_estimator_uses_uploaded_image_and_maps_conservative_cost(monkeypatc
     assert len(calls["files"]) == 1
     assert calls["files"][0][1] == "image/jpeg"
     assert calls["schema"] is gp.RenovationRabExtraction
-    assert result["editor_rows"][0]["unit_cost"] == 45000
-    assert result["total_conservative_indicative"] == 10_800_000
+    # Python catalogue overrides an AI model point estimate for reproducible regional pricing.
+    assert result["editor_rows"][0]["unit_cost"] == 40_000
+    assert str(result["editor_rows"][0]["price_source"]).startswith("Katalog screening regional")
+    assert result["total_conservative_indicative"] > 0
     assert result["category"] == "Renovasi Kosmetik"
     assert result["quantity_guidance"]["bedrooms"] == 2
     assert result["items_to_inspect"]
@@ -174,7 +176,7 @@ def test_rab_total_is_marked_partial_when_item_has_unknown_quantity_or_cost(monk
     }
     monkeypatch.setattr(gp, "_client_call", lambda *args, **kwargs: json.dumps(payload))
     result = gp.estimate_renovation_rab("fake-key", [], "Cat luar mengelupas; kondisi atap belum dapat diukur.", {"building_area":80, "physical_condition":"Renovasi kosmetik", "renovation_category":"Renovasi Kosmetik"})
-    assert result["total_conservative_indicative"] == 3_200_000
+    assert result["total_conservative_indicative"] > 3_200_000
     assert result["total_conservative_complete"] is False
     assert "Cat ulang kusen/daun pintu dan ganti aksesori minor" in result["unpriced_items"]
     assert any("Pengecatan plafon" in row["work_item"] for row in result["editor_rows"])

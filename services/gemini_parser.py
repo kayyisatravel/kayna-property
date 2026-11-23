@@ -6,6 +6,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, Field
 from core.utils import to_float
 from core.user_boq import parse_user_boq_table, check_geometry_assumptions
+from core.renovation_pricing import apply_regional_screening_rates, PRICE_CATALOG_BASIS, PRICE_CATALOG_VERSION
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
@@ -275,6 +276,15 @@ def _normalise_boq_item_name(value: Any) -> str:
     return " ".join(text.split())
 
 
+def _conservative_confidence(*values: Any) -> str:
+    """Keep the lowest supplied confidence; AI cannot upgrade hidden evidence."""
+    ranks = {"rendah": 0, "sedang": 1, "tinggi": 2}
+    clean = [str(v).strip() for v in values if str(v or "").strip().lower() in ranks]
+    if not clean:
+        return "Rendah"
+    return min(clean, key=lambda v: ranks[v.lower()])
+
+
 def _match_user_boq_row(
     item: dict[str, Any], user_rows: list[dict[str, Any]], matched_codes: set[str]
 ) -> dict[str, Any] | None:
@@ -369,7 +379,7 @@ def renovation_estimate_to_rows(
             unit = user_hint.get("unit")
             quantity_basis = user_hint.get("quantity_basis")
             hint_notes = user_hint.get("notes", "")
-            confidence = item.get("confidence") or user_hint.get("confidence") or "Rendah"
+            confidence = _conservative_confidence(user_hint.get("confidence"), item.get("confidence"))
             priority = user_hint.get("priority", "Bersyarat")
             evidence_basis = user_hint.get("evidence_basis", "BoQ/dimensi yang diberikan pengguna")
         elif hint is not None:
@@ -419,6 +429,7 @@ def renovation_estimate_to_rows(
             "priority": priority, "conditional": bool(hint.get("conditional", False)) if hint else bool(item.get("conditional", False)),
             "evidence_basis": evidence_basis, "confidence": confidence,
             "rate_basis": item.get("rate_basis"),
+            "price_source": "Gemini (estimasi screening; belum diverifikasi lokal)" if conservative is not None else None,
             "materials_and_labor_included": item.get("materials_and_labor_included"),
             "notes": " | ".join(str(x) for x in notes),
         })
@@ -439,10 +450,10 @@ def renovation_estimate_to_rows(
             "unit_cost_high": None, "priority": user_hint.get("priority", "Bersyarat"),
             "conditional": bool(user_hint.get("conditional", True)),
             "evidence_basis": "BoQ/dimensi yang diberikan pengguna",
-            "confidence": "Rendah", "rate_basis": None, "materials_and_labor_included": None,
-            "notes": str(user_hint.get("notes", "")) + " AI belum mengusulkan harga satuan untuk baris ini; minta referensi lokal/quotation sebelum memasukkan ke budget final.",
+            "confidence": user_hint.get("confidence", "Rendah"), "rate_basis": None, "price_source": None, "materials_and_labor_included": None,
+            "notes": str(user_hint.get("notes", "")) + " Harga akan diisi katalog screening Python bila scope dan satuannya cocok; bila tidak cocok, tetap perlu verifikasi manual/quotation.",
         })
-    return output
+    return apply_regional_screening_rates(output)
 
 def estimate_renovation_rab(
     api_key: str,
@@ -456,7 +467,7 @@ def estimate_renovation_rab(
     Gemini chooses applicable scope and suggests unit prices. Python provides
     transparent quantity ranges from configurable screening coefficients.
     """
-    from core.renovation_engine import build_renovation_quantity_guidance, rab_item_is_in_scope, infer_renovation_category
+    from core.renovation_engine import build_renovation_quantity_guidance, rab_item_is_in_scope, infer_renovation_category, summarize_rab_totals
 
     description = (condition_description or "").strip()
     selected_files = (files or [])[:6]
@@ -513,7 +524,7 @@ def estimate_renovation_rab(
         "KATEGORI DAN SCOPE:",
         "Renovasi Kosmetik: persiapan/proteksi, dinding dan plafon merupakan scope utama saat kategori ini dipilih eksplisit; lantai pilih poles ATAU vinyl/SPC (jangan keduanya); kusen/pintu/aksesori hanya bila dibutuhkan. Jika kondisi hanya disebut siap huni dan kategori Auto, jangan memaksakan pengecatan penuh; cukup rekomendasikan persiapan/inspeksi dan item kosmetik opsional.",
         "Renovasi Ringan: perbaikan lokal atap/nok/talang/lisplang; plafon lokal; keramik lokal; sanitair minor sesuai jumlah kamar mandi bila ada bukti; saklar/stopkontak/lampu lokal; daun pintu/jendela lokal. Python memberi allowance area lokal low-confidence (atap 5–15%, plafon 3–10%, keramik 2–6%); pakai hanya bila kondisi/deskripsi/foto mendukung. Jangan menganggap seluruh atap/MEP diganti.",
-        "Renovasi Sedang: perlakukan sebagai beberapa pekerjaan menengah yang bisa lokal maupun menyeluruh. Jangan otomatis membongkar seluruh atap, plafon, lantai, semua kamar mandi, atau seluruh instalasi hanya karena kategori ini dipilih. Jika deskripsi menyebut atap teras/kanopi yang jebol dan katalog menyediakan VIS_FRONT_ROOF, gunakan satu paket itu untuk penutup atap lokal dan flashing; jangan sekaligus menulis MED_DEM_ROOF, MED_NEW_ROOF, LGT_ROOF, atau VIS_ROOF_WATERPROOF untuk area yang sama. Rangka atap dibuat item terpisah VIS_FRONT_ROOF_FRAME berstatus Bersyarat hanya bila inspeksi membuktikan kerangka rusak. Jika dinding carport lembap dan tersedia VIS_DAMP_WALL, gunakan satu item khusus tersebut; jangan juga menambahkan MED_WALL untuk bidang yang sama. Jika deskripsi menyebut warna fasad terlalu mencolok dan tersedia VIS_FACADE_REPAINT, tempatkan pengecatan seluruh fasad sebagai Bersyarat/opsional, dengan pengukuran bidang terpisah dan mengecualikan bidang lembap yang sudah dihitung pada VIS_DAMP_WALL. Jika rabat beton carport retak dan tersedia VIS_CARPORT_FLOOR, jangan tambahkan MED_FLOOR atau pemasangan keramik untuk retakan yang sama. Plafon yang mungkin terdampak dibuat Bersyarat sampai dibuka/diinspeksi. Item Bersyarat tidak masuk total RAB dasar sampai pengguna mengubah status menjadi Wajib/Disarankan/Opsional setelah verifikasi. Struktur dan denah dipertahankan kecuali ada temuan tenaga ahli. Jangan mengklasifikasikan renovasi menjadi berat hanya karena bagian catatan risiko menyebut kemungkinan bergeser ke berat jika temuan tersembunyi kelak terkonfirmasi; gunakan kategori utama yang disebut pengguna dan pisahkan skenario risiko.",
+        "Renovasi Sedang: perlakukan sebagai beberapa pekerjaan menengah yang bisa lokal maupun menyeluruh. Jangan otomatis membongkar seluruh atap, plafon, lantai, semua kamar mandi, atau seluruh instalasi hanya karena kategori ini dipilih. Jika deskripsi menyebut atap teras/kanopi yang jebol dan katalog menyediakan VIS_FRONT_ROOF, gunakan satu paket itu untuk penutup atap lokal dan flashing; jangan sekaligus menulis MED_DEM_ROOF, MED_NEW_ROOF, LGT_ROOF, atau VIS_ROOF_WATERPROOF untuk area yang sama. Rangka atap dibuat item terpisah VIS_FRONT_ROOF_FRAME berstatus Bersyarat hanya bila inspeksi membuktikan kerangka rusak. Jika dinding carport lembap dan tersedia VIS_DAMP_WALL, gunakan satu item khusus tersebut; jangan juga menambahkan MED_WALL untuk bidang yang sama. Jika deskripsi menyebut warna fasad terlalu mencolok dan tersedia VIS_FACADE_REPAINT, tempatkan pengecatan seluruh fasad sebagai Bersyarat/opsional, dengan pengukuran bidang terpisah dan mengecualikan bidang lembap yang sudah dihitung pada VIS_DAMP_WALL. Jika rabat beton carport retak dan tersedia VIS_CARPORT_FLOOR, jangan tambahkan MED_FLOOR atau pemasangan keramik untuk retakan yang sama. Plafon yang mungkin terdampak dibuat Bersyarat sampai dibuka/diinspeksi. Seluruh baris USER_BOQ yang ditulis eksplisit oleh pengguna wajib masuk sebagai allowance modal dengan prioritas default Disarankan, sekalipun akses inspeksi terbatas. Turunkan confidence menjadi Rendah untuk interior/MEP/struktur tersembunyi, jangan mengklaim kerusakan terbukti, dan biarkan pengguna mengeluarkan baris hanya setelah pemeriksaan menunjukkan tidak diperlukan. Baris visual tambahan di luar BoQ boleh tetap Bersyarat. Struktur dan denah dipertahankan kecuali ada temuan tenaga ahli. Jangan mengklasifikasikan renovasi menjadi berat hanya karena bagian catatan risiko menyebut kemungkinan bergeser ke berat jika temuan tersembunyi kelak terkonfirmasi; gunakan kategori utama yang disebut pengguna dan pisahkan skenario risiko.",
         "LANTAI CARPORT: bila yang terlihat/dideskripsikan adalah rabat beton retak, jangan otomatis memasukkan pemasangan keramik. Susun opsi pemeriksaan retak, tambal lokal, recast/bongkar-pasang atau finishing hanya setelah pengguna mengonfirmasi. Keramik hanya dimasukkan bila kerusakan keramik atau keinginan upgrade disebut eksplisit.",
         "Renovasi Berat: pembongkaran/perubahan ruang, dinding/fasad, atap/lantai/plafon/MEP. Item struktur harus ditandai perlu engineer dan volume/harga null sampai ada desain/perhitungan. Jangan menebak pondasi/kolom/balok/dak dari LT/LB.",
         "Hitung Tanah: pemutusan utilitas, demolisi bangunan, pemuatan/pembuangan puing, land clearing; bukan RAB renovasi. Volume puing sangat kasar dan harus dicek kontraktor.",
@@ -563,6 +574,36 @@ def estimate_renovation_rab(
         suppressed_guidance_codes.update({"MED_FLOOR", "LGT_TILE"})
     if guidance.get("category") != "Renovasi Berat":
         suppressed_guidance_codes.update(code for code in guidance_codes if code.startswith("HVY_"))
+    # Do not append generic visual rows when the user's explicit BoQ already
+    # budgets the same surface/scope. This is a scope-deduplication rule, not
+    # a locality/condition inference.
+    boq_text = " ".join(str(r.get("work_item") or "") for r in user_boq_rows).lower()
+    boq_scope_rules = {
+        "VIS_FRONT_ROOF": (r"kanopi|atap teras|atap depan", r"bongkar|pasang|penggantian|galvalum|spandek|flashing"),
+        # A new canopy installation explicitly includes its frame; do not append
+        # a second speculative frame-replacement line from the photo guidance.
+        "VIS_FRONT_ROOF_FRAME": (r"kanopi|atap teras|atap depan", r"rangka", r"pasang|pemasangan|ganti|penggantian|baru"),
+        "VIS_DAMP_WALL": (r"dinding|rembes|lembap|jamur", r"waterproof|anti.?rembes|rembes|jamur|pengikisan|kupas"),
+        "VIS_FRONT_CLEAN": (r"pembersihan|peti kayu|sampah|barang bekas",),
+        "VIS_CARPORT_FLOOR": (r"keramik|ubin|lantai carport|rabat beton",),
+        "VIS_FACADE_REPAINT": (r"cat ulang fasad|pengecatan.*fasad|weatherproof",),
+        # Explicit gate/railing paint in the user's BoQ replaces the optional
+        # visual recommendation for the same surface.
+        "VIS_FENCE_PAINT": (r"pagar|teralis", r"cat|pengecatan|amplas"),
+    }
+    for code, patterns in boq_scope_rules.items():
+        if code in guidance_codes and all(re.search(pattern, boq_text, re.I) for pattern in patterns):
+            suppressed_guidance_codes.add(code)
+    # Apply the same rule to AI-returned guidance codes, not just Python-added
+    # rows. This prevents a model response from reintroducing a duplicate.
+    editor_rows = [
+        row for row in editor_rows
+        if not (
+            str(row.get("item_code") or "") in suppressed_guidance_codes
+            and not str(row.get("item_code") or "").startswith("USER_BOQ_")
+        )
+    ]
+    returned_codes = {str(r.get("item_code")) for r in editor_rows if r.get("item_code")}
     # Never let a missing AI row silently erase a required or visually-triggered
     # work scope. Inject it as a visible unpriced row; the user can measure it,
     # price it, or explicitly mark it conditional/not required after inspection.
@@ -592,6 +633,7 @@ def estimate_renovation_rab(
                 "Baris visual/inspeksi dari katalog Python ditampilkan agar tidak hilang bila AI tidak mengembalikannya. "
             ) + str(hint.get("notes", "")),
         })
+    editor_rows = apply_regional_screening_rates(editor_rows)
     data["editor_rows"] = editor_rows
     data["user_boq_rows"] = user_boq_rows
     data["user_boq_count"] = len(user_boq_rows)
@@ -601,39 +643,40 @@ def estimate_renovation_rab(
     data["user_boq_rows_mapped"] = sum(1 for r in editor_rows if str(r.get("item_code") or "").startswith("USER_BOQ_"))
     data["geometry_warnings"] = geometry_warnings
     data["category_warnings"] = category_warnings
-    if missing_required:
-        data["items_to_inspect"] = list(data.get("items_to_inspect", [])) + ["Scope wajib belum diberi harga oleh AI: " + "; ".join(missing_required)]
-    # Only items still in scope contribute to the preliminary subtotal or to the
-    # completion check. Explicitly rejected rows must not inflate the subtotal or
-    # make an otherwise complete RAB appear unfinished.
-    in_scope_rows = [r for r in data["editor_rows"] if rab_item_is_in_scope(r)]
-    complete_low = [r for r in in_scope_rows if r.get("quantity") is not None and to_float(r.get("quantity")) > 0 and r.get("unit_cost_low") is not None]
-    complete_high = [r for r in in_scope_rows if r.get("quantity") is not None and to_float(r.get("quantity")) > 0 and r.get("unit_cost") is not None]
-    data["total_low_indicative"] = round(sum(r["quantity"] * r["unit_cost_low"] for r in complete_low)) if complete_low else None
-    # Backward-compatible field: when incomplete this is a SUBTOTAL only. The UI
-    # must never label it as a complete total unless total_conservative_complete.
-    data["total_conservative_indicative"] = round(sum(r["quantity"] * r["unit_cost"] for r in complete_high)) if complete_high else None
-    data["subtotal_low_priced_items"] = data["total_low_indicative"]
-    data["subtotal_conservative_priced_items"] = data["total_conservative_indicative"]
-    data["unpriced_items"] = [
-        r.get("work_item", "Pekerjaan tanpa nama") for r in in_scope_rows
-        if r.get("quantity") is None or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") is None
+    # The Python screening catalogue can complete a missing Gemini rate. Only
+    # retain this warning when quantity or the final base rate is still absent.
+    unresolved_required = [
+        str(r.get("work_item") or r.get("item_code") or "Scope wajib")
+        for r in editor_rows
+        if str(r.get("priority") or "").lower() == "wajib"
+        and not bool(r.get("conditional", False))
+        and (to_float(r.get("quantity")) <= 0 or to_float(r.get("unit_cost")) <= 0)
     ]
-    data["excluded_items"] = [
-        r.get("work_item", "Pekerjaan tanpa nama") for r in data["editor_rows"]
-        if not rab_item_is_in_scope(r)
+    data["items_to_inspect"] = [
+        x for x in (data.get("items_to_inspect") or [])
+        if not str(x).lower().startswith("scope wajib belum diberi harga oleh ai:")
     ]
-    data["priced_item_count"] = len(complete_high)
-    data["in_scope_item_count"] = len(in_scope_rows)
-    data["unpriced_item_count"] = len(data["unpriced_items"])
-    data["total_conservative_complete"] = bool(in_scope_rows) and len(data["unpriced_items"]) == 0
+    if unresolved_required:
+        data["items_to_inspect"].append("Scope wajib masih belum memiliki volume/harga dasar: " + "; ".join(unresolved_required))
+    # One shared Python summary function is reused after manual and AI rate edits.
+    # This keeps subtotals and completeness flags in sync with the editable rows.
+    data.update(summarize_rab_totals(data["editor_rows"]))
     data["files_used"] = file_labels
     data["interior_scenario_cost_is_separate"] = True
     data["pricing_basis_disclosure"] = (
-        "Harga satuan dari Gemini adalah estimasi screening tanpa database harga real-time, HSPK/SSH lokal, atau quotation vendor yang dilampirkan. "
-        "Verifikasi harga bahan, upah, mobilisasi dan metode kerja dengan referensi lokal atau minimal dua penawaran sebelum menetapkan budget final."
+        f"Harga satuan diisi terlebih dahulu oleh katalog screening regional Surabaya–Sidoarjo 2026 untuk scope yang cocok ({PRICE_CATALOG_VERSION}); "
+        "harga Gemini dipakai untuk scope yang belum tercakup. Ini estimasi allowance bahan+upah spesifikasi ekonomis-menengah, bukan HSPK/SSH all-in atau quotation kontraktor. "
+        "SSH Sidoarjo TA 2026 hanya referensi silang material, bukan harga paket pekerjaan. Periksa ulang minimal dua penawaran lokal, akses/mobilisasi, spesifikasi dan kondisi aktual."
     )
-    data["estimation_basis"] = "Draft AI berbasis foto/deskripsi dan katalog kuantitas Python. Lingkup spesifik dipilih dari bukti; volume/koefisien adalah allowance awal; subtotal hanya mencakup item yang sudah memiliki volume dan harga; harga satuan AI bukan penawaran vendor atau standar harga resmi; skenario interior tidak masuk total RAB dasar dan wajib diverifikasi."
+    data["estimation_basis"] = (
+        "RAB underwriting rumah lelang: baris BoQ eksplisit pengguna masuk sebagai allowance modal meski interior/komponen tersembunyi belum dapat diinspeksi; "
+        "volume pengguna dipertahankan; harga disediakan katalog regional atau Gemini dengan rentang rendah/dasar/atas; pekerjaan struktural/volume yang sungguh tak dapat ditaksir tetap memerlukan inspeksi/quotation. "
+        "Baris dapat dikeluarkan hanya setelah pengguna menilai scope tidak diperlukan. Cadangan kondisi tersembunyi dihitung terpisah pada modal proyek jika interior belum diinspeksi."
+    )
+    data["interior_scenario_note"] = (
+        "Skenario interior adalah sensitivitas tambahan di luar item yang sudah tercantum dalam BoQ. Jangan menjumlahkannya lagi untuk pekerjaan yang sama; "
+        "item plafon, cat, listrik atau sanitair yang sudah ada di BoQ telah masuk sebagai allowance dasar. Sisa risiko tak terduga tercakup oleh cadangan kondisi tersembunyi."
+    )
     data["assumptions"] = list(data.get("assumptions", [])) + guidance.get("warnings", []) + geometry_warnings + category_warnings + [guidance.get("method_note", "")]
     return data
 

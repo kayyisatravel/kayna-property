@@ -151,3 +151,33 @@ def test_outlier_is_flagged_and_downweighted_not_silently_removed():
     outliers = [row for row in market["valid"] if row.get("outlier_flag")]
     assert outliers
     assert outliers[0]["weight"] < outliers[0]["similarity_score"] / 100
+
+
+def test_cross_village_comparable_500m_away_is_high_proximity_even_if_complex_name_differs():
+    from core.market_engine import haversine_distance_km, assess_comparables
+    subject = {"land_area": 100, "building_area": 80, "complex_name": "Perumahan Target", "latitude": -7.450000, "longitude": 112.700000, "certificate_type": "SHM"}
+    # About 0.5 km north; no administrative/complex match is required.
+    comp = {"name": "Perumahan Desa Sebelah", "address": "Desa tetangga, Sidoarjo", "latitude": -7.445500, "longitude": 112.700000,
+            "price": 400_000_000, "land_area": 100, "building_area": 80, "certificate": "SHM",
+            "condition": "Siap Huni", "access": "1 Mobil", "price_type": "Asking aktif", "source_platforms": "OLX", "source_evidence": "Listing rumah", "date_found": "2026-11-23", "listing_date": "2026-11-15"}
+    dist = haversine_distance_km(subject, comp)
+    assert dist is not None and 0.45 <= dist <= 0.55
+    result = assess_comparables([comp], subject)
+    assert result["valid_count"] == 1
+    row = result["valid"][0]
+    assert row["distance_km"] <= 0.55
+    assert row["proximity_score"] >= 95
+    assert row["similarity_score"] > 85
+
+def test_market_engine_exposes_distance_and_degrades_score_gradually_after_5km():
+    from core.market_engine import assess_comparables
+    subject = {"land_area": 100, "building_area": 80, "latitude": -7.450000, "longitude": 112.700000}
+    base = {"name": "Comp", "price": 400_000_000, "land_area": 100, "building_area": 80, "price_type": "Transaksi terverifikasi",
+            "source_platforms": "Broker", "source_evidence": "Harga transaksi", "condition": "Siap Huni", "access": "1 Mobil",
+            "date_found": "2026-11-23", "listing_date": "2026-11-15"}
+    near = {**base, "name": "Dekat beda desa", "latitude": -7.450000, "longitude": 112.704000}
+    far = {**base, "name": "Jauh", "latitude": -7.450000, "longitude": 112.780000}
+    r_near = assess_comparables([near], subject)["valid"][0]
+    r_far = assess_comparables([far], subject)["valid"][0]
+    assert r_near["distance_km"] < r_far["distance_km"]
+    assert r_near["similarity_score"] > r_far["similarity_score"]

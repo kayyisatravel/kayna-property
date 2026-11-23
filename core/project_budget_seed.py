@@ -125,6 +125,7 @@ def build_opening_budget_from_analysis(
                 "unit": item.get("unit"),
                 "unit_cost": item.get("unit_cost"),
                 "priority": item.get("priority"),
+                "price_source": item.get("price_source"),
                 "quantity_basis": item.get("quantity_basis"),
                 "pending_pricing": not priced,
                 "source_notes": item.get("notes", ""),
@@ -144,6 +145,9 @@ def build_opening_budget_from_analysis(
 
     contingency = max(0.0, to_float(estimate.get("renovation_contingency")))
     add("RENOVATION_CONTINGENCY", "Renovasi", "Contingency", f"Contingency renovasi ({contingency_pct:g}%)", contingency, payload={"calculation_field": "renovation_contingency", "contingency_pct": contingency_pct})
+    hidden_reserve = max(0.0, to_float(estimate.get("hidden_condition_reserve")))
+    if hidden_reserve > 0:
+        add("HIDDEN_CONDITION_RESERVE", "Renovasi", "Cadangan kondisi tersembunyi", f"Cadangan kondisi tersembunyi interior belum diinspeksi ({to_float(estimate.get('hidden_condition_reserve_pct')):g}%)", hidden_reserve, payload={"calculation_field": "hidden_condition_reserve", "reserve_pct": estimate.get("hidden_condition_reserve_pct"), "not_confirmed_damage": True})
     add("HOLDING", "Holding", "Biaya holding", "Estimasi biaya holding sampai properti siap dijual", estimate.get("holding_cost", 0), payload={"holding_months": estimate.get("holding_months")})
     add("MARKETING", "Marketing", "Pemasaran", "Estimasi biaya marketing", costs.get("marketing_cost", 0), payload={"calculation_field": "marketing_cost"})
     add("OTHER_PRESALE", "Lainnya", "Biaya sebelum penjualan", "Biaya lain sebelum penjualan", costs.get("other_presale_cost", 0), payload={"calculation_field": "other_presale_cost"})

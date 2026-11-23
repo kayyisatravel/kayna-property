@@ -1,8 +1,18 @@
-# Property Flipper Management System (PFMS) — V1.0.13
+# Property Flipper Management System (PFMS) — V1.0.15
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.15 — Auction-Grade RAB Allowances & Geographic Comparable Valuation
+
+- Every explicit user BoQ row with a valid quantity and unit remains in the underwriting allowance, including hidden interior/MEP work; hidden items are marked low-confidence rather than silently excluded.
+- Python fills matching missing AI rates from a transparent Surabaya–Sidoarjo screening catalogue with low/base/high rates. Unit/quantity mismatches remain unpriced; all catalogue rates are screening assumptions, not vendor quotations or an official HSPK schedule.
+- Separate hidden-condition reserve is included when the interior has not been inspected. It is configurable and must not be confused with the ordinary renovation contingency.
+- Duplicate visual guidance is suppressed where the user BoQ already budgets the same canopy frame, fence painting, roof, damp-wall, cleaning, facade or floor scope. Distinct inspection allowances remain.
+- Comparable relevance is driven by coordinates and Haversine straight-line distance, not village/district/project-name boundaries. A nearby listing 500m across an administrative border remains eligible and receives the highest proximity tier.
+- Comparable similarity considers land/building area, bedrooms, bathrooms, road width, orientation, certificate, access and condition; the user or reviewed AI may enter an explicit adjustment percentage before weighted-median reconciliation.
+- All dashboard/result metric grids are limited to four columns; the user's customised dashboard metric for active-project realised budget is preserved.
 
 ## V1.0.13 — User BoQ Pricing Reliability & Analysis-to-Active Integration
 

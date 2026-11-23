@@ -40,11 +40,18 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
     possession = to_float(survey.get("possession_cost"))
     renovation = to_float(costs.get("renovation_cost"))
     contingency = renovation * to_float(rules.get("renovation_contingency_pct", 15)) / 100
+    hidden_condition_reserve_pct = max(0.0, to_float(rules.get("hidden_condition_reserve_pct", 7.5)))
+    # Additional uncertainty buffer for hidden interior/MEP conditions. This is
+    # not a claim that hidden damage exists; it is a separate investor reserve.
+    hidden_condition_reserve = (
+        renovation * hidden_condition_reserve_pct / 100
+        if survey.get("interior_inspected") is False else 0.0
+    )
     hold_months = sum(to_float(v) for v in [survey.get("possession_months"), costs.get("legal_delay_months"), costs.get("renovation_months"), costs.get("selling_months")])
     holding = hold_months * to_float(costs.get("monthly_holding_cost", rules.get("monthly_holding_cost", 1_000_000)))
     other_before_sale = to_float(costs.get("other_presale_cost")) + to_float(costs.get("marketing_cost"))
     acquisition = p + buyer_fee + bphtb + legal
-    capital_before_sale = acquisition + possession + renovation + contingency + holding + other_before_sale
+    capital_before_sale = acquisition + possession + renovation + contingency + hidden_condition_reserve + holding + other_before_sale
     possession_risk_reserve = max(0.0, to_float(survey.get("possession_risk_reserve")))
     general_risk_reserve = max(0.0, to_float(survey.get("general_risk_reserve")))
     cash_requirement_including_reserve = capital_before_sale + possession_risk_reserve + general_risk_reserve
@@ -64,7 +71,9 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
         "bid_price": p, "exit_price": sale, "buyer_auction_fee": buyer_fee, "bphtb_basis": bphtb_base, "bphtb": bphtb,
         "legal_bpn_cost": legal, **legal_breakdown,
         "acquisition_cost": acquisition, "possession_cost": possession, "renovation_cost": renovation,
-        "renovation_contingency": contingency, "holding_months": hold_months, "holding_cost": holding,
+        "renovation_contingency": contingency, "hidden_condition_reserve": hidden_condition_reserve,
+        "hidden_condition_reserve_pct": hidden_condition_reserve_pct if survey.get("interior_inspected") is False else 0.0,
+        "holding_months": hold_months, "holding_cost": holding,
         "other_presale_cost": other_before_sale, "capital_before_sale": capital_before_sale,
         "possession_risk_reserve": possession_risk_reserve, "general_risk_reserve": general_risk_reserve,
         "cash_requirement_including_reserve": cash_requirement_including_reserve,

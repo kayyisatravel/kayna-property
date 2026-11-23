@@ -257,3 +257,12 @@ def test_parser_limits_single_free_tier_batch_to_ten_listings():
         assert False, "Expected max ten listing validation"
     except ValueError as exc:
         assert "Maksimal 10 listing" in str(exc)
+
+
+def test_comparable_paste_parser_accepts_latitude_longitude_columns():
+    from services.comparable_importer import parse_comparable_paste
+    text = "Nama listing\tHarga listing\tLT\tLB\tLatitude\tLongitude\tPlatform sumber\nRumah A\tRp400.000.000\t100\t80\t-7.45\t112.70\tOLX"
+    rows = parse_comparable_paste(text)
+    assert len(rows) == 1
+    assert rows[0]["latitude"] == -7.45
+    assert rows[0]["longitude"] == 112.7

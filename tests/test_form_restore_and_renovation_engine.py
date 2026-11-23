@@ -125,9 +125,11 @@ def test_missing_mandatory_ai_rab_scope_is_added_as_unpriced_placeholder(monkeyp
     codes = {r.get("item_code") for r in result["editor_rows"]}
     assert "COS_WALL" in codes and "COS_CEILING" in codes
     wall = next(r for r in result["editor_rows"] if r.get("item_code") == "COS_WALL")
-    assert wall["unit_cost"] is None
-    assert result["total_conservative_complete"] is False
-    assert any("Scope wajib belum diberi harga" in x for x in result["items_to_inspect"])
+    assert wall["unit_cost"] == 40_000
+    assert str(wall["price_source"]).startswith("Katalog screening regional")
+    assert result["total_conservative_complete"] is True
+    assert result["unpriced_items"] == []
+    assert not any("Scope wajib belum diberi harga" in x for x in result["items_to_inspect"])
 
 
 def test_restore_fields_from_latest_analysis_when_input_data_is_partial_or_legacy():

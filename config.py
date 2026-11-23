@@ -1,6 +1,6 @@
 """Central application defaults. Tax/legal rates are editable assumptions, not legal advice."""
 APP_NAME = "Property Flipper Management System"
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.15"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 MIN_ROI_PCT = 25.0
 MID_ROI_PCT = 35.0
@@ -26,6 +26,8 @@ DEFAULT_RULES = {
     "seller_misc_fixed": 5_000_000,
     "monthly_holding_cost": 1_000_000,
     "renovation_contingency_pct": 15.0,
+    # Additional reserve for unseen interior/MEP/roof conditions when full access is unavailable.
+    "hidden_condition_reserve_pct": 7.5,
     "minimum_roi_pct": MIN_ROI_PCT,
     "mid_roi_pct": MID_ROI_PCT,
     "negotiation_discount_pct": DEFAULT_NEGOTIATION_DISCOUNT_PCT,
