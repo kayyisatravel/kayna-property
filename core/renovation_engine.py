@@ -538,3 +538,54 @@ def _global_warnings(category: str, lb: float, lt: float, floors: int, explicit_
     if category == "Hitung Tanah":
         warnings.append("Volume puing dan ritase hanya allowance awal; fondasi, beton, jenis material dan akses truk dapat mengubah hasil secara besar.")
     return warnings
+
+
+def rab_row_subtotals(item: dict[str, Any]) -> dict[str, Any]:
+    """Return deterministic low/base/high line subtotals for one RAB scope."""
+    q_low = to_float(item.get("quantity_low"))
+    q_base = to_float(item.get("quantity"))
+    q_high = to_float(item.get("quantity_high"))
+    p_low = to_float(item.get("unit_cost_low"))
+    p_base = to_float(item.get("unit_cost"))
+    p_high = to_float(item.get("unit_cost_high"))
+    return {
+        "subtotal_low": round(q_low * p_low) if q_low > 0 and p_low > 0 else None,
+        "subtotal_base": round(q_base * p_base) if q_base > 0 and p_base > 0 else None,
+        "subtotal_high": round(q_high * p_high) if q_high > 0 and p_high > 0 else None,
+    }
+
+
+def summarize_rab_scope_totals(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Aggregate in-scope RAB subtotals by work group/subcategory."""
+    groups: dict[str, dict[str, Any]] = {}
+    for row in items or []:
+        if not isinstance(row, dict) or not rab_item_is_in_scope(row):
+            continue
+        name = str(row.get("subcategory") or "Kelompok lain").strip() or "Kelompok lain"
+        agg = groups.setdefault(name, {
+            "Kelompok pekerjaan": name, "Jumlah item": 0,
+            "Subtotal rendah (Rp)": 0, "Subtotal dasar (Rp)": 0, "Subtotal atas (Rp)": 0,
+            "Item belum lengkap": 0,
+            "_count_low": 0, "_count_base": 0, "_count_high": 0,
+        })
+        agg["Jumlah item"] += 1
+        subtotals = rab_row_subtotals(row)
+        for key, out, count_key in (
+            ("subtotal_low", "Subtotal rendah (Rp)", "_count_low"),
+            ("subtotal_base", "Subtotal dasar (Rp)", "_count_base"),
+            ("subtotal_high", "Subtotal atas (Rp)", "_count_high"),
+        ):
+            if subtotals[key] is not None:
+                agg[out] += subtotals[key]
+                agg[count_key] += 1
+        if subtotals["subtotal_base"] is None:
+            agg["Item belum lengkap"] += 1
+    for agg in groups.values():
+        # A missing rate band is unknown, not a real Rp0 cost. Keep the value
+        # blank when no row in the group has a price for that band.
+        for out, count_key in (("Subtotal rendah (Rp)", "_count_low"), ("Subtotal dasar (Rp)", "_count_base"), ("Subtotal atas (Rp)", "_count_high")):
+            if agg[count_key] == 0:
+                agg[out] = None
+        for private_key in ("_count_low", "_count_base", "_count_high"):
+            agg.pop(private_key, None)
+    return sorted(groups.values(), key=lambda x: str(x["Kelompok pekerjaan"]).lower())

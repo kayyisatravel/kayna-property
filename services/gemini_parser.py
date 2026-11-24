@@ -17,6 +17,8 @@ class FieldEvidence(BaseModel):
     auction_office: Optional[str] = None
     seller: Optional[str] = None
     auction_date: Optional[str] = None
+    deposit_deadline: Optional[str] = None
+    payment_deadline: Optional[str] = None
     auction_limit: Optional[str] = None
     deposit_amount: Optional[str] = None
     bid_increment: Optional[str] = None
@@ -260,13 +262,20 @@ def _client_call(api_key: str, model: str, prompt: str, file_bytes: bytes | None
 
 def extract_auction_document(api_key: str, file_bytes: bytes, mime_type: str, filename: str, model: str = DEFAULT_MODEL) -> dict[str, Any]:
     prepared, prepared_mime = prepare_upload(file_bytes, mime_type)
-    prompt = f"""Anda adalah petugas ekstraksi dokumen lelang properti Indonesia. Baca file {filename}. Ekstrak data lelang dan nilai kondisi fasad YANG TERLIHAT dalam satu respons JSON sesuai skema. DILARANG menebak. Field yang tidak terbaca/tidak tercantum wajib null. Nominal rupiah integer. LT dan LB jangan tertukar. Jangan simpulkan status penghuni, interior, struktur tersembunyi, legalitas terverifikasi, atau status sengketa dari foto. Bedakan fakta terlihat, indikasi, dan hal yang tidak dapat dipastikan. Sertakan kutipan sumber singkat untuk field utama pada field_evidence dengan nama field yang sudah ditentukan skema. Jika informasi bertentangan, masukkan dalam conflicts. Kelipatan bid hanya diisi bila tertulis eksplisit."""
+    prompt = f"""Anda adalah petugas ekstraksi dokumen lelang properti Indonesia. Baca seluruh file {filename}. Ekstrak data lelang dan nilai kondisi fasad YANG TERLIHAT dalam satu respons JSON sesuai skema.
+ATURAN TANGGAL WAJIB: ekstrak auction_date (tanggal pelaksanaan lelang) dan deposit_deadline (batas akhir penyetoran uang jaminan) hanya dari tanggal kalender yang tertulis eksplisit. Isi YYYY-MM-DD bila jelas. Salin bukti kutipan persis ke field_evidence.auction_date dan field_evidence.deposit_deadline. Jangan menukar tanggal pengumuman, tanggal batas setor, tanggal lelang, atau batas pelunasan. Jika hanya tertulis relatif seperti H-1 / 1 hari sebelum lelang, jangan hitung sendiri; isi null dan jelaskan di verification_notes. payment_deadline adalah batas pelunasan setelah menang jika tercantum, bukan batas setor jaminan.
+DILARANG menebak. Field yang tidak terbaca/tidak tercantum wajib null. Nominal rupiah integer. LT dan LB jangan tertukar. Jangan simpulkan status penghuni, interior, struktur tersembunyi, legalitas terverifikasi, atau status sengketa dari foto. Bedakan fakta terlihat, indikasi, dan hal yang tidak dapat dipastikan. Sertakan kutipan sumber singkat untuk field utama pada field_evidence dengan nama field yang sudah ditentukan skema. Jika informasi bertentangan, masukkan dalam conflicts. Kelipatan bid hanya diisi bila tertulis eksplisit."""
     raw = _client_call(api_key, model, prompt, prepared, prepared_mime, AuctionExtraction, 1700)
     try:
         data = AuctionExtraction.model_validate_json(raw).model_dump()
     except Exception as exc:
         raise RuntimeError(f"JSON hasil ekstraksi tidak sesuai skema: {exc}. Respons awal: {raw[:300]}") from exc
+    from core.auction_dates import normalize_auction_date
     data["document_sha256"] = file_sha256(file_bytes)
+    data["source_file_name"] = filename
+    data["extraction_schema_version"] = "AUCTION_EXTRACT_V2"
+    for date_field in ("auction_date", "deposit_deadline", "payment_deadline", "rights_expiry"):
+        data[date_field] = normalize_auction_date(data.get(date_field)) if data.get(date_field) else None
     return data
 
 
@@ -464,8 +473,8 @@ def estimate_renovation_rab(
 ) -> dict[str, Any]:
     """Draft a category-driven RAB using property facts, geometry hints and evidence.
 
-    Gemini chooses applicable scope and suggests unit prices. Python provides
-    transparent quantity ranges from configurable screening coefficients.
+    Gemini identifies applicable scopes and evidence. Python provides
+    deterministic quantity guidance and versioned unit prices; AI rates are ignored.
     """
     from core.renovation_engine import build_renovation_quantity_guidance, rab_item_is_in_scope, infer_renovation_category, summarize_rab_totals
 
@@ -518,9 +527,9 @@ def estimate_renovation_rab(
         "jumlah_baris_boq_pengguna": len(user_boq_rows),
     }
     prompt_parts = [
-        "Anda adalah estimator awal renovasi rumah tapak di Indonesia. Buat DRAFT RAB berdasarkan kategori renovasi, data rumah, foto dan deskripsi pengguna. Keluaran JSON mengikuti schema; tanpa markdown.",
+        "Anda adalah analis scope renovasi rumah tapak di Indonesia. Susun DRAFT lingkup RAB berdasarkan kategori renovasi, data rumah, foto dan deskripsi pengguna. Keluaran JSON mengikuti schema; tanpa markdown. Jangan memberi angka harga satuan: semua rate ditetapkan Python dari pricebook regional berversi atau override manual pengguna.",
         "ATURAN ESTIMASI BERBASIS BUKTI: pahami keseluruhan deskripsi pengguna dan setiap foto sebagai satu rangkaian kondisi, bukan sekadar memilih paket berdasarkan label kosmetik/ringan/sedang/berat. Kategori menunjukkan tingkat kompleksitas, bukan perintah mengganti seluruh elemen bangunan. Buat satu baris untuk setiap pekerjaan yang benar-benar didukung bukti. Anda boleh memakai item_code katalog atau item custom dengan item_code=null jika lingkup spesifik tidak ada di katalog; jangan menghapus pekerjaan spesifik yang disebut pengguna. Hindari dua baris untuk lingkup/permukaan yang sama. Item custom atau item tanpa quantity hint Python harus berstatus Bersyarat sampai volume dan scope disetujui pengguna. Bedakan temuan yang terlihat, dugaan penyebab yang harus diverifikasi, serta kondisi interior/struktur/MEP yang belum terlihat. Untuk foto fasad saja, jangan menyatakan interior/struktur/MEP rusak. Jangan menyimpulkan rumah dihuni, kosong, dijaga atau ditinggalkan dari barang, tanaman, ember, kain, pintu tertutup, atau bagian dalam yang gelap; masukkan status hunian sebagai tidak dapat ditentukan dari foto dan perlu survei/konfirmasi pihak setempat. Jika rembesan/atap bocor tampak, jelaskan kemungkinan area terdampak sebagai skenario inspeksi, bukan fakta. Jumlah kamar tidur bukan jumlah pintu; jumlah kamar mandi bukan bukti seluruh kamar mandi perlu direnovasi. Jika volume tidak punya petunjuk pengukuran dari input user atau katalog Python, quantity=null dan tuliskan cara mengukurnya. Jangan mengubah quantity hint Python berdasarkan perkiraan skala foto. Model tidak boleh menggunakan ukuran gambar/foto sebagai alat ukur.",
-        "HARGA SATUAN DAN PROVENANCE: Anda tidak diberi database harga real-time, HSPK/SSH Sidoarjo, quotation tukang/vendor, atau browsing harga dalam permintaan ini. Karena itu jangan mengklaim tarif sebagai standar resmi/lokal Sidoarjo/Jawa Timur dan jangan menyebut sumber harga yang tidak diberikan. Anda boleh memberikan kisaran screening berdasarkan pengetahuan umum, tetapi beri confidence Rendah atau Sedang, jelaskan apakah bahan+upah termasuk, dan tandai bahwa angka perlu diverifikasi dengan HSPK/SSH yang relevan atau minimal 2 penawaran lokal. Jika tidak punya dasar wajar, isi harga null. Jangan menampilkan satu angka seolah-olah penawaran kontraktor. Harga AI bukan harga real-time, bukan HSPK/HSP resmi, dan bukan quotation kontraktor. Jangan masukkan contingency; Python menghitungnya terpisah.",
+        "HARGA SATUAN: Jangan menaksir atau mengisi unit_cost_low, unit_cost_conservative, atau unit_cost_high. Harga akan ditetapkan sepenuhnya oleh Python dari pricebook regional PFMS yang berversi, atau dibiarkan kosong jika item/satuan belum tercakup. Fokus pada pemilihan scope, deskripsi, bukti, volume, satuan, prioritas dan asumsi. Jangan menulis harga yang berubah-ubah. Python menghitung contingency secara terpisah.",
         "KATEGORI DAN SCOPE:",
         "Renovasi Kosmetik: persiapan/proteksi, dinding dan plafon merupakan scope utama saat kategori ini dipilih eksplisit; lantai pilih poles ATAU vinyl/SPC (jangan keduanya); kusen/pintu/aksesori hanya bila dibutuhkan. Jika kondisi hanya disebut siap huni dan kategori Auto, jangan memaksakan pengecatan penuh; cukup rekomendasikan persiapan/inspeksi dan item kosmetik opsional.",
         "Renovasi Ringan: perbaikan lokal atap/nok/talang/lisplang; plafon lokal; keramik lokal; sanitair minor sesuai jumlah kamar mandi bila ada bukti; saklar/stopkontak/lampu lokal; daun pintu/jendela lokal. Python memberi allowance area lokal low-confidence (atap 5–15%, plafon 3–10%, keramik 2–6%); pakai hanya bila kondisi/deskripsi/foto mendukung. Jangan menganggap seluruh atap/MEP diganti.",
@@ -530,7 +539,7 @@ def estimate_renovation_rab(
         "Hitung Tanah: pemutusan utilitas, demolisi bangunan, pemuatan/pembuangan puing, land clearing; bukan RAB renovasi. Volume puing sangat kasar dan harus dicek kontraktor.",
         "BOQ TERSTRUKTUR DARI PENGGUNA (jika tersedia):",
         json.dumps(user_boq_rows, ensure_ascii=False, default=str, separators=(",", ":")),
-        "ATURAN KHUSUS BOQ PENGGUNA: Jika tabel BoQ di atas berisi baris, keluarkan SATU RenovationRabItem untuk SETIAP item_code USER_BOQ yang diberikan, jangan menghilangkan baris dan jangan mengganti kuantitasnya. Gunakan item_code yang sama persis. Quantity yang ditulis pengguna adalah data sumber dan Python akan mempertahankannya. Berikan tiga angka per pekerjaan rutin yang dapat ditaksir secara wajar: unit_cost_low, unit_cost_conservative (nilai utama yang dipakai menghitung RAB dasar), dan unit_cost_high. Ketiganya harus konsisten low <= conservative <= high. Isi item_code USER_BOQ persis sama seperti pada input; jangan menghilangkannya. Jangan hanya mengembalikan satu atau dua baris. Pisahkan komponen bahan, upah, alat/mobilisasi bila relevan di rate_basis; jelaskan apakah bahan+upah sudah termasuk; gunakan harga indikatif screening dan confidence yang sesuai. Jangan mengklaim angka sebagai HSPK/SSH/quotation lokal jika dokumen/sumber tidak diberikan. Hanya isi null bila memang tidak ada dasar yang wajar (misalnya struktur tersembunyi, volume khusus yang belum ditentukan, kondisi teknis tak dapat ditetapkan). Untuk pekerjaan yang memiliki harga indikatif tetapi belum bisa diverifikasi, berikan angka indikatif berlabel confidence Rendah, bukan mengosongkannya semata-mata karena tidak ada penawaran vendor. Jangan mengubah volume pengguna berdasarkan foto atau luas properti lain. Jika ada dua lingkup yang mungkin tumpang tindih, jelaskan dalam notes agar pengguna meninjau agar tidak double-count.",
+        "ATURAN KHUSUS BOQ PENGGUNA: Jika tabel BoQ di atas berisi baris, keluarkan SATU RenovationRabItem untuk SETIAP item_code USER_BOQ yang diberikan, jangan menghilangkan baris dan jangan mengganti kuantitasnya. Gunakan item_code yang sama persis. Quantity yang ditulis pengguna adalah data sumber dan Python akan mempertahankannya. JANGAN MENAKSIR ATAU MENGISI HARGA SATUAN. Isi unit_cost_low, unit_cost_conservative, unit_cost_high dengan null karena harga ditetapkan deterministik oleh pricebook Python atau override manual yang dikunci pengguna. Isi item_code USER_BOQ persis sama seperti pada input; jangan menghilangkannya. Jangan hanya mengembalikan satu atau dua baris. Jelaskan lingkup kerja dan apakah secara teknis bahan+upah biasanya termasuk dalam pekerjaan tersebut; jangan mengarang tarif atau menyebut angka sebagai HSPK/SSH/quotation. Hanya beri catatan jika pekerjaan benar-benar membutuhkan gambar/inspeksi teknis (misalnya struktur tersembunyi). Jangan mengubah volume pengguna berdasarkan foto atau luas properti lain. Jika ada dua lingkup yang mungkin tumpang tindih, jelaskan dalam notes agar pengguna meninjau agar tidak double-count.",
         "KONTEKS PROPERTI:", json.dumps(context_payload, ensure_ascii=False, default=str),
         "KATALOG KUANTITAS PYTHON (gunakan item_code persis, jangan menghitung ulang quantity):",
         json.dumps(guidance, ensure_ascii=False, default=str, separators=(",", ":")),
@@ -667,13 +676,13 @@ def estimate_renovation_rab(
     data["files_used"] = file_labels
     data["interior_scenario_cost_is_separate"] = True
     data["pricing_basis_disclosure"] = (
-        f"Harga satuan diisi terlebih dahulu oleh katalog screening regional Surabaya–Sidoarjo 2026 untuk scope yang cocok ({PRICE_CATALOG_VERSION}); "
-        "harga Gemini dipakai untuk scope yang belum tercakup. Ini estimasi allowance bahan+upah spesifikasi ekonomis-menengah, bukan HSPK/SSH all-in atau quotation kontraktor. "
-        "SSH Sidoarjo TA 2026 hanya referensi silang material, bukan harga paket pekerjaan. Periksa ulang minimal dua penawaran lokal, akses/mobilisasi, spesifikasi dan kondisi aktual."
+        f"Harga proyek hanya memakai katalog screening deterministik PFMS versi {PRICE_CATALOG_VERSION}; Gemini tidak menjadi sumber angka unit rate. "
+        "Katalog ini adalah allowance bahan+upah spesifikasi ekonomis-menengah, bukan HSPK resmi, SSH all-in, atau quotation kontraktor. "
+        "Perbup Sidoarjo No. 27 Tahun 2025 (SSH TA 2026), Perbup No. 75 Tahun 2025 dan Permen PUPR No. 8 Tahun 2023 dipakai sebagai referensi kerangka/komponen, bukan klaim bahwa tarif paket rumah pribadi identik. Verifikasi minimal dua quotation lokal."
     )
     data["estimation_basis"] = (
         "RAB underwriting rumah lelang: baris BoQ eksplisit pengguna masuk sebagai allowance modal meski interior/komponen tersembunyi belum dapat diinspeksi; "
-        "volume pengguna dipertahankan; harga disediakan katalog regional atau Gemini dengan rentang rendah/dasar/atas; pekerjaan struktural/volume yang sungguh tak dapat ditaksir tetap memerlukan inspeksi/quotation. "
+        "volume pengguna dipertahankan; harga hanya disediakan pricebook regional deterministik dengan rentang rendah/dasar/atas; item yang belum tercakup pricebook harus diisi dari quotation/override manual, bukan harga AI; pekerjaan struktural/volume yang sungguh tak dapat ditaksir tetap memerlukan inspeksi/quotation. "
         "Baris dapat dikeluarkan hanya setelah pengguna menilai scope tidak diperlukan. Cadangan kondisi tersembunyi dihitung terpisah pada modal proyek jika interior belum diinspeksi."
     )
     data["interior_scenario_note"] = (

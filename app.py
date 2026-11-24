@@ -20,13 +20,15 @@ from core.market_engine import assess_comparables
 from core.form_state import form_state_from_input_data
 from core.review_state import sync_review_confirmation
 from core.user_boq import parse_user_boq_table
-from core.renovation_engine import CATEGORIES as RENOVATION_CATEGORIES, rab_item_is_in_scope, infer_renovation_category, summarize_rab_totals
+from core.renovation_engine import CATEGORIES as RENOVATION_CATEGORIES, rab_item_is_in_scope, infer_renovation_category, summarize_rab_totals, rab_row_subtotals, summarize_rab_scope_totals
 from core.calculator import calculate_project
-from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, estimate_renovation_rab, estimate_missing_boq_unit_rates, assess_market_with_ai, file_sha256
+from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, estimate_renovation_rab, assess_market_with_ai, file_sha256
 from services.comparable_importer import parse_comparable_paste
 from storage.gsheets_db import GoogleSheetsDB, SCHEMA
 from storage.drive_storage import upload_file_to_drive
-from reports.report_builder import build_analysis_markdown
+from reports.report_builder import build_analysis_markdown, build_investment_memo_docx, investment_memo_filename, safe_filename
+from core.auction_dates import normalize_auction_date, auction_date_evidence
+from core.renovation_pricing import PRICE_CATALOG_VERSION, PRICE_CATALOG_BASIS, PRICE_CATALOG_REFERENCES, PRICE_CATALOG_ANCHORS
 
 st.set_page_config(page_title=APP_NAME, page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
@@ -535,10 +537,13 @@ elif page == "New Auction Analysis":
             raw_document = uploaded.getvalue()
             digest = file_sha256(raw_document)
             cached_document = next((d for d in read_table("DOCUMENTS") if d.get("document_hash") == digest and d.get("extraction_json")), None)
-            if cached_document:
-                extracted = parse_json(cached_document.get("extraction_json"), {})
-                st.info("Dokumen yang sama sudah pernah diparse. Hasil ekstraksi digunakan dari cache database; Gemini tidak dipanggil ulang.")
+            cached_extraction = parse_json(cached_document.get("extraction_json"), {}) if cached_document else {}
+            if cached_document and cached_extraction.get("extraction_schema_version") == "AUCTION_EXTRACT_V2":
+                extracted = cached_extraction
+                st.info("Dokumen yang sama sudah pernah diparse dengan skema tanggal terbaru. Hasil cache digunakan; Gemini tidak dipanggil ulang.")
             else:
+                if cached_document:
+                    st.info("Dokumen pernah diparse dengan versi ekstraksi lama. Karena field tanggal KPKNL sekarang memakai evidence terpisah, dokumen diparse ulang satu kali.")
                 if not GEMINI_KEY:
                     st.error("GEMINI_API_KEY belum dikonfigurasi dan belum ada hasil cache untuk dokumen ini. Isi Secrets atau gunakan pengisian manual.")
                     extracted = None
@@ -553,9 +558,21 @@ elif page == "New Auction Analysis":
                     "deposit_amount":"na_deposit", "bid_increment":"na_increment", "certificate_type":"na_certificate", "certificate_no":"na_certificate_no",
                     "land_area":"na_land", "building_area":"na_building", "njop":"na_njop", "auction_url":"na_auction_url", "property_type":"na_property_type", "bedrooms":"na_bedrooms", "bathrooms":"na_bathrooms", "rights_expiry":"na_rights_expiry",
                 }
+                official_date_fields = {"auction_date": "na_auction_date", "deposit_deadline": "na_deposit_deadline"}
                 for src, dst in field_map.items():
                     val = extracted.get(src)
-                    if val not in (None, "") and (dst not in st.session_state or st.session_state.get(dst) in (None, "")): st.session_state[dst] = val
+                    if src in official_date_fields:
+                        # Official notice is the single source of truth. A new upload
+                        # replaces stale dates; unreadable dates are cleared, never guessed.
+                        st.session_state[dst] = normalize_auction_date(val) if val else ""
+                    elif val not in (None, "") and (dst not in st.session_state or st.session_state.get(dst) in (None, "")):
+                        st.session_state[dst] = val
+                st.session_state.na_auction_date_provenance = {
+                    "source_file": extracted.get("source_file_name") or uploaded.name,
+                    "document_sha256": extracted.get("document_sha256") or "",
+                    "auction_date_evidence": (extracted.get("field_evidence") or {}).get("auction_date", ""),
+                    "deposit_deadline_evidence": (extracted.get("field_evidence") or {}).get("deposit_deadline", ""),
+                }
                 st.session_state.na_facade_ai = extracted.get("facade_assessment") or ""
                 st.session_state.na_extraction_evidence = extracted.get("field_evidence", {})
                 st.session_state.na_extraction_conflicts = extracted.get("conflicts", [])
@@ -582,7 +599,7 @@ elif page == "New Auction Analysis":
             set_default("na_name", ""); st.text_input("Nama objek", key="na_name")
             set_default("na_complex", ""); st.text_input("Nama kompleks/perumahan", key="na_complex")
             set_default("na_auction_date", "")
-            st.session_state.na_auction_date = optional_date_picker("Tanggal lelang", st.session_state.na_auction_date, "na_auction_date")
+            st.text_input("Tanggal lelang (otomatis dari pengumuman KPKNL)", value=str(st.session_state.na_auction_date or ""), disabled=True, key="na_auction_date_display", help="Tanggal diambil dari PDF/berkas resmi yang diparse. Tidak tersedia input manual untuk mencegah tanggal yang salah.")
             set_default("na_auction_time", ""); st.text_input("Jam lelang", key="na_auction_time")
         with c2:
             set_default("na_office", ""); st.text_input("KPKNL", key="na_office")
@@ -590,9 +607,14 @@ elif page == "New Auction Analysis":
             set_default("na_auction_type", ""); st.selectbox("Jenis lelang", ["", "Eksekusi Hak Tanggungan", "Eksekusi Pengadilan", "AYDA", "Lelang sukarela", "Lainnya"], key="na_auction_type")
             set_default("na_auction_url", ""); st.text_input("URL pengumuman lelang", key="na_auction_url")
             set_default("na_deposit_deadline", "")
-            st.session_state.na_deposit_deadline = optional_date_picker("Batas setor jaminan", st.session_state.na_deposit_deadline, "na_deposit_deadline")
+            st.text_input("Batas akhir setor uang jaminan (otomatis)", value=str(st.session_state.na_deposit_deadline or ""), disabled=True, key="na_deposit_deadline_display", help="Disalin dari tanggal yang tertulis pada pengumuman resmi lelang. Bila tidak tercantum atau tidak terbaca, biarkan kosong dan unggah ulang dokumen yang lebih jelas.")
             set_default("na_payment_deadline", "")
             st.session_state.na_payment_deadline = optional_date_picker("Batas pelunasan", st.session_state.na_payment_deadline, "na_payment_deadline")
+            date_prov = st.session_state.get("na_auction_date_provenance", {})
+            if date_prov:
+                if date_prov.get("auction_date_evidence"): st.caption("Evidence tanggal lelang: " + str(date_prov["auction_date_evidence"]))
+                if date_prov.get("deposit_deadline_evidence"): st.caption("Evidence setor jaminan: " + str(date_prov["deposit_deadline_evidence"]))
+                st.caption("Sumber tanggal: " + str(date_prov.get("source_file") or "dokumen pengumuman lelang"))
         with c3:
             set_default("na_address", ""); st.text_input("Alamat objek", key="na_address")
             set_default("na_district", ""); st.text_input("Desa/Kecamatan/Kabupaten", key="na_district")
@@ -1000,7 +1022,7 @@ elif page == "New Auction Analysis":
                 "condition_description": st.session_state.get("na_rab_condition_description", ""),
             }
             rab_description = "\n".join(x for x in [st.session_state.na_rab_condition_description.strip(), "Deskripsi fasad: " + context["facade_description"] if context["facade_description"] else "", "Catatan survei: " + context["survey_notes"] if context["survey_notes"] else ""] if x)
-            cache_material = "RAB_PARSER_V1.0.16|" + rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
+            cache_material = "RAB_PARSER_V1.0.17|" + rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
             cache_key = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
             cache = st.session_state.setdefault("na_rab_cache", {})
             try:
@@ -1109,60 +1131,11 @@ elif page == "New Auction Analysis":
         rate_source_rows = st.session_state.get("na_renovation_items_current") or st.session_state.na_renovation_items_editor.to_dict(orient="records")
         current_rab_rows = [r for r in rate_source_rows if str(r.get("work_item") or "").strip()]
         missing_user_rate_rows = [r for r in current_rab_rows if str(r.get("item_code") or "").startswith("USER_BOQ_") and (r.get("unit_cost") in (None, "") or to_float(r.get("unit_cost")) <= 0)]
-        if missing_user_rate_rows and GEMINI_KEY:
-            with st.container(border=True):
-                st.markdown("**Lengkapi harga satuan BoQ yang belum ditaksir**")
-                st.caption(f"Masih ada {len(missing_user_rate_rows)} baris BoQ pengguna tanpa harga satuan konservatif. Tombol ini menjalankan satu panggilan Gemini tambahan khusus harga; kuantitas dan nama pekerjaan tidak diubah. Gunakan hanya bila Anda ingin memakai kuota tambahan.")
-                if st.button("✨ Lengkapi harga satuan yang kosong dengan Gemini", key="na_complete_missing_boq_rates"):
-                    try:
-                        rate_context = {
-                            "location": ", ".join(str(x).strip() for x in [st.session_state.get("na_address", ""), st.session_state.get("na_district", ""), st.session_state.get("na_province", "")] if str(x or "").strip()) or "Kabupaten Sidoarjo, Jawa Timur",
-                            "district": st.session_state.get("na_district", ""),
-                            "land_area": st.session_state.get("na_land"),
-                            "building_area": st.session_state.get("na_building"),
-                            "property_type": st.session_state.get("na_property_type", "Rumah tinggal"),
-                            "floor_count": st.session_state.get("na_floor_count", 1),
-                            "road_width_m": st.session_state.get("na_road_width"),
-                            "access": st.session_state.get("na_access", ""),
-                        }
-                        with st.spinner("Gemini menaksir harga satuan untuk setiap baris BoQ yang belum terisi..."):
-                            rate_result = estimate_missing_boq_unit_rates(GEMINI_KEY, missing_user_rate_rows, rate_context, GEMINI_MODEL)
-                        rate_by_code = {str(x.get("item_code")): x for x in rate_result.get("items", [])}
-                        merged_rows = []
-                        for row in current_rab_rows:
-                            updated = dict(row)
-                            rate = rate_by_code.get(str(row.get("item_code")))
-                            if rate:
-                                for field in ["unit_cost_low", "unit_cost", "unit_cost_high"]:
-                                    if updated.get(field) in (None, "") or to_float(updated.get(field)) <= 0:
-                                        updated[field] = rate.get(field)
-                                note_parts = [str(updated.get("notes") or "").strip(), str(rate.get("rate_basis") or "").strip(), str(rate.get("notes") or "").strip()]
-                                if rate.get("materials_and_labor_included") is not None:
-                                    note_parts.append("Bahan + upah termasuk" if rate.get("materials_and_labor_included") else "Bahan + upah belum lengkap; minta rincian")
-                                updated["notes"] = " | ".join(x for x in note_parts if x)
-                                if rate.get("confidence"):
-                                    updated["confidence"] = rate["confidence"]
-                            merged_rows.append(updated)
-                        st.session_state.na_renovation_items_editor = pd.DataFrame(merged_rows)
-                        st.session_state.na_renovation_items_current = merged_rows
-                        for widget_key in ["na_renovation_items_widget", "na_renovation_items_widget_v103", "na_renovation_items_widget_v104"]:
-                            if widget_key in st.session_state:
-                                del st.session_state[widget_key]
-                        updated_estimate = dict(st.session_state.get("na_rab_estimate") or {})
-                        updated_estimate["editor_rows"] = merged_rows
-                        priced_user_rows = [r for r in merged_rows if str(r.get("item_code") or "").startswith("USER_BOQ_") and to_float(r.get("unit_cost")) > 0]
-                        updated_estimate["user_boq_model_priced_count"] = len(priced_user_rows)
-                        updated_estimate["user_boq_unpriced_items"] = [r.get("work_item") for r in merged_rows if str(r.get("item_code") or "").startswith("USER_BOQ_") and to_float(r.get("unit_cost")) <= 0]
-                        in_scope_now = [r for r in merged_rows if rab_item_is_in_scope(r)]
-                        unpriced_now = [r for r in in_scope_now if to_float(r.get("quantity")) <= 0 or to_float(r.get("unit_cost")) <= 0]
-                        priced_now = [r for r in in_scope_now if to_float(r.get("quantity")) > 0 and to_float(r.get("unit_cost")) > 0]
-                        updated_estimate.update(summarize_rab_totals(merged_rows))
-                        st.session_state.na_rab_estimate = updated_estimate
-                        st.session_state.na_costs_reviewed = False
-                        st.success(f"Gemini mengembalikan harga konservatif untuk {rate_result.get('priced_count', 0)} dari {rate_result.get('requested_count', 0)} item yang diminta. Periksa harga dan dasar estimasi sebelum menerima RAB.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Estimasi harga satuan tambahan gagal: {exc}")
+        if missing_user_rate_rows:
+            st.info(
+                f"{len(missing_user_rate_rows)} item belum tercakup pricebook PFMS. Harga AI tidak dipakai dalam perhitungan agar hasil stabil. "
+                "Isi harga satuan dari minimal dua penawaran lokal atau override manual dengan menyertakan sumber pada catatan."
+            )
         renovation_edited = st.data_editor(renovation_frame[renovation_columns], num_rows="dynamic", use_container_width=True, key="na_renovation_items_widget_v104", column_config={
             "item_code": st.column_config.TextColumn("Kode scope", disabled=True),
             "subcategory": st.column_config.TextColumn("Kelompok pekerjaan", disabled=True),
@@ -1175,7 +1148,7 @@ elif page == "New Auction Analysis":
             "unit_cost_low": st.column_config.NumberColumn("Harga satuan rendah (Rp)", min_value=0, format="Rp %.0f"),
             "unit_cost": st.column_config.NumberColumn("Harga satuan konservatif (Rp)", min_value=0, format="Rp %.0f", help="Nilai inilah yang dipakai Python untuk menghitung RAB."),
             "unit_cost_high": st.column_config.NumberColumn("Batas atas (Rp)", min_value=0, format="Rp %.0f"),
-            "price_source": st.column_config.TextColumn("Sumber harga", disabled=True),
+            "price_source": st.column_config.TextColumn("Sumber pricebook / harga", disabled=True),
             "priority": st.column_config.SelectboxColumn("Prioritas", options=["Wajib", "Disarankan", "Bersyarat", "Opsional", "Tidak diperlukan setelah ditinjau"]),
             "evidence_basis": st.column_config.SelectboxColumn("Dasar", options=["Fakta visual", "Deskripsi pengguna", "Asumsi kuantitas"]),
             "confidence": st.column_config.SelectboxColumn("Keyakinan", options=["Tinggi", "Sedang", "Rendah"]),
@@ -1204,6 +1177,48 @@ elif page == "New Auction Analysis":
         current_rab_rows = [r for r in st.session_state.na_renovation_items_current if str(r.get("work_item") or "").strip()]
         renovation_items = current_rab_rows
         renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items if rab_item_is_in_scope(r))
+        # Read-only calculated view: unit rates, line subtotals and grouped scope totals.
+        detailed_rows = []
+        for row in renovation_items:
+            sub = rab_row_subtotals(row)
+            detailed_rows.append({
+                "Kode": row.get("item_code"), "Kelompok scope": row.get("subcategory"), "Pekerjaan": row.get("work_item"),
+                "Volume dipakai": row.get("quantity"), "Satuan": row.get("unit"),
+                "Harga satuan dasar (Rp)": row.get("unit_cost"), "Subtotal dasar (Rp)": sub.get("subtotal_base"),
+                "Subtotal rendah (Rp)": sub.get("subtotal_low"), "Subtotal atas (Rp)": sub.get("subtotal_high"),
+                "Status": "Masuk RAB" if rab_item_is_in_scope(row) else str(row.get("priority") or "Di luar RAB"),
+            })
+        st.markdown("#### Rincian biaya hasil perhitungan Python")
+        st.caption("Subtotal per item dihitung otomatis: volume dipakai × harga satuan. Item Bersyarat/Tidak diperlukan tetap terlihat, tetapi tidak dijumlahkan ke RAB dasar sampai scope dikonfirmasi.")
+        with st.expander("Dasar acuan harga dan versi pricebook", expanded=False):
+            st.write(f"**Versi:** {PRICE_CATALOG_VERSION}")
+            st.write(PRICE_CATALOG_BASIS)
+            st.markdown(f"- [SSH Sidoarjo TA 2026 — Perbup 27/2025]({PRICE_CATALOG_REFERENCES['ssh_sidoarjo_2026']})")
+            st.markdown(f"- [ASB/HSPK Sidoarjo — Perbup 75/2025]({PRICE_CATALOG_REFERENCES['hspk_sidoarjo_2026']})")
+            st.markdown(f"- [Pedoman AHSP — Permen PUPR 8/2023]({PRICE_CATALOG_REFERENCES['ahsp_pupr_2023']})")
+            st.markdown("**Contoh jangkar harga komponen dari SSH Sidoarjo TA 2026**")
+            anchor_frame = pd.DataFrame(PRICE_CATALOG_ANCHORS).rename(columns={
+                "item": "Komponen", "specification": "Sumber", "unit": "Satuan", "rate": "Harga SSH 2026 (Rp)"
+            })
+            st.dataframe(anchor_frame, use_container_width=True, hide_index=True, column_config={
+                "Harga SSH 2026 (Rp)": st.column_config.NumberColumn(format="Rp %.0f")
+            })
+            st.caption("Harga SSH di atas adalah jangkar harga komponen, bukan harga satuan pekerjaan terpasang. Harga komposit PFMS memasukkan allowance bahan+upah+metode kerja dan bukan salinan tarif resmi HSPK. Harga override manual pengguna selalu dipertahankan saat analisis ulang.")
+        if detailed_rows:
+            st.dataframe(pd.DataFrame(detailed_rows), use_container_width=True, hide_index=True, column_config={
+                "Harga satuan dasar (Rp)": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Subtotal dasar (Rp)": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Subtotal rendah (Rp)": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Subtotal atas (Rp)": st.column_config.NumberColumn(format="Rp %.0f"),
+            })
+        grouped_rows = summarize_rab_scope_totals(renovation_items)
+        st.markdown("#### Subtotal menurut kelompok pekerjaan")
+        if grouped_rows:
+            st.dataframe(pd.DataFrame(grouped_rows), use_container_width=True, hide_index=True, column_config={
+                "Subtotal rendah (Rp)": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Subtotal dasar (Rp)": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Subtotal atas (Rp)": st.column_config.NumberColumn(format="Rp %.0f"),
+            })
         c1,c2,c3 = st.columns(3)
         with c1:
             set_default("na_renovation_extra", 0); st.number_input("Tambahan renovasi di luar item (Rp)", min_value=0, step=500_000, key="na_renovation_extra")
@@ -1536,7 +1551,16 @@ elif page == "New Auction Analysis":
         if st.session_state.ai_review:
             st.json(st.session_state.ai_review)
         report = build_analysis_markdown(snap)
-        st.download_button("Unduh Investment Memo (Markdown)", report, file_name=f"investment-memo-{snap['property_id']}.md", mime="text/markdown")
+        memo_docx = build_investment_memo_docx(snap)
+        memo_docx_name = investment_memo_filename(snap, "docx")
+        memo_md_name = investment_memo_filename(snap, "md")
+        st.markdown("### Dokumen untuk investor")
+        st.caption("Memo mencakup ringkasan investasi, jadwal dan ketentuan lelang, valuasi pembanding, rincian RAB per scope, proyeksi modal/ROI, strategi bid, risk register, serta checklist due diligence. Dokumen dibuat dari snapshot Python tanpa panggilan AI tambahan.")
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button("Unduh Investment Memo (Word)", memo_docx, file_name=memo_docx_name, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+        with dl2:
+            st.download_button("Unduh Investment Memo (Markdown)", report, file_name=memo_md_name, mime="text/markdown", use_container_width=True)
         if st.button("💾 SIMPAN / UPDATE ANALISIS KE DATABASE", type="primary", use_container_width=True):
             try:
                 propid = snap["property_id"]
@@ -1587,8 +1611,11 @@ elif page == "New Auction Analysis":
                             notes += " DRIVE_FOLDER_ID belum diatur; file binary tidak disimpan permanen, hanya metadata dan hash."
                             st.warning(notes)
                         append_record("DOCUMENTS", {"document_id": new_id("DOC"), "property_id": propid, "file_name": uploaded.name, "mime_type": uploaded.type, "source_url": source_link, "document_hash": digest, "uploaded_at": iso_now(), "notes": notes, "extraction_json": safe_json(snap.get("document_extraction") or {})})
-                    elif existing_doc and not existing_doc.get("extraction_json") and snap.get("document_extraction"):
-                        upsert_record("DOCUMENTS", "document_id", {**existing_doc, "extraction_json": safe_json(snap.get("document_extraction"))})
+                    elif existing_doc and snap.get("document_extraction"):
+                        existing_extraction = parse_json(existing_doc.get("extraction_json"), {})
+                        new_extraction = snap.get("document_extraction") or {}
+                        if new_extraction.get("extraction_schema_version") == "AUCTION_EXTRACT_V2" and existing_extraction.get("extraction_schema_version") != "AUCTION_EXTRACT_V2":
+                            upsert_record("DOCUMENTS", "document_id", {**existing_doc, "extraction_json": safe_json(new_extraction), "file_name": uploaded.name, "mime_type": uploaded.type, "source_url": source_link})
                 for photo in (survey_photos or []):
                     photo_bytes = photo.getvalue()
                     photo_digest = file_sha256(photo_bytes)

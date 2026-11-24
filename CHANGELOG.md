@@ -1,3 +1,29 @@
+## [1.0.17] - 2026-11-24
+
+### Fixed
+- Renovation unit rates used for financial calculations no longer depend on stochastic Gemini output. Python applies the versioned Sidoarjo-area screening pricebook, while unmatched scopes remain unpriced pending quotation/manual entry.
+- Manual user price overrides are locked during re-analysis and cannot be silently replaced by the regional pricebook.
+- User-facing RAB now provides line subtotals (quantity × unit rate) and subtotals by work group for low/base/high scenarios.
+- Auction date and deposit deadline now populate from separately extracted official notice fields and evidence; relative dates are never inferred.
+
+### Added
+- Transparent Sidoarjo 2026 SSH component anchors and reference links in the RAB pricebook expander.
+- Investment Memo reports include pricebook version/basis, source links, and auction-date evidence/provenance where available.
+- Investment Memo Word/Markdown filenames contain a slug of the property name and lot code; report generation remains local Python without another Gemini call.
+- Regression tests for price override locking and distinct auction/deposit/payment date extraction.
+
+### Compatibility and safeguards
+- No destructive Google Sheets schema migration; existing tabs and headers are preserved. Existing chunked payload feature remains additive.
+- `.streamlit/secrets.toml` is not included or overwritten.
+- Customized Dashboard styling and metric labels are preserved; no metric layout exceeds four columns.
+- Date fields are extracted from the official document uploaded by the user, not live-scraped from KPKNL. Unclear/missing dates stay blank and show no inferred value.
+- The PFMS pricebook is an internal screening allowance, not a government tariff or contractor quotation. Unmapped scopes require manual quotation/override.
+
+### Verification
+- `pytest -q`: 168 passed.
+- `python -m compileall -q .`: passed.
+- Live Streamlit Cloud, Gemini API and Google Sheets credential tests were not run in this environment.
+
 ## [1.0.16] - 2026-11-23
 
 ### Fixed

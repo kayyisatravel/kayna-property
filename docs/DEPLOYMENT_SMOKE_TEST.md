@@ -118,3 +118,18 @@ Gunakan hanya angka dan dokumen yang sudah diverifikasi. Jangan mengisi biaya le
 - [ ] Ensure maximum bid/ROI 25% is aligned to auction limit + confirmed official increment.
 - [ ] Clear the official increment: no legal mid bid, maximum bid or walk-away is issued; any computation-only ceiling must be explicitly labelled simulation.
 - [ ] Compare all displayed bid prices with official auction announcement and verify ROI against manual calculation before live bidding.
+
+
+## 14. Regression V1.0.17 — deterministic pricebook, dates and investor memo
+- [ ] Run the same BoQ twice. Confirm matched scope/unit pairs receive identical low/base/high unit rates and identical item subtotals.
+- [ ] Confirm Gemini-generated unit rates are not used in project totals; an unmapped work scope remains unpriced until a manual quote/override is supplied.
+- [ ] Change one price row manually, store the analysis and run analysis again. Confirm `Override manual pengguna` and its low/base/high rates remain locked.
+- [ ] Confirm RAB read-only detail shows rate and subtotal for each line and low/base/high subtotal by group; recalculate manually for a sample row.
+- [ ] Upload an auction notice with explicit auction date and deposit deadline. Confirm each field matches its own quote and does not copy the announcement date or payment deadline.
+- [ ] Upload a notice with only relative date wording (H-1, 1 day before auction) or unclear scan. Confirm the date stays blank.
+- [ ] Confirm a cached document parsed with old schema is reparsed once and subsequent upload uses the V2 cache.
+- [ ] Download Word and Markdown memos. Confirm file names contain property name and lot code, and all proposal sections appear.
+- [ ] Confirm memo generation does not call Gemini and does not write document binaries to Google Sheets.
+- [ ] Confirm the memo states the pricebook version and explains that PFMS screening rates are not official SSH/HSPK tariffs or contractor quotations.
+- [ ] Confirm custom dashboard styling is intact and no metric row exceeds four columns.
+- [ ] Confirm no existing Sheets tab/header is deleted and the `PAYLOAD_CHUNKS` round-trip works for a large snapshot.

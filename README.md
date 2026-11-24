@@ -1,8 +1,19 @@
-# Property Flipper Management System (PFMS) — V1.0.16
+# Property Flipper Management System (PFMS) — V1.0.17
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.17 — Deterministic Sidoarjo Pricebook, RAB Subtotals & Investor Memo
+
+- Renovation scope identification remains AI-assisted, but unit prices used in financial calculations are now deterministic Python pricebook rates. Gemini is explicitly instructed not to generate unit rates; unmatched scopes remain visibly unpriced until a manual quotation/override is supplied.
+- User-entered manual price overrides are locked across subsequent recalculations and parser passes. Matched pricebook rows record a version and as-of date; any Gemini rate is retained only as a cross-check note and never changes the calculation.
+- Added Sidoarjo 2026 SSH component anchors to the UI. The pricebook is an internal installed-work screening allowance (materials + labour), not an official all-in SSH/HSPK rate. The official SHS references selected material components; AHSP provides the methodology for labour/material/equipment coefficients and cost build-up. See `docs/PRICEBOOK_RAB_AUCTION_DATES_INVESTMENT_MEMO_V1.0.17.md`.
+- The RAB shows item-level low/base/high unit rates and line subtotals, plus grouped subtotals per work package. Totals are recalculated in Python after a user edit.
+- Auction date and deposit deadline are populated from the uploaded official auction notice, with separate evidence quotes and document provenance. No relative-date guessing is performed. This is document parsing, not a live KPKNL API crawler. A prior document cached under the older extraction schema is parsed once again.
+- Investment Memo is available in Word and Markdown. It contains an executive summary, auction data/evidence, property/legal/survey, market comparables, detailed RAB with subtotals, capital and return scenarios, bid strategy, risk register, funding, and due diligence. Filenames include the property name and lot code.
+- Memo generation is local Python from the analysis snapshot: no additional Gemini request and no large binary document added to Google Sheets.
+- Existing user dashboard customization is preserved; all metric layouts remain at no more than four columns.
 
 ## V1.0.16 — Scope Deduplication, Durable Sheets Payloads & Practical Market Estimates
 
