@@ -5,6 +5,7 @@ from typing import Any
 from core.lifecycle import actual_project_summary
 from core.project_ledger import summarize_project_ledger
 from core.utils import parse_json, to_float
+from core.project_progress import calculate_project_work_progress
 
 SELLING_CATEGORIES = {"selling", "penjualan", "biaya penjualan", "pajak penjualan", "komisi agen"}
 
@@ -45,8 +46,12 @@ def build_portfolio_report_context(
 
         if status in {"WON", "ACTIVE"}:
             ledger = summarize_project_ledger(project_actuals, project_budgets)
-            done = sum(1 for x in project_milestones if str(x.get("status") or "").strip().lower() in {"completed", "complete", "done", "selesai"})
-            progress_pct = (done / len(project_milestones) * 100.0) if project_milestones else None
+            progress = calculate_project_work_progress(project_budgets, project_milestones)
+            tracked = progress.get("tracked_work_items", 0)
+            completed_count = sum(1 for item in progress.get("items", []) if to_float(item.get("progress_pct")) >= 100)
+            if progress.get("method") == "milestone_count_fallback":
+                completed_count = sum(1 for m in project_milestones if str(m.get("status") or "").strip().lower() in {"completed", "complete", "done", "selesai"})
+            progress_pct = progress.get("progress_pct")
             latest = payload.get("latest_analysis") if isinstance(payload.get("latest_analysis"), dict) else {}
             active_projects.append({
                 "property_id": pid,
@@ -55,8 +60,12 @@ def build_portfolio_report_context(
                 "lifecycle_status": status,
                 "stage": payload.get("project_stage") or "Tahap belum dicatat",
                 "progress_pct": progress_pct,
-                "completed_milestones": done,
-                "total_milestones": len(project_milestones),
+                "completed_milestones": completed_count,
+                "tracked_work_items": tracked,
+                "total_milestones": progress.get("total_work_items", 0),
+                "total_work_items": progress.get("total_work_items", 0),
+                "progress_coverage_pct": progress.get("coverage_pct", 0.0),
+                "progress_method": progress.get("method", "not_recorded"),
                 "actual_paid": ledger.get("actual_paid_total", 0),
                 "actual_project_cost": ledger.get("actual_project_cost", 0),
                 "actual_selling_cost": ledger.get("actual_selling_cost", 0),

@@ -88,7 +88,7 @@ def test_memo_includes_limit_middle_and_upper_bid_scenarios_with_roi():
         assert token in markdown
     doc = Document(BytesIO(build_analysis_docx(snapshot)))
     text = doc_text(doc)
-    for token in ["Skenario Tengah", "Skenario Atas", "Target ROI", "ROI simulasi", "Total kebutuhan kas", "Penjualan bersih"]:
+    for token in ["Skenario Tengah", "Skenario Atas", "Target ROI", "ROI simulasi", "Kebutuhan kas", "Penjualan bersih"]:
         assert token in text
 
 
@@ -96,7 +96,7 @@ def test_rab_has_total_row_and_item_work_duration_same_estimator_basis():
     snapshot = sample_snapshot()
     markdown = build_analysis_markdown(snapshot)
     assert "TOTAL RAB DASAR" in markdown
-    assert "Waktu cepat/dasar/lambat" in markdown
+    assert "Durasi C/D/K" in markdown
     items = snapshot["costs"]["renovation_items"]
     duration = estimate_item_duration(items[0])
     schedule = estimate_renovation_duration(items)
@@ -105,7 +105,11 @@ def test_rab_has_total_row_and_item_work_duration_same_estimator_basis():
     doc = Document(BytesIO(build_analysis_docx(snapshot)))
     text = doc_text(doc)
     assert "TOTAL" in text and "Total RAB dasar" in text
-    assert "Waktu cepat/dasar/lambat" in text
+    assert "Durasi C/D/K" in text
+    assert "Harga satuan (Rp)" in text
+    assert "Subtotal dasar (Rp)" in text
+    assert "2.975.000" in text
+    assert "5.675.000" in text
     assert "critical path" in text.lower()
 
 
@@ -134,7 +138,7 @@ def test_memo_brand_and_title_are_professional_and_navy_high_contrast():
     doc = Document(BytesIO(data))
     assert DOCUMENT_TITLE in doc.paragraphs[0].text
     assert BRAND_DESCRIPTOR in doc.sections[0].header.paragraphs[0].text
-    assert property_filename(snapshot).startswith("investment-memo-rumah-tas-6-blok-a5-43")
+    assert property_filename(snapshot).startswith("proposal-investasi-properti-rumah-tas-6-blok-a5-43")
     sizes = []
     for paragraph in doc.paragraphs:
         for run in paragraph.runs:
@@ -148,10 +152,11 @@ def test_memo_brand_and_title_are_professional_and_navy_high_contrast():
                         if run.font.size:
                             sizes.append(run.font.size.pt)
     assert sizes and min(sizes) >= 11
-    header_cell = doc.tables[1].rows[0].cells[0]
-    shd = header_cell._tc.tcPr.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}shd")
-    assert shd is not None and shd.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}fill") == "172B4D"
+    assert doc.tables[1].style.name == "Light Shading Accent 1"
     assert doc.sections[0].header.paragraphs[0].runs[0].font.color.rgb == (23, 43, 77)
+    assert doc.sections[0].header_distance.inches < 0.3
+    assert doc.sections[0].top_margin.inches >= 0.9
+    assert "— juta" not in doc_text(doc)
 
 
 def test_portfolio_context_builds_active_progress_and_closed_budget_arv_variance():
@@ -188,3 +193,30 @@ def test_portfolio_context_builds_active_progress_and_closed_budget_arv_variance
     assert sold["closing_vs_base_arv_pct"] == pytest.approx(-2.5)
     assert sold["budget_project_total"] == 300_000_000
     assert sold["budget_variance_actual"] == 20_000_000
+
+
+def test_comparable_and_bid_tables_have_compact_v118_layout_and_numeric_first_columns():
+    snapshot = sample_snapshot()
+    doc = Document(BytesIO(build_analysis_docx(snapshot)))
+    tables = {tuple(cell.text for cell in table.rows[0].cells): table for table in doc.tables if table.rows}
+    comparable_header = ("Alamat lengkap", "Harga penawaran", "LT / LB (m²)", "URL / sumber")
+    assert comparable_header in tables
+    assert len(tables[comparable_header].rows[0].cells) == 4
+    for header in [
+        ("Skenario bid (Rp juta)", "Modal (Rp juta)", "Cadangan penguasaan (Rp juta)", "Cadangan risiko lain (Rp juta)", "Kebutuhan kas (Rp juta)"),
+        ("Skenario bid (Rp juta)", "Biaya jual (Rp juta)", "Penjualan bersih (Rp juta)", "Profit bersih (Rp juta)", "ROI"),
+        ("Bid / ceiling (Rp juta)", "Target ROI", "ROI simulasi", "Catatan"),
+    ]:
+        assert header in tables
+        for row in tables[header].rows[1:]:
+            first = row.cells[0].text.strip()
+            assert first == "—" or any(ch.isdigit() for ch in first)
+
+
+
+def test_comparable_source_cell_prefers_short_domain_to_long_repeated_address():
+    snapshot = sample_snapshot()
+    snapshot["market"]["valid"][0]["source_url"] = "https://www.brighton.co.id/cari-properti/view/perumtas-6-long-listing-url"
+    markdown = build_analysis_markdown(snapshot)
+    assert "brighton.co.id" in markdown
+    assert "perumtas-6-long-listing-url" not in markdown

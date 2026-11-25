@@ -15,6 +15,7 @@ from core.lifecycle import actual_project_summary, mark_property_won
 from core.project_ledger import summarize_project_ledger
 from core.project_alerts import assess_project_alerts
 from core.renovation_schedule import estimate_renovation_duration
+from core.project_progress import budget_payload, calculate_project_work_progress
 from core.auction_dates import apply_extracted_auction_dates
 from core.auction_outcomes import OUTCOME_STATUSES, PRICE_TYPES, SOURCE_GRADES, build_auction_outcome_record, implied_discount_vs_limit
 from core.project_budget_seed import build_opening_budget_from_analysis
@@ -2165,9 +2166,30 @@ elif page == "Active Properties":
         st.caption(f"Kas siap investasi portofolio saat ini: {idr(current_liquidity.get('cash_available_for_new_project'))}. Ini posisi kas terakhir yang Anda input pada Investor Cashflow, bukan angka snapshot pra-lelang. Perbarui saldo setelah pembayaran akuisisi/renovasi agar angka tetap sesuai rekening nyata; PFMS tidak mengakses rekening bank otomatis.")
 
         st.markdown("### 1. Posisi anggaran dan realisasi")
+        project_progress_milestones = [m for m in read_table("PROJECT_MILESTONES") if str(m.get("property_id") or "") == str(pid)]
+        project_progress_summary = calculate_project_work_progress(project_budget_rows, project_progress_milestones)
+        if project_progress_summary.get("progress_pct") is not None:
+            progress_value = max(0.0, min(100.0, float(project_progress_summary["progress_pct"])))
+            coverage = project_progress_summary.get("coverage_pct", 0.0)
+            st.progress(progress_value / 100.0, text=f"Progres renovasi berbobot: {progress_value:.0f}%")
+            st.caption(f"Pembaruan progres tersedia untuk {project_progress_summary.get('tracked_work_items', 0)} dari {project_progress_summary.get('total_work_items', 0)} item. Data yang belum diperbarui diperlakukan 0% untuk perhitungan progres minimum; cakupan data saat ini {coverage:.0f}%.")
+        else:
+            st.info("Item renovasi sudah tersedia, tetapi progres fisik belum dicatat. Perbarui Status fisik pekerjaan dan persentasenya pada formulir Edit item anggaran. Sistem tidak menyimpulkan progres dari jumlah uang yang sudah dibayar.")
         if project_budget_rows:
             budget_display = pd.DataFrame(ledger["budget_lines"])
             if not budget_display.empty:
+                progress_by_budget = {}
+                for budget_row in project_budget_rows:
+                    progress_payload = budget_payload(budget_row)
+                    work_status = str(progress_payload.get("work_status") or ("Selesai" if str(budget_row.get("status") or "").lower() == "completed" else "Belum diperbarui"))
+                    progress_value = progress_payload.get("work_progress_pct")
+                    if progress_value in (None, "") and work_status == "Selesai":
+                        progress_value = 100
+                    if progress_value in (None, "") and work_status == "Belum mulai":
+                        progress_value = 0
+                    progress_by_budget[str(budget_row.get("budget_item_id") or "")] = f"{safe_int(progress_value)}% · {work_status}" if progress_value not in (None, "") else work_status
+                if "budget_item_id" in budget_display.columns:
+                    budget_display["progres_fisik"] = budget_display["budget_item_id"].astype(str).map(progress_by_budget).fillna("Belum diperbarui")
                 st.dataframe(budget_display, use_container_width=True, hide_index=True, column_config={
                     "budget_amount": st.column_config.NumberColumn("Budget total", format="Rp %.0f"),
                     "actual_paid": st.column_config.NumberColumn("Sudah dibayar", format="Rp %.0f"),
@@ -2415,10 +2437,23 @@ elif page == "Active Properties":
             st.info("Belum ada transaksi pembayaran proyek.")
 
         st.markdown("### 4. Anggaran, komitmen, dan forecast pekerjaan")
+        st.caption("Progres fisik tiap pekerjaan dapat diperbarui pada formulir edit item anggaran. Persentase proyek dihitung berbobot estimasi hari kerja per item; pembayaran tidak dianggap bukti pekerjaan selesai. Item yang belum diperbarui ditampilkan sebagai cakupan data yang belum lengkap.")
         st.caption("Tabel berikut hanya untuk melihat data. Untuk menambah atau mengubah angka, gunakan formulir di bawah. Budget adalah batas/rencana biaya; komitmen adalah kewajiban yang sudah disepakati; forecast adalah biaya tersisa yang belum dikomitmen.")
         if project_budget_rows:
             budget_display = pd.DataFrame(ledger["budget_lines"])
             if not budget_display.empty:
+                progress_by_budget = {}
+                for budget_row in project_budget_rows:
+                    progress_payload = budget_payload(budget_row)
+                    work_status = str(progress_payload.get("work_status") or ("Selesai" if str(budget_row.get("status") or "").lower() == "completed" else "Belum diperbarui"))
+                    progress_value = progress_payload.get("work_progress_pct")
+                    if progress_value in (None, "") and work_status == "Selesai":
+                        progress_value = 100
+                    if progress_value in (None, "") and work_status == "Belum mulai":
+                        progress_value = 0
+                    progress_by_budget[str(budget_row.get("budget_item_id") or "")] = f"{safe_int(progress_value)}% · {work_status}" if progress_value not in (None, "") else work_status
+                if "budget_item_id" in budget_display.columns:
+                    budget_display["progres_fisik"] = budget_display["budget_item_id"].astype(str).map(progress_by_budget).fillna("Belum diperbarui")
                 st.dataframe(budget_display, use_container_width=True, hide_index=True, column_config={
                     "budget_amount": st.column_config.NumberColumn("Anggaran", format="Rp %.0f"),
                     "actual_paid": st.column_config.NumberColumn("Sudah dibayar", format="Rp %.0f"),
@@ -2455,16 +2490,52 @@ elif page == "Active Properties":
                             edit_vendor = st.text_input("Vendor / kontraktor", value=str(selected_budget.get("vendor") or ""))
                             edit_has_due = st.checkbox("Ada tanggal jatuh tempo", value=has_due_default)
                             edit_due_date = st.date_input("Tanggal jatuh tempo", value=due_default, disabled=not edit_has_due)
-                            edit_status = st.selectbox("Status item", ["Active", "Completed", "Archived", "Cancelled"], index=["Active", "Completed", "Archived", "Cancelled"].index(selected_budget.get("status", "Active")) if selected_budget.get("status", "Active") in ["Active", "Completed", "Archived", "Cancelled"] else 0)
+                            edit_status = st.selectbox("Status anggaran", ["Active", "Completed", "Archived", "Cancelled"], index=["Active", "Completed", "Archived", "Cancelled"].index(selected_budget.get("status", "Active")) if selected_budget.get("status", "Active") in ["Active", "Completed", "Archived", "Cancelled"] else 0)
+                            selected_budget_payload = budget_payload(selected_budget)
+                            saved_work_status = str(selected_budget_payload.get("work_status") or ("Selesai" if str(selected_budget.get("status") or "").lower() == "completed" else "Belum diperbarui"))
+                            work_status_options = ["Belum diperbarui", "Belum mulai", "Berjalan", "Selesai"]
+                            if saved_work_status not in work_status_options:
+                                saved_work_status = "Belum diperbarui"
+                            edit_work_status = st.selectbox(
+                                "Status fisik pekerjaan",
+                                work_status_options,
+                                index=work_status_options.index(saved_work_status),
+                                key=f"work_status_{pid}_{selected_budget.get('budget_item_id')}",
+                                help="Status fisik terpisah dari status pembayaran/anggaran. Pembayaran tidak otomatis dianggap pekerjaan selesai.",
+                            )
+                            saved_work_pct = max(0, min(100, safe_int(selected_budget_payload.get("work_progress_pct"), 0)))
+                            if edit_work_status == "Berjalan":
+                                edit_work_progress_pct = st.slider(
+                                    "Progres fisik item (%)", 0, 100, saved_work_pct,
+                                    key=f"work_progress_{pid}_{selected_budget.get('budget_item_id')}",
+                                )
+                            elif edit_work_status == "Selesai":
+                                edit_work_progress_pct = 100
+                                st.caption("Progres fisik otomatis 100% untuk item berstatus Selesai.")
+                            elif edit_work_status == "Belum mulai":
+                                edit_work_progress_pct = 0
+                            else:
+                                edit_work_progress_pct = None
                         edit_budget_confirm = st.checkbox("Saya yakin perubahan item anggaran ini sudah benar.", key=f"budget_edit_confirm_{pid}_{selected_budget.get('budget_item_id')}")
                         save_budget_edit = st.form_submit_button("Simpan perubahan item anggaran")
                     if save_budget_edit and not edit_budget_confirm:
                         st.warning("Centang konfirmasi setelah memeriksa perubahan anggaran.")
                     elif save_budget_edit:
-                        updated_budget = {**selected_budget, "category": edit_budget_category, "subcategory": edit_budget_subcategory, "description": edit_budget_description.strip(), "budget_amount": edit_budget_amount, "committed_unpaid": edit_committed, "forecast_remaining": edit_forecast, "vendor": edit_vendor, "due_date": edit_due_date.isoformat() if edit_has_due else "", "status": edit_status, "updated_at": iso_now()}
+                        updated_payload = dict(selected_budget_payload)
+                        if edit_work_status == "Belum diperbarui":
+                            updated_payload.pop("work_status", None)
+                            updated_payload.pop("work_progress_pct", None)
+                        else:
+                            updated_payload["work_status"] = edit_work_status
+                            updated_payload["work_progress_pct"] = edit_work_progress_pct
+                        updated_budget = {**selected_budget, "category": edit_budget_category, "subcategory": edit_budget_subcategory, "description": edit_budget_description.strip(), "budget_amount": edit_budget_amount, "committed_unpaid": edit_committed, "forecast_remaining": edit_forecast, "vendor": edit_vendor, "due_date": edit_due_date.isoformat() if edit_has_due else "", "status": edit_status, "payload": updated_payload, "updated_at": iso_now()}
                         before = {k: selected_budget.get(k) for k in ["category", "subcategory", "description", "budget_amount", "committed_unpaid", "forecast_remaining", "vendor", "due_date", "status"]}
+                        before["work_status"] = selected_budget_payload.get("work_status")
+                        before["work_progress_pct"] = selected_budget_payload.get("work_progress_pct")
                         upsert_record("PROJECT_BUDGETS", "budget_item_id", updated_budget)
-                        after = {k: updated_budget.get(k) for k in before}
+                        after = {k: updated_budget.get(k) for k in before if k in updated_budget}
+                        after["work_status"] = updated_payload.get("work_status")
+                        after["work_progress_pct"] = updated_payload.get("work_progress_pct")
                         log_event("PROJECT_BUDGET", selected_budget.get("budget_item_id"), "UPDATED", {"property_id": pid, "before": before, "after": after})
                         st.success("Item anggaran berhasil diperbarui."); cached_read.clear(); st.rerun()
         else:

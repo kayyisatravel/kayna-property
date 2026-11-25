@@ -1,8 +1,16 @@
-# Property Flipper Management System (PFMS) — V1.0.17
+# Property Flipper Management System (PFMS) — V1.0.20
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.20 — Proposal Investasi Properti & Accurate Renovation Progress
+
+- Investor-facing document title is now **Proposal Investasi Properti**. Tables use the cleaner V1.0.18-style layout with V1.0.19 navy styling and minimum 11 pt fonts.
+- Comparable table uses full address, asking price, LT/LB and URL/source without duplicate address columns. Bid/capital and sale-profitability tables use numeric bid amounts as the first column.
+- RAB includes a full-Rupiah subtotal per work item, a total row, and fast/base/slow duration per task from the same estimator used by the overall renovation schedule.
+- Active project renovation progress is duration-weighted from physical work-item status, with explicit tracking coverage. Unupdated data shows “Belum diperbarui”, not a misleading 0%; payment is not evidence of physical completion.
+- Portfolio appendix differentiates active and completed projects, including actual closing proceeds, selling costs, net profit and realized ROI.
 
 ## V1.0.17 — Deterministic Sidoarjo Pricebook, RAB Subtotals & Investor Memo
 

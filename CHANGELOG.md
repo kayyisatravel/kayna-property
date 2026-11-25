@@ -1,3 +1,26 @@
+## [1.0.20] - 2026-11-25
+
+### Changed
+- Rename the external investor document to **Proposal Investasi Properti**, a clearer presentation-oriented title for private property-flipping opportunities.
+- Restore the cleaner V1.0.18 table presentation while retaining the V1.0.19 navy palette and minimum 11 pt font. Add more vertical breathing room between the Kayna Property header and document body.
+- Restructure the comparable table to four non-duplicative columns: full address, asking price, land/building area, and URL/source.
+- Use numeric bid amounts as the first column in capital, sale-cost/profitability and bid-strategy tables; move descriptive scenario labels to notes.
+- Show RAB unit prices and item subtotals in full Rupiah, add a final total row, and display low/base/high duration estimates per item using the same productivity engine as the renovation schedule.
+- Calculate active-project physical renovation progress from duration-weighted work-item status in PROJECT_BUDGETS. Display tracking coverage and keep progress as “Belum diperbarui” when no physical status has been recorded; payment alone is not treated as physical progress. Existing milestone records remain a fallback when no measurable work lines exist.
+- Separate completed-project closing date, sale value, actual capital, selling costs, profit and realized ROI in the portfolio appendix; fix sales-cost categories in realized project totals.
+
+### Compatibility and safeguards
+- Project work status/progress is stored additively in existing PROJECT_BUDGETS payload; no new Google Sheets tab, header or destructive schema migration is needed.
+- Analysis snapshot, pricebook, auction dates, cash scenarios and underwriting calculations remain unchanged.
+- Google Sheets portfolio context remains cached; memo generation is local Python and does not require a Gemini call.
+- `.streamlit/secrets.toml` is not included or overwritten.
+
+### Verification
+- `pytest -q`: 198 passed.
+- `python -m compileall -q .`: passed.
+- DOCX rendered and visually reviewed across all pages; font minimum 11 pt and V1.0.18-like table styling retained.
+- Full source and upgrade patch validated separately; live Streamlit Cloud, Google Sheets and Gemini credentials were not tested.
+
 ## [1.0.19] - 2026-11-25
 
 ### Changed

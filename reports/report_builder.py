@@ -5,6 +5,7 @@ from io import BytesIO
 import re
 from typing import Any
 from zoneinfo import ZoneInfo
+from urllib.parse import urlparse
 
 from core.utils import idr, pct, to_float
 from core.renovation_engine import rab_item_is_in_scope, rab_row_subtotals, summarize_rab_scope_totals
@@ -12,7 +13,7 @@ from core.renovation_schedule import estimate_item_duration, estimate_renovation
 
 BRAND = "KAYNA PROPERTY"
 BRAND_DESCRIPTOR = "PROPERTY INVESTMENT & PROJECT MANAGEMENT"
-DOCUMENT_TITLE = "MEMORANDUM INVESTASI PROPERTI"
+DOCUMENT_TITLE = "PROPOSAL INVESTASI PROPERTI"
 NAVY = "172B4D"
 NAVY_DARK = "10243E"
 TEAL = "0F766E"
@@ -48,6 +49,16 @@ def _fmt_wib(value: Any) -> str:
         return raw
 
 
+def _fmt_short_date(value: Any) -> str:
+    raw = str(value or "").strip()
+    try:
+        dt = datetime.fromisoformat(raw[:10])
+        months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+        return f"{dt.day} {months[dt.month - 1]} {dt.year}"
+    except (ValueError, TypeError):
+        return raw or "—"
+
+
 def _as_rows(value: Any) -> list[dict[str, Any]]:
     return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
 
@@ -57,8 +68,38 @@ def property_filename(snapshot: dict[str, Any], extension: str = "docx") -> str:
     raw = " ".join(str(x or "") for x in (p.get("name"), p.get("lot_code"), snapshot.get("property_id")))
     slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-") or "properti"
     slug = slug[:90].strip("-")
-    return f"investment-memo-{slug}.{extension.lstrip('.')}"
+    return f"proposal-investasi-properti-{slug}.{extension.lstrip('.')}"
 
+
+
+
+def _rp_juta(value: Any) -> str:
+    """Compact Rupiah value in millions; table heading declares the unit."""
+    if value in (None, ""):
+        return "—"
+    amount = to_float(value) / 1_000_000.0
+    return f"{amount:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _idr_plain(value: Any) -> str:
+    """Exact integer Rupiah without a prefix; table headings carry the currency."""
+    if value in (None, ""):
+        return "—"
+    return f"{to_float(value):,.0f}".replace(",", ".")
+
+
+def _source_label(comp: dict[str, Any]) -> str:
+    """Keep comparable source cells compact while retaining a useful source identifier."""
+    url = str(comp.get("source_url") or "").strip()
+    if url:
+        parsed = urlparse(url if url.startswith(("http://", "https://")) else "https://" + url)
+        host = parsed.netloc.removeprefix("www.")
+        if host:
+            return host
+    platforms = comp.get("source_platforms") or comp.get("source") or "Sumber tidak dicantumkan"
+    if isinstance(platforms, list):
+        platforms = ", ".join(str(x) for x in platforms if x)
+    return str(platforms)[:60]
 
 def _scenario_target_roi(snapshot: dict[str, Any], scenario_name: str) -> float:
     """Return the configured ROI target for the matching bid scenario."""
@@ -131,31 +172,32 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     ]
     comparables = _as_rows(market.get("valid") or snapshot.get("comparables"))
     if comparables:
-        lines += ["### Daftar Pembanding", "| Listing | Harga | LT/LB (m²) | Alamat lengkap | Sumber |", "|---|---:|---:|---|---|"]
+        lines += ["### Daftar Pembanding", "| Alamat lengkap | Harga penawaran | LT/LB (m²) | URL / sumber |", "|---|---:|---:|---|"]
         for comp in comparables[:20]:
-            address = comp.get("address") or comp.get("full_address") or comp.get("location") or "Alamat tidak dicantumkan"
-            lines.append(f"| {comp.get('name') or 'Pembanding'} | {idr(comp.get('price'))} | {comp.get('land_area', '—')}/{comp.get('building_area', '—')} | {address} | {comp.get('source_platforms') or comp.get('source_url') or '—'} |")
+            address = comp.get("address") or comp.get("full_address") or comp.get("location") or comp.get("name") or "Alamat tidak dicantumkan"
+            source = _source_label(comp)
+            lines.append(f"| {address} | {idr(comp.get('price'))} | {comp.get('land_area', '—')}/{comp.get('building_area', '—')} | {source} |")
         lines.append("")
 
-    lines += ["## 4. Struktur Modal per Skenario Bid", "| Skenario | Harga bid / indikatif | Modal sebelum penjualan | Cadangan risiko | Total kebutuhan kas | Status bid |", "|---|---:|---:|---:|---:|---|"]
+    lines += ["## 4. Struktur Modal per Skenario Bidding", "| Skenario bid (Rp juta) | Modal (Rp juta) | Cadangan risiko (Rp juta) | Kebutuhan kas (Rp juta) | Status |", "|---:|---:|---:|---:|---|"]
     for sc in scenarios:
         r = sc["result"]
         reserve = to_float(r.get("possession_risk_reserve")) + to_float(r.get("general_risk_reserve"))
-        lines.append(f"| {sc['name']} | {idr(sc['bid']) if sc['bid'] else 'Tidak tersedia'} | {idr(r.get('capital_before_sale')) if r else '—'} | {idr(reserve) if r else '—'} | {idr(r.get('cash_requirement_including_reserve')) if r else '—'} | {'Bid dapat digunakan' if sc['legal_bid'] else 'Simulasi / belum ada bid legal'} |")
-    lines += ["", "## 5. Biaya Penjualan dan Profitabilitas", "| Skenario | Biaya penjualan | Penjualan bersih | Profit bersih | ROI |", "|---|---:|---:|---:|---:|"]
+        lines.append(f"| {_rp_juta(sc['bid']) if sc['bid'] else '—'} | {_rp_juta(r.get('capital_before_sale')) if r else '—'} | {_rp_juta(reserve) if r else '—'} | {_rp_juta(r.get('cash_requirement_including_reserve')) if r else '—'} | {'Bid dapat digunakan' if sc['legal_bid'] else 'Simulasi / belum ada bid legal'} |")
+    lines += ["", "## 5. Biaya Penjualan dan Profitabilitas", "| Skenario bid (Rp juta) | Biaya jual (Rp juta) | Penjualan bersih (Rp juta) | Profit bersih (Rp juta) | ROI |", "|---:|---:|---:|---:|---:|"]
     for sc in scenarios:
         r = sc["result"]
-        lines.append(f"| {sc['name']} | {idr(r.get('selling_cost')) if r else '—'} | {idr(r.get('net_proceeds')) if r else '—'} | {idr(r.get('net_profit')) if r else '—'} | {pct(r.get('roi_pct')) if r else '—'} |")
-    lines += ["", "## 6. Strategi Penawaran", "| Level | Nilai bid / ceiling | Target ROI | ROI hasil simulasi | Catatan |", "|---|---:|---:|---:|---|"]
+        lines.append(f"| {_rp_juta(sc['bid']) if sc['bid'] else '—'} | {_rp_juta(r.get('selling_cost')) if r else '—'} | {_rp_juta(r.get('net_proceeds')) if r else '—'} | {_rp_juta(r.get('net_profit')) if r else '—'} | {pct(r.get('roi_pct')) if r else '—'} |")
+    lines += ["", "## 6. Strategi Penawaran", "| Bid / ceiling (Rp juta) | Target ROI | ROI hasil simulasi | Catatan |", "|---:|---:|---:|---|"]
     for sc in scenarios:
         r = sc["result"]
         target = f"{_scenario_target_roi(snapshot, sc['name']):.1f}%"
-        lines.append(f"| {sc['name']} | {idr(sc['bid']) if sc['bid'] else '—'} | {target} | {pct(r.get('roi_pct')) if r else '—'} | {sc['note']} |")
+        lines.append(f"| {_rp_juta(sc['bid']) if sc['bid'] else '—'} | {target} | {pct(r.get('roi_pct')) if r else '—'} | {sc['name']}: {sc['note']} |")
     walk = bid.get("walk_away_from")
-    lines.append(f"| Walk-away | {idr(walk) if walk is not None else '—'} | — | — | {bid.get('walk_away_reason', '—')} |")
+    lines.append(f"| {_rp_juta(walk) if walk is not None else '—'} | — | — | Batas berhenti: {bid.get('walk_away_reason', '—')} |")
 
     lines += ["", "## 7. RAB Ringkas dan Durasi per Pekerjaan"]
-    lines += ["| Kelompok | Pekerjaan | Volume | Harga satuan | Subtotal dasar | Waktu cepat/dasar/lambat (hari kerja) |", "|---|---|---:|---:|---:|---:|"]
+    lines += ["| Kelompok | Pekerjaan | Volume | Harga satuan | Subtotal dasar | Durasi C/D/K (hari kerja) |", "|---|---|---:|---:|---:|---:|"]
     for row in rab_rows[:80]:
         sub = rab_row_subtotals(row); duration = estimate_item_duration(row)
         lines.append(f"| {row.get('subcategory') or row.get('category') or '—'} | {row.get('work_item') or '—'} | {row.get('quantity') or '—'} {row.get('unit') or ''} | {idr(row.get('unit_cost')) if to_float(row.get('unit_cost')) > 0 else 'Belum tersedia'} | {idr(sub['subtotal_base']) if sub['subtotal_base'] is not None else 'Belum tersedia'} | {duration['fast']:.1f}/{duration['base']:.1f}/{duration['slow']:.1f} |")
@@ -184,7 +226,7 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     lines += [f"- **Peringatan:** {x}" for x in decision.get("warnings", [])] or ["- Tidak ada peringatan tambahan."]
 
     _append_portfolio_markdown(lines, snapshot.get("portfolio_context"))
-    lines += ["", "## Pengelola Investasi dan Proyek", f"{BRAND} | {BRAND_DESCRIPTOR}.", "", "## Batasan", "Dokumen ini merupakan memorandum investasi dan alat bantu underwriting, bukan appraisal resmi, pendapat hukum, jaminan hasil investasi, atau quotation kontraktor. Harga penawaran bukan harga transaksi kecuali terverifikasi. Kondisi fisik, dokumen, jadwal, dan seluruh asumsi harus diperiksa sebelum keputusan investasi."]
+    lines += ["", "## Pengelola Investasi dan Proyek", f"{BRAND} | {BRAND_DESCRIPTOR}.", "", "## Batasan", "Dokumen ini merupakan proposal investasi dan alat bantu underwriting, bukan appraisal resmi, pendapat hukum, jaminan hasil investasi, atau quotation kontraktor. Harga penawaran bukan harga transaksi kecuali terverifikasi. Kondisi fisik, dokumen, jadwal, dan seluruh asumsi harus diperiksa sebelum keputusan investasi."]
     return "\n".join(lines)
 
 
@@ -200,7 +242,9 @@ def _append_portfolio_markdown(lines: list[str], portfolio: Any) -> None:
     if active:
         lines += ["### Proyek Aktif", "| Proyek / Lokasi | Tahap | Progres milestone | Aktual dibayar | Komitmen + forecast | Budget proyek | Target jual |", "|---|---|---:|---:|---:|---:|---|"]
         for item in active[:25]:
-            progress = f"{item.get('progress_pct'):.0f}%" if item.get("progress_pct") is not None else "Belum dicatat"
+            progress = f"{item.get('progress_pct'):.0f}%" if item.get("progress_pct") is not None else "Belum diperbarui"
+            if item.get("total_work_items"):
+                progress += f" (data {item.get('tracked_work_items', 0)}/{item.get('total_work_items')} item)"
             lines.append(f"| {item.get('name')} / {item.get('address')} | {item.get('stage')} | {progress} | {idr(item.get('actual_paid'))} | {idr(to_float(item.get('committed')) + to_float(item.get('forecast')))} | {idr(item.get('budget_total')) if item.get('budget_total') else 'Belum disusun'} | {item.get('target_sale_date') or '—'} |")
     if completed:
         lines += ["", "### Proyek Selesai dan Hasil Aktual", "| Proyek / Lokasi | Closing | ARV dasar → closing | Budget vs modal aktual | Biaya penjualan | Profit / ROI aktual |", "|---|---|---:|---:|---:|---:|"]
@@ -208,9 +252,14 @@ def _append_portfolio_markdown(lines: list[str], portfolio: Any) -> None:
             arv_compare = idr(item.get("base_arv"))
             if item.get("closing_vs_base_arv_pct") is not None:
                 arv_compare += f" ({item['closing_vs_base_arv_pct']:+.1f}%)"
-            budget_compare = f"{idr(item.get('budget_project_total'))} / {idr(item.get('total_actual_cost'))}"
-            if item.get("budget_variance_actual") is not None:
-                budget_compare += f" (sisa/lebih {idr(item['budget_variance_actual'])})"
+            if item.get("budget_project_total"):
+                budget_compare = f"Budget {idr(item.get('budget_project_total'))} / modal aktual {idr(item.get('total_actual_cost'))}"
+                if item.get("budget_variance_actual") is not None:
+                    variance = to_float(item.get("budget_variance_actual"))
+                    label = "sisa budget" if variance >= 0 else "over budget"
+                    budget_compare += f" ({label} {idr(abs(variance))})"
+            else:
+                budget_compare = f"Budget belum disusun / modal aktual {idr(item.get('total_actual_cost'))}"
             lines.append(f"| {item.get('name')} / {item.get('address')} | {item.get('sold_date') or '—'} · {idr(item.get('closing_price'))} | {arv_compare} | {budget_compare} | {idr(item.get('selling_cost_actual'))} | {idr(item.get('net_profit_actual'))} / {pct(item.get('roi_actual_pct'))} |")
 
 
@@ -227,33 +276,42 @@ def _portfolio_sections(doc: Any, portfolio: Any, add_table: Any) -> None:
         doc.add_heading("Proyek Aktif", level=2)
         rows = []
         for item in active[:25]:
-            progress = f"{item.get('progress_pct'):.0f}%" if item.get("progress_pct") is not None else "Belum dicatat"
+            progress = f"{item.get('progress_pct'):.0f}%" if item.get("progress_pct") is not None else "Belum diperbarui"
+            if item.get("total_work_items"):
+                progress += f"\nData {item.get('tracked_work_items', 0)}/{item.get('total_work_items')} item"
             rows.append([
                 f"{item.get('name') or 'Properti'}\n{item.get('address') or '—'}",
                 f"{item.get('stage') or '—'}\nProgres: {progress}",
-                idr(item.get("actual_paid")),
-                idr(to_float(item.get("committed")) + to_float(item.get("forecast"))),
-                idr(item.get("budget_total")) if item.get("budget_total") else "Belum disusun",
-                item.get("target_sale_date") or "—",
+                _rp_juta(item.get("actual_paid")),
+                _rp_juta(to_float(item.get("committed")) + to_float(item.get("forecast"))),
+                _rp_juta(item.get("budget_total")) if item.get("budget_total") else "Belum disusun",
+                _fmt_short_date(item.get("target_sale_date")),
             ])
-        add_table(["Proyek / Lokasi", "Tahap / Progres", "Aktual", "Komitmen + forecast", "Budget", "Target jual"], rows, widths=[1.8, 1.15, .85, 1.05, .9, .8])
+        add_table(["Proyek / Lokasi", "Tahap / Progres", "Aktual (Rp jt)", "Komitmen + forecast (Rp jt)", "Budget (Rp jt)", "Target jual"], rows, widths=[1.5, 1.0, .8, 1.0, .8, 1.15])
     if completed:
+        if active:
+            doc.add_page_break()
         doc.add_heading("Proyek Selesai dan Hasil Aktual", level=2)
         rows = []
         for item in completed[:25]:
-            arv_text = idr(item.get("base_arv"))
+            arv_text = f"ARV {_rp_juta(item.get('base_arv'))}" if item.get("base_arv") else "ARV belum tersedia"
             if item.get("closing_vs_base_arv_pct") is not None:
-                arv_text += f"\nClosing {item['closing_vs_base_arv_pct']:+.1f}% vs ARV"
-            budget_text = f"Budget {idr(item.get('budget_project_total'))}\nAktual {idr(item.get('total_actual_cost'))}"
-            if item.get("budget_variance_actual") is not None:
-                budget_text += f"\nVarians {idr(item['budget_variance_actual'])}"
+                arv_text += f"\nVs ARV {item['closing_vs_base_arv_pct']:+.1f}%"
+            if item.get("budget_project_total"):
+                budget_text = f"Budget {_rp_juta(item.get('budget_project_total'))}\nModal aktual {_rp_juta(item.get('total_actual_cost'))}"
+                if item.get("budget_variance_actual") is not None:
+                    variance = to_float(item.get("budget_variance_actual"))
+                    variance_label = "Sisa budget" if variance >= 0 else "Over budget"
+                    budget_text += f"\n{variance_label} {abs(variance) / 1_000_000:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            else:
+                budget_text = f"Budget belum disusun\nModal aktual {_rp_juta(item.get('total_actual_cost'))}"
             rows.append([
                 f"{item.get('name') or 'Properti'}\n{item.get('address') or '—'}",
-                f"{item.get('sold_date') or '—'}\n{idr(item.get('closing_price'))}",
-                arv_text, budget_text, idr(item.get("selling_cost_actual")),
-                f"{idr(item.get('net_profit_actual'))}\nROI {pct(item.get('roi_actual_pct'))}",
+                f"{_fmt_short_date(item.get('sold_date'))}\n{_rp_juta(item.get('closing_price'))}",
+                arv_text, budget_text, _rp_juta(item.get('selling_cost_actual')),
+                f"{_rp_juta(item.get('net_profit_actual'))}\nROI {pct(item.get('roi_actual_pct'))}",
             ])
-        add_table(["Proyek / Lokasi", "Closing / Harga", "ARV dasar vs closing", "Budget vs aktual", "Biaya jual", "Profit / ROI aktual"], rows, widths=[1.65, .95, 1.05, 1.25, .85, 1.0])
+        add_table(["Proyek / Lokasi", "Tanggal / harga jual (Rp juta)", "ARV / vs closing (Rp juta)", "Budget / modal aktual (Rp juta)", "Biaya jual (Rp juta)", "Profit / ROI aktual (Rp juta)"], rows, widths=[1.45, 1.05, 1.0, 1.3, .8, 1.1])
 
 
 def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
@@ -278,7 +336,8 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
 
     doc = Document()
     sec = doc.sections[0]
-    sec.top_margin = Inches(.55); sec.bottom_margin = Inches(.55); sec.left_margin = Inches(.62); sec.right_margin = Inches(.62)
+    sec.top_margin = Inches(.92); sec.bottom_margin = Inches(.62); sec.left_margin = Inches(.72); sec.right_margin = Inches(.72)
+    sec.header_distance = Inches(.24); sec.footer_distance = Inches(.30)
     styles = doc.styles
     for name in ("Normal", "Title", "Subtitle", "Heading 1", "Heading 2", "Heading 3"):
         styles[name].font.name = "Aptos"
@@ -290,9 +349,12 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     header.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     h = header.add_run(f"{BRAND}  |  {BRAND_DESCRIPTOR}")
     h.bold = True; h.font.name = "Aptos"; h.font.size = Pt(11); h.font.color.rgb = RGBColor.from_string(NAVY)
+    header.paragraph_format.space_after = Pt(18)
+    header.paragraph_format.keep_with_next = True
+    header.paragraph_format.line_spacing = 1.15
     footer = sec.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    f = footer.add_run(f"{BRAND}  •  Memorandum Investasi Properti  •  {_fmt_wib(snapshot.get('analyzed_at'))}")
+    f = footer.add_run(f"{BRAND}  •  Proposal Investasi Properti  •  {_fmt_wib(snapshot.get('analyzed_at'))}")
     f.font.name = "Aptos"; f.font.size = Pt(11); f.font.color.rgb = RGBColor.from_string(NAVY)
 
     def shade(cell: Any, fill: str) -> None:
@@ -303,52 +365,69 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         shd.set(qn("w:fill"), fill)
 
     def add_table(headers: list[str], rows: list[list[Any]], widths: list[float] | None = None, *, total_last: bool = False):
+        """V1.0.18 table layout: clean built-in banding, restrained padding, readable widths."""
         table = doc.add_table(rows=1, cols=len(headers))
-        table.style = "Table Grid"; table.alignment = WD_TABLE_ALIGNMENT.CENTER; table.autofit = False
+        table.style = "Light Shading Accent 1"
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = False
+        if widths:
+            for idx, width in enumerate(widths):
+                if idx < len(table.columns):
+                    table.columns[idx].width = Inches(width)
         for idx, label in enumerate(headers):
-            cell = table.rows[0].cells[idx]; cell.text = str(label); shade(cell, NAVY)
+            table.rows[0].cells[idx].text = str(label)
         for row in rows:
             cells = table.add_row().cells
             for idx, value in enumerate(row):
-                if idx < len(cells): cells[idx].text = "—" if value is None or value == "" else str(value)
+                if idx < len(cells):
+                    cells[idx].text = "—" if value is None or value == "" else str(value)
         header_props = table.rows[0]._tr.get_or_add_trPr()
-        repeat = OxmlElement("w:tblHeader"); repeat.set(qn("w:val"), "true"); header_props.append(repeat)
+        repeat = OxmlElement("w:tblHeader")
+        repeat.set(qn("w:val"), "true")
+        header_props.append(repeat)
         for ridx, row in enumerate(table.rows):
-            tr_props = row._tr.get_or_add_trPr(); cant = OxmlElement("w:cantSplit"); tr_props.append(cant)
+            tr_props = row._tr.get_or_add_trPr()
+            tr_props.append(OxmlElement("w:cantSplit"))
             for idx, cell in enumerate(row.cells):
                 cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-                if widths and idx < len(widths): cell.width = Inches(widths[idx])
-                if ridx == 0:
-                    shade(cell, NAVY)
-                elif ridx % 2 == 0:
-                    shade(cell, "F3F6FA")
+                if widths and idx < len(widths):
+                    cell.width = Inches(widths[idx])
                 if total_last and ridx == len(table.rows) - 1:
                     shade(cell, "E8EEF5")
                 for para in cell.paragraphs:
                     para.paragraph_format.space_after = Pt(1)
                     para.paragraph_format.keep_together = True
                     for run in para.runs:
-                        run.font.name = "Aptos"; run.font.size = Pt(11)
-                        run.font.color.rgb = RGBColor.from_string("FFFFFF" if ridx == 0 else NAVY)
-                        if ridx == 0 or (total_last and ridx == len(table.rows) - 1): run.bold = True
-        doc.add_paragraph().paragraph_format.space_after = Pt(1)
+                        run.font.name = "Aptos"
+                        run.font.size = Pt(11)
+                        run.font.color.rgb = RGBColor.from_string(NAVY)
+                        if ridx == 0 or (total_last and ridx == len(table.rows) - 1):
+                            run.bold = True
         return table
 
     title = doc.add_paragraph(style="Title")
-    title.paragraph_format.space_after = Pt(1)
+    title.paragraph_format.space_after = Pt(5)
+    title.paragraph_format.keep_with_next = True
     title_run = title.add_run(DOCUMENT_TITLE); title_run.bold = True; title_run.font.color.rgb = RGBColor.from_string(NAVY)
     subtitle = doc.add_paragraph()
+    subtitle.paragraph_format.space_after = Pt(6)
     sr = subtitle.add_run(str(p.get("name") or p.get("lot_code") or "Properti Lelang")); sr.bold = True; sr.font.size = Pt(15); sr.font.color.rgb = RGBColor.from_string(TEAL)
     meta = doc.add_paragraph(f"Tanggal analisis: {_fmt_wib(snapshot.get('analyzed_at'))}  |  Property ID: {snapshot.get('property_id', '—')}")
     meta.paragraph_format.space_after = Pt(6)
 
     doc.add_heading("Ringkasan Eksekutif", level=1)
     doc.add_paragraph(str(decision.get("summary") or "Analisis investasi berdasarkan data dan asumsi yang tersedia."))
-    decision_table = doc.add_table(rows=1, cols=2); decision_table.style = "Table Grid"
+    decision_table = doc.add_table(rows=1, cols=2); decision_table.style = "Light Shading Accent 1"; decision_table.alignment = WD_TABLE_ALIGNMENT.CENTER
     decision_table.cell(0, 0).text = "KEPUTUSAN UNDERWRITING"
     decision_table.cell(0, 1).text = str(decision.get("status", "HOLD"))
     for cell in decision_table.rows[0].cells:
         shade(cell, "E8EEF5")
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        tc_pr = cell._tc.get_or_add_tcPr()
+        margins = OxmlElement("w:tcMar")
+        for side, twips in (("top", 120), ("bottom", 120), ("start", 140), ("end", 140)):
+            node = OxmlElement(f"w:{side}"); node.set(qn("w:w"), str(twips)); node.set(qn("w:type"), "dxa"); margins.append(node)
+        tc_pr.append(margins)
         for para in cell.paragraphs:
             for run in para.runs:
                 run.bold = True; run.font.size = Pt(11); run.font.color.rgb = RGBColor.from_string(NAVY)
@@ -373,13 +452,13 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         comp_rows = []
         for comp in comparables[:20]:
             address = str(comp.get("address") or comp.get("full_address") or comp.get("location") or "Alamat lengkap belum dicantumkan")
-            source = str(comp.get("source_platforms") or comp.get("source_url") or "—")
+            source = _source_label(comp)
             comp_rows.append([
-                str(comp.get("name") or "Pembanding"), idr(comp.get("price")),
+                address, idr(comp.get("price")),
                 f"{comp.get('land_area') or '—'} / {comp.get('building_area') or '—'}",
-                f"{address}\nSumber: {source}",
+                source,
             ])
-        add_table(["Nama listing", "Harga penawaran", "LT / LB (m²)", "Alamat dan sumber"], comp_rows, widths=[1.55, 1.15, 1.0, 3.1])
+        add_table(["Alamat lengkap", "Harga penawaran", "LT / LB (m²)", "URL / sumber"], comp_rows, widths=[3.05, 1.35, .85, 1.35])
 
     doc.add_heading("3. Struktur Modal per Skenario Bidding", level=1)
     capital_rows = []
@@ -387,24 +466,26 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         r = sc["result"]
         reserve = to_float(r.get("possession_risk_reserve")) + to_float(r.get("general_risk_reserve"))
         capital_rows.append([
-            sc["name"], idr(sc["bid"]) if sc["bid"] else "Tidak tersedia",
-            idr(r.get("capital_before_sale")) if r else "—",
-            idr(r.get("possession_risk_reserve")) if r else "—",
-            idr(r.get("general_risk_reserve")) if r else "—",
-            idr(r.get("cash_requirement_including_reserve")) if r else "—",
+            _rp_juta(sc["bid"]) if sc["bid"] else "—",
+            _rp_juta(r.get("capital_before_sale")) if r else "—",
+            _rp_juta(r.get("possession_risk_reserve")) if r else "—",
+            _rp_juta(r.get("general_risk_reserve")) if r else "—",
+            _rp_juta(r.get("cash_requirement_including_reserve")) if r else "—",
         ])
-    add_table(["Skenario", "Harga bid / indikatif", "Total modal", "Cadangan penguasaan", "Cadangan risiko lain", "Total kebutuhan kas"], capital_rows, widths=[1.05, 1.05, 1.1, 1.15, 1.1, 1.2])
+    add_table(["Skenario bid (Rp juta)", "Modal (Rp juta)", "Cadangan penguasaan (Rp juta)", "Cadangan risiko lain (Rp juta)", "Kebutuhan kas (Rp juta)"], capital_rows, widths=[1.2, 1.0, 1.5, 1.45, 1.25])
+    doc.add_paragraph("Seluruh nilai pada tabel skenario bidding dan profitabilitas dinyatakan dalam Rp juta.")
 
     doc.add_heading("4. Biaya Penjualan dan Profitabilitas", level=1)
     sale_rows = []
     for sc in scenarios:
         r = sc["result"]
         sale_rows.append([
-            sc["name"], idr(r.get("selling_cost")) if r else "—",
-            idr(r.get("net_proceeds")) if r else "—", idr(r.get("net_profit")) if r else "—",
+            _rp_juta(sc["bid"]) if sc["bid"] else "—",
+            _rp_juta(r.get("selling_cost")) if r else "—",
+            _rp_juta(r.get("net_proceeds")) if r else "—", _rp_juta(r.get("net_profit")) if r else "—",
             pct(r.get("roi_pct")) if r else "—",
         ])
-    add_table(["Skenario", "Biaya penjualan", "Penjualan bersih", "Profit bersih", "ROI"], sale_rows, widths=[1.3, 1.25, 1.35, 1.35, .9])
+    add_table(["Skenario bid (Rp juta)", "Biaya jual (Rp juta)", "Penjualan bersih (Rp juta)", "Profit bersih (Rp juta)", "ROI"], sale_rows, widths=[1.2, 1.1, 1.55, 1.45, .75])
 
     doc.add_heading("5. Strategi Penawaran", level=1)
     strategy_rows = []
@@ -412,11 +493,11 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         r = sc["result"]
         target_roi = f"{_scenario_target_roi(snapshot, sc['name']):.1f}%"
         strategy_rows.append([
-            sc["name"], idr(sc["bid"]) if sc["bid"] else "—", target_roi,
-            pct(r.get("roi_pct")) if r else "—", "Bid legal" if sc["legal_bid"] else sc["note"],
+            _rp_juta(sc["bid"]) if sc["bid"] else "—", target_roi,
+            pct(r.get("roi_pct")) if r else "—", f"{sc['name']}: {'Bid legal' if sc['legal_bid'] else sc['note']}",
         ])
-    strategy_rows.append(["Batas berhenti (walk-away)", idr(bid.get("walk_away_from")) if bid.get("walk_away_from") is not None else "—", "—", "—", bid.get("walk_away_reason") or "—"])
-    add_table(["Level", "Harga bid", "Target ROI", "ROI simulasi", "Catatan"], strategy_rows, widths=[1.2, 1.0, .8, .8, 2.4])
+    strategy_rows.append([_rp_juta(bid.get("walk_away_from")) if bid.get("walk_away_from") is not None else "—", "—", "—", f"Batas berhenti: {bid.get('walk_away_reason') or '—'}"])
+    add_table(["Bid / ceiling (Rp juta)", "Target ROI", "ROI simulasi", "Catatan"], strategy_rows, widths=[1.3, .9, .9, 3.6])
 
     doc.add_heading("6. RAB Ringkas", level=1)
     rab_table_rows = []
@@ -427,20 +508,20 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         rab_table_rows.append([
             str(row.get("subcategory") or row.get("category") or "—"), str(row.get("work_item") or "—"),
             f"{row.get('quantity') or '—'} {row.get('unit') or ''}".strip(),
-            idr(row.get("unit_cost")) if to_float(row.get("unit_cost")) > 0 else "Belum ada harga",
-            idr(subtotal.get("subtotal_base")) if subtotal.get("subtotal_base") is not None else "Belum lengkap",
+            _idr_plain(row.get("unit_cost")) if to_float(row.get("unit_cost")) > 0 else "Belum ada harga",
+            _idr_plain(subtotal.get("subtotal_base")) if subtotal.get("subtotal_base") is not None else "Belum lengkap",
             time_label,
         ])
     total = _sum_rab(rab_rows)
     total_base = idr(total["totals"]["base"]) if total["totals"]["base"] is not None else "Belum tersedia"
     if not total["complete_base"]:
         total_base += f" (parsial {total['priced']['base']}/{total['count']} item)"
-    rab_table_rows.append(["TOTAL", "Total RAB dasar", "", "", total_base, "Critical path di bawah"])
+    rab_table_rows.append(["TOTAL", "Total RAB dasar", "", "", _idr_plain(total["totals"]["base"]) if total["totals"]["base"] is not None else "Belum tersedia", "Critical path"] )
     if rab_table_rows:
-        add_table(["Kelompok", "Pekerjaan", "Volume", "Harga satuan", "Subtotal dasar", "Waktu cepat/dasar/lambat*"], rab_table_rows, widths=[.85, 2.0, .65, .9, 1.0, 1.1], total_last=True)
+        add_table(["Kelompok", "Pekerjaan", "Vol.", "Harga satuan (Rp)", "Subtotal dasar (Rp)", "Durasi C/D/K*"], rab_table_rows, widths=[1.1, 1.75, .65, .95, 1.15, 1.05], total_last=True)
         low = idr(total["totals"]["low"]) if total["totals"]["low"] is not None else "Belum tersedia"
         high = idr(total["totals"]["high"]) if total["totals"]["high"] is not None else "Belum tersedia"
-        doc.add_paragraph(f"Rentang total RAB screening: rendah {low}; dasar {total_base}; atas {high}. Item tanpa harga tetap terlihat dan tidak dianggap Rp0.")
+        doc.add_paragraph(f"Harga satuan dan subtotal ditampilkan dalam Rupiah penuh. Rentang total RAB screening: rendah {low}; dasar {total_base}; atas {high}. Item tanpa harga tetap terlihat dan tidak dianggap Rp0.")
     else:
         doc.add_paragraph("Rincian item RAB tidak tersedia pada snapshot memo ini.")
 
@@ -467,7 +548,7 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     doc.add_heading("Pengelola Investasi dan Proyek", level=1)
     doc.add_paragraph(f"{BRAND} menjalankan fungsi property investment dan project management: analisis peluang, perencanaan akuisisi, pengendalian anggaran, koordinasi renovasi, serta persiapan pemasaran aset. Ruang lingkup pelaksanaan mengikuti persetujuan dan perjanjian proyek masing-masing.")
     doc.add_heading("Batasan dan Penafian", level=1)
-    doc.add_paragraph("Memorandum ini merupakan ringkasan analisis investasi berdasarkan data yang tersedia. Dokumen ini bukan appraisal resmi, pendapat hukum, jaminan keuntungan, atau penawaran kontraktor. Harga penawaran tidak sama dengan harga transaksi kecuali terverifikasi. Data portofolio hanya mencakup catatan yang tersedia di sistem dan perlu direkonsiliasi sebelum dibagikan kepada investor.")
+    doc.add_paragraph("Proposal ini merupakan ringkasan analisis investasi berdasarkan data yang tersedia. Dokumen ini bukan appraisal resmi, pendapat hukum, jaminan keuntungan, atau penawaran kontraktor. Harga penawaran tidak sama dengan harga transaksi kecuali terverifikasi. Data portofolio hanya mencakup catatan yang tersedia di sistem dan perlu direkonsiliasi sebelum dibagikan kepada investor.")
 
     # Enforce a minimum 11pt font across all visible document content.
     for paragraph in doc.paragraphs:

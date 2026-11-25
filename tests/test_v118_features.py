@@ -135,7 +135,7 @@ def test_investment_memo_docx_has_kayna_brand_minimum_11pt_and_property_filename
     }
     data = build_analysis_docx(snapshot)
     assert data[:2] == b"PK"
-    assert property_filename(snapshot).startswith("investment-memo-rumah-tas-6-blok-a5-43")
+    assert property_filename(snapshot).startswith("proposal-investasi-properti-rumah-tas-6-blok-a5-43")
     from docx import Document
     doc = Document(BytesIO(data))
     assert "KAYNA PROPERTY" in doc.sections[0].header.paragraphs[0].text
