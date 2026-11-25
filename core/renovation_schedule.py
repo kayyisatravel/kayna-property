@@ -67,7 +67,13 @@ def _unit_key(unit: Any) -> str:
     return u
 
 
-def _duration_for(item: dict[str, Any]) -> dict[str, float]:
+def estimate_item_duration(item: dict[str, Any]) -> dict[str, float]:
+    """Return fast/base/slow working-day effort for one RAB line.
+
+    This is the exact productivity basis also consumed by the critical-path
+    project schedule, so the memo line durations and project schedule cannot
+    silently diverge.
+    """
     category = classify_work_item(item)
     unit = _unit_key(item.get("unit"))
     rates = PRODUCTIVITY.get(category, PRODUCTIVITY["other"]).get(unit)
@@ -96,7 +102,7 @@ def estimate_renovation_duration(items: list[dict[str, Any]] | None, *, start_da
     rows = [x for x in (items or []) if isinstance(x, dict)]
     if not rows:
         return {"available": False, "reason": "Belum ada daftar item renovasi dengan volume untuk dihitung."}
-    categorized: list[tuple[dict[str, Any], dict[str, float]]] = [(row, _duration_for(row)) for row in rows]
+    categorized: list[tuple[dict[str, Any], dict[str, float]]] = [(row, estimate_item_duration(row)) for row in rows]
     phase_rows: list[dict[str, Any]] = []
     totals = {"fast": 0.0, "base": 0.0, "slow": 0.0}
     assigned_codes: set[int] = set()

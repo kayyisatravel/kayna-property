@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any
 import json
 from .utils import to_float, iso_now
+from .project_ledger import SELLING_CATEGORIES
 
 
 def actual_project_summary(actual_costs: list[dict[str, Any]], sale: dict[str, Any]) -> dict[str, Any]:
@@ -12,7 +13,7 @@ def actual_project_summary(actual_costs: list[dict[str, Any]], sale: dict[str, A
         amount = max(0.0, to_float(row.get("amount")))
         category = str(row.get("category", "Other"))
         categories[category] = categories.get(category, 0.0) + amount
-        if category.lower() in {"selling", "biaya penjualan"}:
+        if category.strip().lower() in SELLING_CATEGORIES:
             selling_cost_from_ledger += amount
         else:
             total_actual_cost += amount

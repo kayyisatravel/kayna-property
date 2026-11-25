@@ -33,6 +33,7 @@ from storage.gsheets_db import GoogleSheetsDB, SCHEMA
 from storage.drive_storage import upload_file_to_drive
 from core.renovation_pricing import PRICE_CATALOG_VERSION, PRICE_CATALOG_BASIS, PRICE_CATALOG_REFERENCES, PRICE_CATALOG_ANCHORS
 from reports.report_builder import build_analysis_markdown, build_analysis_docx, property_filename
+from reports.portfolio_context import build_portfolio_report_context
 
 st.set_page_config(page_title=APP_NAME, page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
@@ -284,6 +285,17 @@ def list_properties() -> list[dict[str, Any]]: return read_table("PROPERTIES")
 
 def list_analyses() -> list[dict[str, Any]]: return read_table("ANALYSIS_HISTORY")
 
+
+def build_memo_portfolio_context(current_property_id: str = "") -> dict[str, Any]:
+    """Build a compact portfolio appendix using only cached Google Sheets reads."""
+    return build_portfolio_report_context(
+        list_properties(),
+        read_table("COST_ACTUALS"),
+        read_table("PROJECT_BUDGETS"),
+        read_table("PROJECT_MILESTONES"),
+        read_table("SALES_CLOSING"),
+        as_of=jakarta_today().isoformat(),
+    )
 
 def save_property_record(property_id: str, input_data: dict[str, Any], decision_status: str, lifecycle_status: str = "PROSPECT", latest_analysis: dict[str, Any] | None = None):
     prop = input_data.get("property", {})
@@ -1554,13 +1566,18 @@ elif page == "New Auction Analysis":
             except Exception as exc: st.error(str(exc))
         if st.session_state.ai_review:
             st.json(st.session_state.ai_review)
-        report = build_analysis_markdown(snap)
+        # Portfolio appendix is assembled from the app's cached Sheets reads.
+        # It is only embedded in the downloaded report and is not persisted in
+        # ANALYSIS_HISTORY, keeping the underwriting snapshot compact.
+        memo_snapshot = {**snap, "portfolio_context": build_memo_portfolio_context(snap.get("property_id", ""))}
+        report = build_analysis_markdown(memo_snapshot)
+        memo_docx = build_analysis_docx(memo_snapshot)
         memo_col1, memo_col2 = st.columns(2)
         with memo_col1:
-            st.download_button("Unduh Investment Memo (Word)", build_analysis_docx(snap), file_name=property_filename(snap, "docx"), mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+            st.download_button("Unduh Memorandum Investasi (Word)", memo_docx, file_name=property_filename(memo_snapshot, "docx"), mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
         with memo_col2:
-            st.download_button("Unduh Investment Memo (Markdown)", report, file_name=property_filename(snap, "md"), mime="text/markdown", use_container_width=True)
-        st.caption("Memo Word menggunakan font minimum 11 pt dan mencantumkan Kayna Property sebagai pelaksana proyek. Konteks ekonomi resmi hanya dicantumkan bila snapshot sesuai lokasi dan masih dalam jendela kesegaran data.")
+            st.download_button("Unduh Memorandum Investasi (Markdown)", report, file_name=property_filename(memo_snapshot, "md"), mime="text/markdown", use_container_width=True)
+        st.caption("Memo menggunakan font minimum 11 pt, identitas KAYNA PROPERTY, tiga skenario bidding, RAB dan durasi per item, serta lampiran proyek aktif dan rekam jejak closing yang tersimpan. Data ekonomi makro tidak dimasukkan karena belum tersedia feed dinamis yang dapat diverifikasi saat pembuatan dokumen.")
         if st.button("💾 SIMPAN / UPDATE ANALISIS KE DATABASE", type="primary", use_container_width=True):
             try:
                 propid = snap["property_id"]

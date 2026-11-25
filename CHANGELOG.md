@@ -1,3 +1,25 @@
+## [1.0.19] - 2026-11-25
+
+### Changed
+- Rebuild the investor document as `Memorandum Investasi Properti` / `Property Investment Memorandum` and brand Kayna Property as `Property Investment & Project Management` rather than a construction contractor.
+- Convert analysis timestamps to Asia/Jakarta (WIB) in the report and export filenames using the property name and lot.
+- Remove the fixed economic-context snapshot from the memorandum. Economic context is omitted until a live, source-verified and freshness-checked data provider is implemented.
+- Replace comparable distance in the report with full address and source, using a compact four-column layout.
+- Present capital, reserve/cash requirement, selling cost, net sale proceeds and profit across limit, middle and upper bid scenarios; strategy includes target and simulated ROI.
+- Add a final RAB total row, low/base/high total range and fast/base/slow workday allowance per item. Per-item duration shares the same productivity classifier as the project critical-path schedule.
+- Add a cached portfolio appendix for active projects (stage, milestone progress, budget, actuals, commitments/forecast and sale target) and completed projects (closing, actual capital, selling cost, net profit and realized ROI).
+- Use a high-contrast navy visual system and a minimum 11 pt font throughout the Word memorandum.
+
+### Safeguards
+- Portfolio context is assembled from existing 300-second cached Google Sheets reads and embedded only in the download; it is not written back into analysis snapshots.
+- No AI call is made to generate the report. The figures are taken from the saved underwriting snapshot and recorded project ledgers.
+- Historical project financials are described as recorded data and are not presented as complete when transactions are missing.
+
+### Verification
+- DOCX render and visual review completed on the generated sample memorandum.
+- All report text runs are checked at 11 pt minimum; table headings use white on navy for contrast.
+- Full regression and package/upgrade validation results are recorded in the V1.0.19 release notes.
+
 ## [1.0.18] - 2026-11-25
 
 ### Added
