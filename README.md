@@ -1,8 +1,16 @@
-# Property Flipper Management System (PFMS) — V1.0.20
+# Kayna Property Management System (PFMS) — V1.0.21
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
 
 **Prinsip utama: SELL FIRST BEFORE BUYING.** Python menjadi sumber kebenaran semua kalkulasi; Gemini membantu ekstraksi dan review. Google Sheets menjadi database utama.
+
+## V1.0.21 — Complete Investor Financial Schedules & Executive Dashboard
+
+- The proposal includes detailed total capital to pre-sale, cash requirement/risk reserve, and sale cost/net proceeds/profitability matrices for the limit, middle and upper bid scenarios.
+- The initial screen is a branded Kayna Property Management System dashboard with auction/deposit deadlines, active-project budget exposure, physical renovation progress, and actionable project alerts.
+- Dashboard summaries use cached Google Sheets rows and local Python calculations; no additional Gemini calls or worksheet migrations are introduced.
+- Active-project progress is duration-weighted from explicit work-item status and displays tracking coverage; payments are not treated as completion evidence.
+- Proposal tables preserve the cleaner V1.0.18-style layout and all metric grids remain within four columns.
 
 ## V1.0.20 — Proposal Investasi Properti & Accurate Renovation Progress
 

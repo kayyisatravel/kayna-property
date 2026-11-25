@@ -14,6 +14,7 @@ from core.liquidity import compute_liquidity
 from core.lifecycle import actual_project_summary, mark_property_won
 from core.project_ledger import summarize_project_ledger
 from core.project_alerts import assess_project_alerts
+from core.dashboard import build_dashboard_view
 from core.renovation_schedule import estimate_renovation_duration
 from core.project_progress import budget_payload, calculate_project_work_progress
 from core.auction_dates import apply_extracted_auction_dates
@@ -56,6 +57,14 @@ div[data-testid="stExpander"]{border:1px solid var(--pfms-line);border-radius:12
 [data-testid="stAlert"]{border-radius:12px}
 section[data-testid="stSidebar"]{border-right:1px solid var(--pfms-line)}
 section[data-testid="stSidebar"] [data-testid="stRadio"] label{padding-top:.18rem;padding-bottom:.18rem}
+.kayna-dashboard-hero{position:relative;overflow:hidden;padding:2rem 2.15rem;border-radius:22px;margin:.15rem 0 1.1rem;background:linear-gradient(118deg,#10243E 0%,#173B5B 58%,#0F766E 100%);box-shadow:0 12px 30px rgba(16,36,62,.14);color:#FFFFFF}
+.kayna-dashboard-hero:after{content:"";position:absolute;right:-56px;top:-110px;width:290px;height:290px;border:1px solid rgba(255,255,255,.13);border-radius:50%;box-shadow:0 0 0 34px rgba(255,255,255,.035),0 0 0 70px rgba(255,255,255,.025)}
+.kayna-kicker{font-size:.76rem;letter-spacing:.19em;font-weight:800;color:#B9D8D5;margin-bottom:.65rem}
+.kayna-dashboard-hero h1{font-size:2.05rem;line-height:1.15;color:#FFFFFF;margin:0 0 .45rem;font-weight:800}
+.kayna-dashboard-hero p{font-size:.98rem;color:#D7E4EF;margin:0 0 .95rem;letter-spacing:.02em}
+.kayna-hero-foot{font-size:.88rem;color:#F2F7FA;max-width:780px;line-height:1.55}
+.kayna-summary-strip{display:flex;flex-wrap:wrap;gap:1.3rem;padding:.85rem 1rem;border:1px solid #DFE7EF;border-radius:13px;background:#F6F8FB;color:#334155;margin:.35rem 0 1.25rem;font-size:.86rem}
+.kayna-summary-strip b{color:#172B4D}
 </style>
 """, unsafe_allow_html=True)
 
@@ -400,60 +409,105 @@ st.sidebar.caption("Analisis terukur · Risiko terlihat · Keputusan dapat diaud
 
 # ============================ PAGE 1: DASHBOARD ============================
 if page == "Executive Dashboard":
-    st.markdown(f"<div class='hero'><h1>Ringkasan Utama</h1><p>Pantau peluang lelang, kesiapan kas, properti yang sedang dikelola, dan hasil investasi yang sudah terealisasi.</p></div>", unsafe_allow_html=True)
-    properties = list_properties(); analyses = list_analyses(); cash_profile, events, liq = get_cash_data()
-    active = [p for p in properties if p.get("lifecycle_status") in {"WON", "ACTIVE"}]
-    sold = [p for p in properties if p.get("lifecycle_status") == "SOLD"]
-    opps = [p for p in properties if p.get("lifecycle_status") in {"PROSPECT", "BID PLANNED", "BID SUBMITTED", "LOST", "WITHDRAWN"}]
-    realized = []
-    for p in sold:
-        closing = next((x for x in read_table("SALES_CLOSING") if x.get("property_id") == p.get("property_id")), {})
-        costs = [x for x in read_table("COST_ACTUALS") if x.get("property_id") == p.get("property_id")]
-        realized.append(actual_project_summary(costs, closing))
-    total_realized_profit = sum(x.get("net_profit_actual", 0) for x in realized)
-    active_actual_cost = sum(to_float(x.get("amount")) for x in read_table("COST_ACTUALS") if any(p.get("property_id") == x.get("property_id") for p in active))
-    active_ids = {str(p.get("property_id")) for p in active}
-    active_budget_rows = [b for b in read_table("PROJECT_BUDGETS") if str(b.get("property_id")) in active_ids and str(b.get("status") or "Active") not in {"Cancelled", "Archived"}]
-    selling_category_keys = {"penjualan", "selling", "biaya penjualan", "pajak penjualan", "komisi agen"}
-    active_selling_rows = [b for b in active_budget_rows if str(b.get("category") or "").strip().lower() in selling_category_keys]
-    active_project_budget_rows = [b for b in active_budget_rows if str(b.get("category") or "").strip().lower() not in selling_category_keys]
-    active_budget_total = sum(max(0.0, to_float(b.get("budget_amount"))) for b in active_project_budget_rows)
-    active_budget_committed = sum(max(0.0, to_float(b.get("committed_unpaid"))) for b in active_project_budget_rows)
-    active_budget_forecast = sum(max(0.0, to_float(b.get("forecast_remaining"))) for b in active_project_budget_rows)
-    active_selling_budget_total = sum(max(0.0, to_float(b.get("budget_amount"))) for b in active_selling_rows)
-    active_selling_forecast = sum(max(0.0, to_float(b.get("forecast_remaining"))) for b in active_selling_rows)
+    st.markdown("""
+    <div class='kayna-dashboard-hero'>
+      <div class='kayna-kicker'>KAYNA PROPERTY MANAGEMENT SYSTEM</div>
+      <h1>Portfolio Command Center</h1>
+      <p>Investment intelligence · Auction pipeline · Project control · Realized performance</p>
+      <div class='kayna-hero-foot'>Pusat kendali peluang lelang, kesiapan modal, pekerjaan aktif, tenggat, dan hasil investasi Kayna Property.</div>
+    </div>
+    """, unsafe_allow_html=True)
+    properties = list_properties()
+    analyses = list_analyses()
+    cash_profile, events, liq = get_cash_data()
+    actual_rows = read_table("COST_ACTUALS")
+    budget_rows = read_table("PROJECT_BUDGETS")
+    closing_rows = read_table("SALES_CLOSING")
+    milestone_rows = read_table("PROJECT_MILESTONES")
+    dashboard = build_dashboard_view(
+        properties, analyses, actual_rows, budget_rows, closing_rows,
+        today=jakarta_today(), milestone_rows=milestone_rows,
+    )
+    summary = dashboard["summary"]
+
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Kas siap investasi", idr(liq["cash_available_for_new_project"]), help="Kas aktual saat ini dikurangi pengeluaran yang dikonfirmasi dan cadangan likuiditas.")
-    k2.metric("Peluang tersimpan", len(opps))
-    k3.metric("Aset aktif", len(active))
-    k4.metric("Realisasi Budget proyek berjalan", idr(active_actual_cost), help="Biaya terealisasi pada project aktif sampai saat ini")
-    #k5.metric("Profit terealisasi", idr(total_realized_profit))
-    st.caption(f"Anggaran proyek aktif: komitmen {idr(active_budget_committed)} · forecast tersisa {idr(active_budget_forecast)}. Anggaran biaya penjualan terpisah: {idr(active_selling_budget_total)} (forecast {idr(active_selling_forecast)}).")
-    st.markdown("### Kondisi portofolio")
-    c1, c2 = st.columns([1.1, 1])
-    with c1:
-        st.markdown("**Aset yang sedang dikelola**")
-        if active:
-            rows = []
-            for p in active:
-                pay = record_payload(p); inp = pay.get("input_data", {}); prop = inp.get("property", {})
-                pb = [b for b in active_budget_rows if str(b.get("property_id")) == str(p.get("property_id"))]
-                ac = [x for x in read_table("COST_ACTUALS") if str(x.get("property_id")) == str(p.get("property_id"))]
-                pb_project = [b for b in pb if str(b.get("category") or "").strip().lower() not in selling_category_keys]
-                pb_selling = [b for b in pb if str(b.get("category") or "").strip().lower() in selling_category_keys]
-                latest_active = pay.get("latest_analysis") if isinstance(pay.get("latest_analysis"), dict) else {}
-                prebid_liquidity = latest_active.get("liquidity") if isinstance(latest_active.get("liquidity"), dict) else {}
-                rows.append({"Objek": p.get("name"), "Lifecycle": p.get("lifecycle_status"), "Keputusan pra-lelang": p.get("decision_status"), "Kas tersedia pra-lelang": prebid_liquidity.get("cash_available_for_new_project"), "Limit": to_float(p.get("auction_limit")), "Anggaran sampai siap jual": sum(to_float(b.get("budget_amount")) for b in pb_project), "Biaya penjualan (budget)": sum(to_float(b.get("budget_amount")) for b in pb_selling), "Aktual dibayar": sum(to_float(x.get("amount")) for x in ac), "Komitmen": sum(to_float(b.get("committed_unpaid")) for b in pb_project), "Forecast sisa": sum(to_float(b.get("forecast_remaining")) for b in pb_project), "Tahap": pay.get("project_stage", "Settlement")})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config={"Kas tersedia pra-lelang": st.column_config.NumberColumn(format="Rp %.0f"), "Limit": st.column_config.NumberColumn(format="Rp %.0f"), "Anggaran sampai siap jual": st.column_config.NumberColumn(format="Rp %.0f"), "Biaya penjualan (budget)": st.column_config.NumberColumn(format="Rp %.0f"), "Aktual dibayar": st.column_config.NumberColumn(format="Rp %.0f"), "Komitmen": st.column_config.NumberColumn(format="Rp %.0f"), "Forecast sisa": st.column_config.NumberColumn(format="Rp %.0f")})
-        else: st.info("Belum ada properti yang dimenangkan. Semua peluang yang dianalisis tetap tersimpan sebagai prospek, termasuk yang berstatus HOLD atau DO NOT BID.")
-    with c2:
-        st.markdown("**Distribusi keputusan analisis**")
-        if analyses:
-            df = pd.DataFrame([{"Keputusan": r.get("decision_status", "HOLD")} for r in analyses])
-            st.bar_chart(df["Keputusan"].value_counts())
-        else: st.info("Belum ada snapshot analisis.")
-    st.markdown("### Pengingat keputusan")
-    st.info("Sistem menyimpan semua status peluang. Hanya properti yang dimenangkan masuk ke Active Properties; setelah closing masuk Closed Projects.")
+    k1.metric("Kas siap investasi", idr(liq["cash_available_for_new_project"]), help="Kas aktual dikurangi pengeluaran terkonfirmasi, komitmen aktif, dan cadangan likuiditas.")
+    k2.metric("Agenda lelang / jaminan 60 hari", summary["upcoming_auction_events"], help="Jumlah tenggat setor jaminan dan tanggal lelang yang akan datang.")
+    k3.metric("Proyek aktif", summary["active_projects"])
+    k4.metric("Profit proyek terealisasi", idr(summary["realized_profit"]), help="Akumulasi profit aktual dari proyek berstatus SOLD dengan data closing.")
+    st.markdown(
+        f"<div class='kayna-summary-strip'><span><b>{summary['prospects']}</b> peluang tersimpan</span>"
+        f"<span><b>{summary['sold_projects']}</b> proyek selesai</span>"
+        f"<span><b>{summary['analysis_count']}</b> snapshot analisis</span>"
+        f"<span><b>{idr(summary['active_actual_paid'])}</b> pengeluaran aktual proyek aktif</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Prioritas dan agenda")
+    left, right = st.columns([1.1, 1])
+    with left:
+        st.markdown("**Tindakan yang perlu diperhatikan**")
+        if dashboard["project_alerts"]:
+            for alert in dashboard["project_alerts"][:8]:
+                msg = f"**{alert.get('property', 'Proyek')}** · {alert.get('title', 'Peringatan proyek')}\n\n{alert.get('action', '')}"
+                if alert.get("severity") == "critical":
+                    st.error(msg)
+                elif alert.get("severity") == "warning":
+                    st.warning(msg)
+                else:
+                    st.info(msg)
+        else:
+            st.success("Belum ada target penjualan atau anggaran proyek yang memerlukan tindakan segera berdasarkan data yang tercatat.")
+    with right:
+        st.markdown("**Jadwal lelang dan batas setor terdekat**")
+        if dashboard["auction_events"]:
+            agenda_rows = [{
+                "Tanggal": fmt_date(x["date"]), "Agenda": x["event"],
+                "Properti": x["property"], "Kode lot": x["lot_code"] or "—",
+                "Waktu": x["urgency"],
+            } for x in dashboard["auction_events"]]
+            st.dataframe(pd.DataFrame(agenda_rows), use_container_width=True, hide_index=True, height=300)
+        else:
+            st.info("Belum ada jadwal lelang atau batas setor jaminan dalam 60 hari ke depan pada database.")
+
+    st.markdown("### Kinerja proyek yang sedang dikelola")
+    if dashboard["active_projects"]:
+        project_rows = [{
+            "Properti": x["property"], "Tahap": x["stage"],
+            "Progres fisik (%)": round(x["progress_pct"], 1) if x.get("progress_pct") is not None else None,
+            "Cakupan status (%)": round(x["progress_coverage_pct"], 1),
+            "Aktual dibayar": x["actual_paid"], "Komitmen": x["commitments"],
+            "Forecast tersisa": x["forecast"], "Proyeksi biaya selesai": x["projected_total"],
+            "Budget proyek": x["budget_total"] or None,
+            "Penggunaan budget (%)": round(x["budget_usage_pct"], 1) if x["budget_usage_pct"] is not None else None,
+            "Target jual": fmt_date(x["target_sale_date"]) if x["target_sale_date"] else "Belum ditetapkan",
+        } for x in dashboard["active_projects"]]
+        project_df = pd.DataFrame(project_rows)
+        st.dataframe(project_df, use_container_width=True, hide_index=True, column_config={
+            "Aktual dibayar": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Komitmen": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Forecast tersisa": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Proyeksi biaya selesai": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Budget proyek": st.column_config.NumberColumn(format="Rp %.0f"),
+            "Penggunaan budget (%)": st.column_config.NumberColumn(format="%.1f%%"),
+            "Progres fisik (%)": st.column_config.NumberColumn(format="%.1f%%"),
+            "Cakupan status (%)": st.column_config.NumberColumn(format="%.1f%%"),
+        })
+    else:
+        st.info("Belum ada proyek aktif. Properti yang dimenangkan akan muncul di sini setelah dipindahkan ke lifecycle WON atau ACTIVE.")
+
+    st.markdown("### Distribusi keputusan underwriting")
+    if dashboard["decision_distribution"]:
+        dist_col, detail_col = st.columns([1, 1.25])
+        with dist_col:
+            decision_series = pd.Series(dashboard["decision_distribution"], name="Jumlah snapshot")
+            st.bar_chart(decision_series)
+        with detail_col:
+            dist_rows = [{"Status keputusan": key, "Jumlah": value} for key, value in sorted(dashboard["decision_distribution"].items())]
+            st.dataframe(pd.DataFrame(dist_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Snapshot analisis belum tersedia. Mulai dari menu Analisis Objek Lelang untuk membangun pipeline peluang.")
+    st.caption("Dashboard menggunakan data Google Sheets yang sudah di-cache oleh aplikasi. Filter, tabel, dan perhitungan ringkasan tidak memanggil Gemini dan tidak menambah worksheet baru.")
 
 # =========================== PAGE 2: NEW ANALYSIS ==========================
 elif page == "New Auction Analysis":

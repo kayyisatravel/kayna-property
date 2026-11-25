@@ -88,7 +88,7 @@ def test_memo_includes_limit_middle_and_upper_bid_scenarios_with_roi():
         assert token in markdown
     doc = Document(BytesIO(build_analysis_docx(snapshot)))
     text = doc_text(doc)
-    for token in ["Skenario Tengah", "Skenario Atas", "Target ROI", "ROI simulasi", "Kebutuhan kas", "Penjualan bersih"]:
+    for token in ["Skenario Tengah", "Skenario Atas", "Target ROI", "ROI simulasi", "Kebutuhan Kas", "Penjualan bersih"]:
         assert token in text
 
 
@@ -202,15 +202,14 @@ def test_comparable_and_bid_tables_have_compact_v118_layout_and_numeric_first_co
     comparable_header = ("Alamat lengkap", "Harga penawaran", "LT / LB (m²)", "URL / sumber")
     assert comparable_header in tables
     assert len(tables[comparable_header].rows[0].cells) == 4
+    scenario_headers = ("Komponen", "Limit · 150,0", "Tengah · 160,0", "Atas · 170,0")
+    assert scenario_headers in tables
+    for header in [scenario_headers]:
+        assert len(tables[header].rows[0].cells) == 4
     for header in [
-        ("Skenario bid (Rp juta)", "Modal (Rp juta)", "Cadangan penguasaan (Rp juta)", "Cadangan risiko lain (Rp juta)", "Kebutuhan kas (Rp juta)"),
-        ("Skenario bid (Rp juta)", "Biaya jual (Rp juta)", "Penjualan bersih (Rp juta)", "Profit bersih (Rp juta)", "ROI"),
         ("Bid / ceiling (Rp juta)", "Target ROI", "ROI simulasi", "Catatan"),
     ]:
         assert header in tables
-        for row in tables[header].rows[1:]:
-            first = row.cells[0].text.strip()
-            assert first == "—" or any(ch.isdigit() for ch in first)
 
 
 

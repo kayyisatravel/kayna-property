@@ -146,6 +146,97 @@ def _sum_rab(rab_rows: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
+CAPITAL_COMPONENTS = [
+    ("Harga bid / nilai limit", "bid_price"),
+    ("Bea lelang pembeli", "buyer_auction_fee"),
+    ("BPHTB", "bphtb"),
+    ("PNBP BPN", "bpn_pnbp_cost"),
+    ("Roya", "roya_cost"),
+    ("Administrasi akuisisi", "other_acquisition_admin"),
+    ("Biaya legal lain", "other_legal_cost"),
+    ("PPAT / notaris akuisisi", "acquisition_notary_ppat_fee"),
+    ("Biaya penguasaan / kerohiman", "possession_cost"),
+    ("RAB renovasi", "renovation_cost"),
+    ("Contingency renovasi", "renovation_contingency"),
+    ("Cadangan kondisi tersembunyi", "hidden_condition_reserve"),
+    ("Biaya holding", "holding_cost"),
+    ("Marketing / persiapan penjualan", "marketing_cost"),
+    ("Biaya lain pra-penjualan", "other_presale_cost_only"),
+    ("TOTAL MODAL PRA-PENJUALAN", "capital_before_sale"),
+]
+
+
+def _scenario_header(scenario: dict[str, Any]) -> str:
+    label = {"Bid pada Limit": "Limit", "Skenario Tengah": "Tengah", "Skenario Atas": "Atas"}.get(scenario.get("name"), str(scenario.get("name") or "Bid"))
+    amount = _rp_juta(scenario.get("bid")) if scenario.get("bid") else "—"
+    return f"{label} · {amount}"
+
+
+def _scenario_money(result: dict[str, Any], key: str) -> str:
+    value = result.get(key) if isinstance(result, dict) else None
+    return _rp_juta(value) if value not in (None, "") else "—"
+
+
+def _capital_matrix(scenarios: list[dict[str, Any]]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for label, key in CAPITAL_COMPONENTS:
+        rows.append([label] + [_scenario_money(sc.get("result") or {}, key) for sc in scenarios])
+    return rows
+
+
+def _cash_matrix(snapshot: dict[str, Any], scenarios: list[dict[str, Any]]) -> list[list[str]]:
+    liquidity = snapshot.get("liquidity") if isinstance(snapshot.get("liquidity"), dict) else {}
+    available = to_float(liquidity.get("cash_available_for_new_project"))
+    rows: list[list[str]] = []
+    components = [
+        ("Modal pra-penjualan", "capital_before_sale"),
+        ("Cadangan penguasaan", "possession_risk_reserve"),
+        ("Cadangan risiko umum", "general_risk_reserve"),
+        ("TOTAL KEBUTUHAN KAS", "cash_requirement_including_reserve"),
+    ]
+    for label, key in components:
+        rows.append([label] + [_scenario_money(sc.get("result") or {}, key) for sc in scenarios])
+    if liquidity.get("cash_available_for_new_project") not in (None, ""):
+        rows.append(["Kas tersedia"] + [_rp_juta(available)] * len(scenarios))
+        balances = []
+        for sc in scenarios:
+            result = sc.get("result") or {}
+            need = result.get("cash_requirement_including_reserve")
+            balances.append(_rp_juta(available - to_float(need)) if need not in (None, "") else "—")
+        rows.append(["SURPLUS / (KURANG) KAS"] + balances)
+    deposit = _property(snapshot).get("deposit_amount")
+    if deposit not in (None, ""):
+        rows.append(["Uang jaminan (kebutuhan awal)"] + [_rp_juta(deposit)] * len(scenarios))
+    return rows
+
+
+def _sales_matrix(scenarios: list[dict[str, Any]]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    components = [
+        ("Estimasi harga penjualan / exit price", "exit_price"),
+        ("PPh final penjual", "seller_final_tax"),
+        ("Komisi agen", "seller_agent"),
+        ("AJB / PPAT penjual", "seller_ajb_ppat"),
+        ("Biaya penjualan lain", "seller_misc"),
+        ("TOTAL BIAYA PENJUALAN", "selling_cost"),
+        ("PENJUALAN BERSIH setelah biaya penjualan", "net_proceeds"),
+        ("Total modal sebelum biaya penjualan", "capital_before_sale"),
+        ("PROFIT BERSIH PROYEK", "net_profit"),
+    ]
+    for label, key in components:
+        rows.append([label] + [_scenario_money(sc.get("result") or {}, key) for sc in scenarios])
+    rows.append(["ROI PROYEK"] + [pct((sc.get("result") or {}).get("roi_pct")) for sc in scenarios])
+    return rows
+
+
+def _matrix_markdown(title: str, scenarios: list[dict[str, Any]], rows: list[list[str]]) -> list[str]:
+    headers = ["Komponen"] + [_scenario_header(sc) for sc in scenarios]
+    separator = ["---"] + ["---:"] * len(scenarios)
+    output = [f"## {title}", "| " + " | ".join(headers) + " |", "|" + "|".join(separator) + "|"]
+    output.extend("| " + " | ".join(str(x) for x in row) + " |" for row in rows)
+    return output
+
+
 def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     p = _property(snapshot)
     market = snapshot.get("market", {}) if isinstance(snapshot.get("market"), dict) else {}
@@ -179,16 +270,14 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
             lines.append(f"| {address} | {idr(comp.get('price'))} | {comp.get('land_area', '—')}/{comp.get('building_area', '—')} | {source} |")
         lines.append("")
 
-    lines += ["## 4. Struktur Modal per Skenario Bidding", "| Skenario bid (Rp juta) | Modal (Rp juta) | Cadangan risiko (Rp juta) | Kebutuhan kas (Rp juta) | Status |", "|---:|---:|---:|---:|---|"]
-    for sc in scenarios:
-        r = sc["result"]
-        reserve = to_float(r.get("possession_risk_reserve")) + to_float(r.get("general_risk_reserve"))
-        lines.append(f"| {_rp_juta(sc['bid']) if sc['bid'] else '—'} | {_rp_juta(r.get('capital_before_sale')) if r else '—'} | {_rp_juta(reserve) if r else '—'} | {_rp_juta(r.get('cash_requirement_including_reserve')) if r else '—'} | {'Bid dapat digunakan' if sc['legal_bid'] else 'Simulasi / belum ada bid legal'} |")
-    lines += ["", "## 5. Biaya Penjualan dan Profitabilitas", "| Skenario bid (Rp juta) | Biaya jual (Rp juta) | Penjualan bersih (Rp juta) | Profit bersih (Rp juta) | ROI |", "|---:|---:|---:|---:|---:|"]
-    for sc in scenarios:
-        r = sc["result"]
-        lines.append(f"| {_rp_juta(sc['bid']) if sc['bid'] else '—'} | {_rp_juta(r.get('selling_cost')) if r else '—'} | {_rp_juta(r.get('net_proceeds')) if r else '—'} | {_rp_juta(r.get('net_profit')) if r else '—'} | {pct(r.get('roi_pct')) if r else '—'} |")
-    lines += ["", "## 6. Strategi Penawaran", "| Bid / ceiling (Rp juta) | Target ROI | ROI hasil simulasi | Catatan |", "|---:|---:|---:|---|"]
+    lines += [""]
+    lines += _matrix_markdown("4. Rincian Total Modal per Level Bidding", scenarios, _capital_matrix(scenarios))
+    lines += ["", "Nilai modal merinci biaya dari harga bid hingga tahap pra-penjualan. Biaya penjualan belum dimasukkan ke total modal pra-penjualan.", ""]
+    lines += _matrix_markdown("5. Kebutuhan Kas dan Cadangan Risiko", scenarios, _cash_matrix(snapshot, scenarios))
+    lines += ["", "Cadangan risiko merupakan kebutuhan likuiditas dan tidak otomatis menjadi biaya aktual. Uang jaminan adalah kebutuhan kas di muka dan tidak ditambahkan lagi ke total modal karena diperhitungkan dalam pelunasan harga lelang.", ""]
+    lines += _matrix_markdown("6. Biaya Penjualan dan Hasil Bersih", scenarios, _sales_matrix(scenarios))
+    lines += ["", "Nilai Penjualan bersih adalah estimasi harga penjualan setelah dikurangi biaya penjualan; profit bersih masih mengurangi total modal pra-penjualan.", ""]
+    lines += ["## 7. Strategi Penawaran", "| Bid / ceiling (Rp juta) | Target ROI | ROI hasil simulasi | Catatan |", "|---:|---:|---:|---|"]
     for sc in scenarios:
         r = sc["result"]
         target = f"{_scenario_target_roi(snapshot, sc['name']):.1f}%"
@@ -196,7 +285,7 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     walk = bid.get("walk_away_from")
     lines.append(f"| {_rp_juta(walk) if walk is not None else '—'} | — | — | Batas berhenti: {bid.get('walk_away_reason', '—')} |")
 
-    lines += ["", "## 7. RAB Ringkas dan Durasi per Pekerjaan"]
+    lines += ["", "## 8. RAB Ringkas dan Durasi per Pekerjaan"]
     lines += ["| Kelompok | Pekerjaan | Volume | Harga satuan | Subtotal dasar | Durasi C/D/K (hari kerja) |", "|---|---|---:|---:|---:|---:|"]
     for row in rab_rows[:80]:
         sub = rab_row_subtotals(row); duration = estimate_item_duration(row)
@@ -213,7 +302,7 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     else:
         lines.append("Durasi total belum dapat dihitung karena volume pekerjaan belum tersedia.")
 
-    lines += ["", "## 8. Risk Register: Risiko dan Mitigasi"]
+    lines += ["", "## 9. Risk Register: Risiko dan Mitigasi"]
     risks = _as_rows(snapshot.get("risk_register"))
     if risks:
         lines += ["| Risiko | Probabilitas/Dampak | Cadangan | Mitigasi |", "|---|---:|---:|---|"]
@@ -221,7 +310,7 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
             lines.append(f"| {risk.get('risk_description') or '—'} | {risk.get('probability_1_5', '—')}/{risk.get('impact_1_5', '—')} | {idr(risk.get('cost_reserve'))} | {risk.get('mitigation') or '—'} |")
     else:
         lines.append("Tidak ada risiko yang dicatat pada snapshot.")
-    lines += ["", "## 9. Blocker dan Peringatan"]
+    lines += ["", "## 10. Blocker dan Peringatan"]
     lines += [f"- **Blocker:** {x}" for x in decision.get("blockers", [])] or ["- Tidak ada blocker utama yang tercatat."]
     lines += [f"- **Peringatan:** {x}" for x in decision.get("warnings", [])] or ["- Tidak ada peringatan tambahan."]
 
@@ -236,7 +325,7 @@ def _append_portfolio_markdown(lines: list[str], portfolio: Any) -> None:
     active = _as_rows(portfolio.get("active_projects")); completed = _as_rows(portfolio.get("completed_projects"))
     if not active and not completed:
         return
-    lines += ["", "## 9. Portofolio dan Rekam Jejak Kayna Property"]
+    lines += ["", "## 11. Portofolio dan Rekam Jejak Kayna Property"]
     if portfolio.get("as_of"):
         lines.append(f"Posisi data per {_fmt_wib(portfolio.get('as_of'))}. Angka mencerminkan data yang telah dicatat di sistem.")
     if active:
@@ -269,7 +358,7 @@ def _portfolio_sections(doc: Any, portfolio: Any, add_table: Any) -> None:
     active = _as_rows(portfolio.get("active_projects")); completed = _as_rows(portfolio.get("completed_projects"))
     if not active and not completed:
         return
-    doc.add_heading("9. Portofolio dan Rekam Jejak Kayna Property", level=1)
+    doc.add_heading("10. Portofolio dan Rekam Jejak Kayna Property", level=1)
     if portfolio.get("as_of"):
         doc.add_paragraph(f"Posisi data per {_fmt_wib(portfolio.get('as_of'))}. Angka mencerminkan data yang telah dicatat di sistem.")
     if active:
@@ -289,8 +378,8 @@ def _portfolio_sections(doc: Any, portfolio: Any, add_table: Any) -> None:
             ])
         add_table(["Proyek / Lokasi", "Tahap / Progres", "Aktual (Rp jt)", "Komitmen + forecast (Rp jt)", "Budget (Rp jt)", "Target jual"], rows, widths=[1.5, 1.0, .8, 1.0, .8, 1.15])
     if completed:
-        if active:
-            doc.add_page_break()
+        # Keep active and completed portfolio tables together where possible;
+        # Word will naturally continue onto the next page only when required.
         doc.add_heading("Proyek Selesai dan Hasil Aktual", level=2)
         rows = []
         for item in completed[:25]:
@@ -336,14 +425,14 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
 
     doc = Document()
     sec = doc.sections[0]
-    sec.top_margin = Inches(.92); sec.bottom_margin = Inches(.62); sec.left_margin = Inches(.72); sec.right_margin = Inches(.72)
+    sec.top_margin = Inches(.92); sec.bottom_margin = Inches(.50); sec.left_margin = Inches(.72); sec.right_margin = Inches(.72)
     sec.header_distance = Inches(.24); sec.footer_distance = Inches(.30)
     styles = doc.styles
     for name in ("Normal", "Title", "Subtitle", "Heading 1", "Heading 2", "Heading 3"):
         styles[name].font.name = "Aptos"
         styles[name].font.color.rgb = RGBColor.from_string(NAVY)
         styles[name].font.size = Pt(11 if name == "Normal" else (21 if name == "Title" else (14 if name.startswith("Heading") else 11)))
-    styles["Normal"].paragraph_format.space_after = Pt(4)
+    styles["Normal"].paragraph_format.space_after = Pt(2)
 
     header = sec.header.paragraphs[0]
     header.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -460,34 +549,26 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
             ])
         add_table(["Alamat lengkap", "Harga penawaran", "LT / LB (m²)", "URL / sumber"], comp_rows, widths=[3.05, 1.35, .85, 1.35])
 
-    doc.add_heading("3. Struktur Modal per Skenario Bidding", level=1)
-    capital_rows = []
-    for sc in scenarios:
-        r = sc["result"]
-        reserve = to_float(r.get("possession_risk_reserve")) + to_float(r.get("general_risk_reserve"))
-        capital_rows.append([
-            _rp_juta(sc["bid"]) if sc["bid"] else "—",
-            _rp_juta(r.get("capital_before_sale")) if r else "—",
-            _rp_juta(r.get("possession_risk_reserve")) if r else "—",
-            _rp_juta(r.get("general_risk_reserve")) if r else "—",
-            _rp_juta(r.get("cash_requirement_including_reserve")) if r else "—",
-        ])
-    add_table(["Skenario bid (Rp juta)", "Modal (Rp juta)", "Cadangan penguasaan (Rp juta)", "Cadangan risiko lain (Rp juta)", "Kebutuhan kas (Rp juta)"], capital_rows, widths=[1.2, 1.0, 1.5, 1.45, 1.25])
-    doc.add_paragraph("Seluruh nilai pada tabel skenario bidding dan profitabilitas dinyatakan dalam Rp juta.")
+    scenario_headers = ["Komponen"] + [_scenario_header(sc) for sc in scenarios]
+    matrix_widths = [2.65] + [1.35] * len(scenarios)
 
-    doc.add_heading("4. Biaya Penjualan dan Profitabilitas", level=1)
-    sale_rows = []
-    for sc in scenarios:
-        r = sc["result"]
-        sale_rows.append([
-            _rp_juta(sc["bid"]) if sc["bid"] else "—",
-            _rp_juta(r.get("selling_cost")) if r else "—",
-            _rp_juta(r.get("net_proceeds")) if r else "—", _rp_juta(r.get("net_profit")) if r else "—",
-            pct(r.get("roi_pct")) if r else "—",
-        ])
-    add_table(["Skenario bid (Rp juta)", "Biaya jual (Rp juta)", "Penjualan bersih (Rp juta)", "Profit bersih (Rp juta)", "ROI"], sale_rows, widths=[1.2, 1.1, 1.55, 1.45, .75])
+    heading = doc.add_heading("3. Rincian Total Modal per Level Bidding", level=1)
+    heading.paragraph_format.page_break_before = True
+    capital_rows = _capital_matrix(scenarios)
+    add_table(scenario_headers, capital_rows, widths=matrix_widths, total_last=True)
+    doc.add_paragraph("Nilai modal merinci biaya dari harga bid sampai tahap pra-penjualan. Biaya penjualan belum dimasukkan ke total modal pra-penjualan. Seluruh angka dinyatakan dalam Rp juta.")
 
-    doc.add_heading("5. Strategi Penawaran", level=1)
+    doc.add_heading("4. Kebutuhan Kas dan Cadangan Risiko", level=1)
+    cash_rows = _cash_matrix(snapshot, scenarios)
+    add_table(scenario_headers, cash_rows, widths=matrix_widths)
+    doc.add_paragraph("Cadangan risiko adalah kebutuhan likuiditas dan tidak otomatis menjadi biaya aktual. Uang jaminan merupakan kebutuhan kas di muka dan tidak ditambahkan lagi ke total modal karena diperhitungkan dalam pelunasan harga lelang.")
+
+    doc.add_heading("5. Biaya Penjualan dan Hasil Bersih", level=1)
+    sale_rows = _sales_matrix(scenarios)
+    add_table(scenario_headers, sale_rows, widths=matrix_widths, total_last=True)
+    doc.add_paragraph("Penjualan bersih adalah estimasi harga penjualan setelah dikurangi biaya penjualan. Profit bersih masih mengurangi total modal pra-penjualan.")
+
+    doc.add_heading("6. Strategi Penawaran", level=1)
     strategy_rows = []
     for sc in scenarios:
         r = sc["result"]
@@ -499,7 +580,10 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     strategy_rows.append([_rp_juta(bid.get("walk_away_from")) if bid.get("walk_away_from") is not None else "—", "—", "—", f"Batas berhenti: {bid.get('walk_away_reason') or '—'}"])
     add_table(["Bid / ceiling (Rp juta)", "Target ROI", "ROI simulasi", "Catatan"], strategy_rows, widths=[1.3, .9, .9, 3.6])
 
-    doc.add_heading("6. RAB Ringkas", level=1)
+    # Start the detailed RAB on a fresh page so its heading and first work rows
+    # are not stranded at the foot of the bidding-strategy page.
+    heading = doc.add_heading("7. RAB Ringkas", level=1)
+    heading.paragraph_format.page_break_before = True
     rab_table_rows = []
     for row in rab_rows[:80]:
         subtotal = rab_row_subtotals(row)
@@ -526,7 +610,7 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         doc.add_paragraph("Rincian item RAB tidak tersedia pada snapshot memo ini.")
 
     schedule = estimate_renovation_duration(rab_rows) if rab_rows else {"available": False}
-    doc.add_heading("7. Estimasi Waktu Renovasi", level=1)
+    doc.add_heading("8. Estimasi Waktu Renovasi", level=1)
     if schedule.get("available"):
         doc.add_paragraph(f"Estimasi durasi total berdasarkan critical path: cepat {schedule['calendar_days']['fast']} hari kalender; dasar {schedule['calendar_days']['base']} hari; konservatif {schedule['calendar_days']['slow']} hari. Asumsi {schedule['working_days_per_week']} hari kerja per minggu dan buffer {schedule['buffer_pct']:.0f}%.")
         add_table(["Tahap", "Cepat (hari kerja)", "Dasar (hari kerja)", "Konservatif (hari kerja)"], [[x["phase"], round(x["fast_days"], 1), round(x["base_days"], 1), round(x["slow_days"], 1)] for x in schedule.get("phases", [])], widths=[3.0, 1.2, 1.2, 1.4])
@@ -534,7 +618,8 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     else:
         doc.add_paragraph("Durasi belum dapat dihitung karena volume pekerjaan belum tersedia.")
 
-    doc.add_heading("8. Risiko dan Mitigasi", level=1)
+    heading = doc.add_heading("9. Risiko dan Mitigasi", level=1)
+    heading.paragraph_format.page_break_before = True
     for label, values in (("Blocker", decision.get("blockers", [])), ("Peringatan", decision.get("warnings", []))):
         doc.add_heading(label, level=2)
         if values:
@@ -548,7 +633,7 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     doc.add_heading("Pengelola Investasi dan Proyek", level=1)
     doc.add_paragraph(f"{BRAND} menjalankan fungsi property investment dan project management: analisis peluang, perencanaan akuisisi, pengendalian anggaran, koordinasi renovasi, serta persiapan pemasaran aset. Ruang lingkup pelaksanaan mengikuti persetujuan dan perjanjian proyek masing-masing.")
     doc.add_heading("Batasan dan Penafian", level=1)
-    doc.add_paragraph("Proposal ini merupakan ringkasan analisis investasi berdasarkan data yang tersedia. Dokumen ini bukan appraisal resmi, pendapat hukum, jaminan keuntungan, atau penawaran kontraktor. Harga penawaran tidak sama dengan harga transaksi kecuali terverifikasi. Data portofolio hanya mencakup catatan yang tersedia di sistem dan perlu direkonsiliasi sebelum dibagikan kepada investor.")
+    doc.add_paragraph("Proposal ini bersifat indikatif, bukan appraisal resmi, pendapat hukum, jaminan keuntungan, atau quotation kontraktor. Verifikasi harga transaksi, legalitas, kondisi aset, biaya, dan jadwal sebelum investasi.")
 
     # Enforce a minimum 11pt font across all visible document content.
     for paragraph in doc.paragraphs:

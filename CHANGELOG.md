@@ -1,3 +1,22 @@
+## [1.0.21] - 2026-11-25
+
+### Changed
+- Add three complete financial schedules to the investment proposal for limit, middle and upper bidding scenarios: total capital through pre-sale, cash requirement and risk reserves, and sale costs/net proceeds/profit/ROI. These tables reuse the existing Python bidding scenario calculator.
+- Upgrade the initial dashboard to a Kayna Property portfolio command center, with cached portfolio KPIs, upcoming auction/deposit deadlines, active-project cost/budget exposure, physical work progress and project alerts.
+- Show physical renovation progress in the dashboard as a duration-weighted measure from explicit work-item status, with tracking coverage; milestone status is the fallback. Payments are not treated as physical progress.
+- Keep the V1.0.18-style Word table design, move major financial/RAB/risk sections to clean page starts, and avoid forced page breaks between active and completed portfolio tables.
+
+### Compatibility and safeguards
+- Dashboard computations run from app-cached Google Sheets data; filtering/summary calculations do not add repeated Sheets reads or Gemini calls.
+- No new Google Sheets tabs or destructive header/schema migrations. Existing payloads and analysis snapshots remain compatible.
+- `.streamlit/secrets.toml` is not included or overwritten.
+
+### Verification
+- `pytest -q`: 203 passed.
+- `python -m compileall -q .`: passed.
+- Full source and V1.0.20 overlay patch validated separately.
+- Word proposal rendered and visually checked; live Streamlit Cloud/Sheets credentials were not tested.
+
 ## [1.0.20] - 2026-11-25
 
 ### Changed
