@@ -29,6 +29,7 @@ SCHEMA: dict[str, list[str]] = {
     "DOCUMENTS": ["document_id", "property_id", "file_name", "mime_type", "source_url", "document_hash", "uploaded_at", "notes", "extraction_json"],
     "HISTORY": ["history_id", "timestamp", "entity", "entity_id", "action", "details_json"],
     # Additive overflow storage for exceptionally large JSON snapshots.
+    "AUCTION_OUTCOMES": ["outcome_id", "property_id", "property_name", "lot_code", "address", "auction_date", "auction_limit", "outcome_status", "winning_price", "price_type", "source_grade", "source_url", "source_note", "recorded_at", "payload_json"],
     "PAYLOAD_CHUNKS": ["chunk_id", "chunk_index", "chunk_count", "data", "created_at"],
 }
 

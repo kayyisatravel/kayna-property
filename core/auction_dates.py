@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 _MONTHS = {
@@ -62,3 +62,38 @@ def build_auction_date_provenance(extraction: dict[str, Any], field: str) -> dic
         "document_sha256": str(extraction.get("document_sha256") or ""),
         "source_file": str(extraction.get("source_file_name") or "Pengumuman lelang yang diunggah"),
     }
+
+
+DATE_FIELDS = {
+    "auction_date": ("na_auction_date", "na_auction_date_picker", "na_auction_date_has_value"),
+    "deposit_deadline": ("na_deposit_deadline", "na_deposit_deadline_picker", "na_deposit_deadline_has_value"),
+    "payment_deadline": ("na_payment_deadline", "na_payment_deadline_picker", "na_payment_deadline_has_value"),
+}
+
+
+def apply_extracted_auction_dates(state: Any, extracted: dict[str, Any], *, document_hash: str = "") -> dict[str, str]:
+    """Prefill editable date picker values when a document is parsed.
+
+    Extracted values take precedence for a newly parsed document. Users can
+    subsequently change the date through the date picker; no field is locked.
+    """
+    applied: dict[str, str] = {}
+    # A new document replaces the prior document's auto-prefill. Missing or
+    # ambiguous dates are cleared so an old date cannot silently survive.
+    for field, (state_key, picker_key, has_key) in DATE_FIELDS.items():
+        state[state_key] = ""
+        state[has_key] = False
+        state.pop(picker_key, None)
+        iso = normalize_auction_date(extracted.get(field))
+        if not iso:
+            continue
+        parsed = date.fromisoformat(iso)
+        state[state_key] = iso
+        state[picker_key] = parsed
+        state[has_key] = True
+        applied[field] = iso
+    if document_hash:
+        state["na_auction_date_document_hash"] = document_hash
+    evidence = extracted.get("field_evidence") if isinstance(extracted.get("field_evidence"), dict) else {}
+    state["na_auction_date_evidence"] = {field: evidence.get(field) for field in DATE_FIELDS if evidence.get(field)}
+    return applied

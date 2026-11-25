@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib, hmac, json, os, uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import pandas as pd
@@ -12,6 +13,10 @@ from core.underwriting import run_underwriting
 from core.liquidity import compute_liquidity
 from core.lifecycle import actual_project_summary, mark_property_won
 from core.project_ledger import summarize_project_ledger
+from core.project_alerts import assess_project_alerts
+from core.renovation_schedule import estimate_renovation_duration
+from core.auction_dates import apply_extracted_auction_dates
+from core.auction_outcomes import OUTCOME_STATUSES, PRICE_TYPES, SOURCE_GRADES, build_auction_outcome_record, implied_discount_vs_limit
 from core.project_budget_seed import build_opening_budget_from_analysis
 from core.ledger_transactions import reconcile_budget_payment_change
 from core.project_form_options import ACTUAL_CATEGORIES, BUDGET_CATEGORIES, subcategory_options, scope_options
@@ -26,9 +31,8 @@ from services.gemini_parser import extract_auction_document, parse_comparable_na
 from services.comparable_importer import parse_comparable_paste
 from storage.gsheets_db import GoogleSheetsDB, SCHEMA
 from storage.drive_storage import upload_file_to_drive
-from reports.report_builder import build_analysis_markdown, build_investment_memo_docx, investment_memo_filename, safe_filename
-from core.auction_dates import normalize_auction_date, auction_date_evidence
 from core.renovation_pricing import PRICE_CATALOG_VERSION, PRICE_CATALOG_BASIS, PRICE_CATALOG_REFERENCES, PRICE_CATALOG_ANCHORS
+from reports.report_builder import build_analysis_markdown, build_analysis_docx, property_filename
 
 st.set_page_config(page_title=APP_NAME, page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
@@ -154,6 +158,9 @@ else:
 # Session fallback allows UI and tests without live credentials.
 if "local_db" not in st.session_state:
     st.session_state.local_db = {k: [] for k in SCHEMA}
+else:
+    for _tab_name in SCHEMA:
+        st.session_state.local_db.setdefault(_tab_name, [])
 
 
 def read_table(tab: str, refresh: bool = False) -> list[dict[str, Any]]:
@@ -297,6 +304,11 @@ def set_default(key: str, value: Any):
     if key not in st.session_state: st.session_state[key] = value
 
 
+def jakarta_today() -> date:
+    """Return local business date independent of the Streamlit server timezone."""
+    return datetime.now(ZoneInfo("Asia/Jakarta")).date()
+
+
 def as_date(value: Any, fallback: date | None = None) -> date:
     if isinstance(value, datetime):
         return value.date()
@@ -359,6 +371,7 @@ page_labels = {
     "📥 Daftarkan proyek berjalan": "Project Onboarding",
     "💰 Kas & kemampuan investasi": "Investor Cashflow",
     "⚖️ Bandingkan peluang": "Portfolio Comparison",
+    "📊 Explorer & hasil lelang": "Market & Auction Data",
     "🏘️ Properti aktif": "Active Properties",
     "✅ Proyek selesai & hasil": "Closed Projects & Track Record",
     "🗂️ Database & riwayat": "Database & History",
@@ -543,7 +556,7 @@ elif page == "New Auction Analysis":
                 st.info("Dokumen yang sama sudah pernah diparse dengan skema tanggal terbaru. Hasil cache digunakan; Gemini tidak dipanggil ulang.")
             else:
                 if cached_document:
-                    st.info("Dokumen pernah diparse dengan versi ekstraksi lama. Karena field tanggal KPKNL sekarang memakai evidence terpisah, dokumen diparse ulang satu kali.")
+                    st.info("Dokumen pernah diparse dengan skema lama. Dokumen diparse ulang satu kali agar tanggal KPKNL dan evidence terbaca dengan benar.")
                 if not GEMINI_KEY:
                     st.error("GEMINI_API_KEY belum dikonfigurasi dan belum ada hasil cache untuk dokumen ini. Isi Secrets atau gunakan pengisian manual.")
                     extracted = None
@@ -554,22 +567,19 @@ elif page == "New Auction Analysis":
                 st.session_state.parse_info = extracted
                 field_map = {
                     "lot_code":"na_lot_code", "name":"na_name", "auction_office":"na_office", "seller":"na_seller", "auction_type":"na_auction_type",
-                    "auction_date":"na_auction_date", "auction_time":"na_auction_time", "deposit_deadline":"na_deposit_deadline", "payment_deadline":"na_payment_deadline", "address":"na_address", "district":"na_district", "province":"na_province", "auction_limit":"na_limit",
+                    "auction_time":"na_auction_time", "address":"na_address", "district":"na_district", "province":"na_province", "auction_limit":"na_limit",
                     "deposit_amount":"na_deposit", "bid_increment":"na_increment", "certificate_type":"na_certificate", "certificate_no":"na_certificate_no",
                     "land_area":"na_land", "building_area":"na_building", "njop":"na_njop", "auction_url":"na_auction_url", "property_type":"na_property_type", "bedrooms":"na_bedrooms", "bathrooms":"na_bathrooms", "rights_expiry":"na_rights_expiry",
                 }
-                official_date_fields = {"auction_date": "na_auction_date", "deposit_deadline": "na_deposit_deadline"}
                 for src, dst in field_map.items():
                     val = extracted.get(src)
-                    if src in official_date_fields:
-                        # Official notice is the single source of truth. A new upload
-                        # replaces stale dates; unreadable dates are cleared, never guessed.
-                        st.session_state[dst] = normalize_auction_date(val) if val else ""
-                    elif val not in (None, "") and (dst not in st.session_state or st.session_state.get(dst) in (None, "")):
-                        st.session_state[dst] = val
+                    if val not in (None, "") and (dst not in st.session_state or st.session_state.get(dst) in (None, "")): st.session_state[dst] = val
+                # KPKNL dates prefill editable date pickers. A newly parsed source
+                # document refreshes those values; users may edit them afterward.
+                apply_extracted_auction_dates(st.session_state, extracted, document_hash=digest)
                 st.session_state.na_auction_date_provenance = {
                     "source_file": extracted.get("source_file_name") or uploaded.name,
-                    "document_sha256": extracted.get("document_sha256") or "",
+                    "document_sha256": extracted.get("document_sha256") or digest,
                     "auction_date_evidence": (extracted.get("field_evidence") or {}).get("auction_date", ""),
                     "deposit_deadline_evidence": (extracted.get("field_evidence") or {}).get("deposit_deadline", ""),
                 }
@@ -599,7 +609,7 @@ elif page == "New Auction Analysis":
             set_default("na_name", ""); st.text_input("Nama objek", key="na_name")
             set_default("na_complex", ""); st.text_input("Nama kompleks/perumahan", key="na_complex")
             set_default("na_auction_date", "")
-            st.text_input("Tanggal lelang (otomatis dari pengumuman KPKNL)", value=str(st.session_state.na_auction_date or ""), disabled=True, key="na_auction_date_display", help="Tanggal diambil dari PDF/berkas resmi yang diparse. Tidak tersedia input manual untuk mencegah tanggal yang salah.")
+            st.session_state.na_auction_date = optional_date_picker("Tanggal lelang", st.session_state.na_auction_date, "na_auction_date")
             set_default("na_auction_time", ""); st.text_input("Jam lelang", key="na_auction_time")
         with c2:
             set_default("na_office", ""); st.text_input("KPKNL", key="na_office")
@@ -607,14 +617,11 @@ elif page == "New Auction Analysis":
             set_default("na_auction_type", ""); st.selectbox("Jenis lelang", ["", "Eksekusi Hak Tanggungan", "Eksekusi Pengadilan", "AYDA", "Lelang sukarela", "Lainnya"], key="na_auction_type")
             set_default("na_auction_url", ""); st.text_input("URL pengumuman lelang", key="na_auction_url")
             set_default("na_deposit_deadline", "")
-            st.text_input("Batas akhir setor uang jaminan (otomatis)", value=str(st.session_state.na_deposit_deadline or ""), disabled=True, key="na_deposit_deadline_display", help="Disalin dari tanggal yang tertulis pada pengumuman resmi lelang. Bila tidak tercantum atau tidak terbaca, biarkan kosong dan unggah ulang dokumen yang lebih jelas.")
+            st.session_state.na_deposit_deadline = optional_date_picker("Batas setor jaminan", st.session_state.na_deposit_deadline, "na_deposit_deadline")
             set_default("na_payment_deadline", "")
             st.session_state.na_payment_deadline = optional_date_picker("Batas pelunasan", st.session_state.na_payment_deadline, "na_payment_deadline")
-            date_prov = st.session_state.get("na_auction_date_provenance", {})
-            if date_prov:
-                if date_prov.get("auction_date_evidence"): st.caption("Evidence tanggal lelang: " + str(date_prov["auction_date_evidence"]))
-                if date_prov.get("deposit_deadline_evidence"): st.caption("Evidence setor jaminan: " + str(date_prov["deposit_deadline_evidence"]))
-                st.caption("Sumber tanggal: " + str(date_prov.get("source_file") or "dokumen pengumuman lelang"))
+            if st.session_state.get("na_auction_date_document_hash"):
+                st.caption("Tanggal awal diisi dari dokumen KPKNL yang diparse. Semua date picker tetap dapat Anda ubah bila ada koreksi.")
         with c3:
             set_default("na_address", ""); st.text_input("Alamat objek", key="na_address")
             set_default("na_district", ""); st.text_input("Desa/Kecamatan/Kabupaten", key="na_district")
@@ -1022,7 +1029,7 @@ elif page == "New Auction Analysis":
                 "condition_description": st.session_state.get("na_rab_condition_description", ""),
             }
             rab_description = "\n".join(x for x in [st.session_state.na_rab_condition_description.strip(), "Deskripsi fasad: " + context["facade_description"] if context["facade_description"] else "", "Catatan survei: " + context["survey_notes"] if context["survey_notes"] else ""] if x)
-            cache_material = "RAB_PARSER_V1.0.17|" + rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
+            cache_material = "RAB_PARSER_V1.0.16|" + rab_description + safe_json(context) + "|" + "|".join(file_sha256(f[0]) for f in available_rab_files)
             cache_key = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
             cache = st.session_state.setdefault("na_rab_cache", {})
             try:
@@ -1133,8 +1140,8 @@ elif page == "New Auction Analysis":
         missing_user_rate_rows = [r for r in current_rab_rows if str(r.get("item_code") or "").startswith("USER_BOQ_") and (r.get("unit_cost") in (None, "") or to_float(r.get("unit_cost")) <= 0)]
         if missing_user_rate_rows:
             st.info(
-                f"{len(missing_user_rate_rows)} item belum tercakup pricebook PFMS. Harga AI tidak dipakai dalam perhitungan agar hasil stabil. "
-                "Isi harga satuan dari minimal dua penawaran lokal atau override manual dengan menyertakan sumber pada catatan."
+                f"{len(missing_user_rate_rows)} item belum tercakup pricebook PFMS versi {PRICE_CATALOG_VERSION}. "
+                "Harga kosong tidak diisi dengan tebakan Gemini agar hasil RAB tetap konsisten. Masukkan harga override dari minimal dua penawaran lokal atau lampirkan dasar harga yang dapat diperiksa."
             )
         renovation_edited = st.data_editor(renovation_frame[renovation_columns], num_rows="dynamic", use_container_width=True, key="na_renovation_items_widget_v104", column_config={
             "item_code": st.column_config.TextColumn("Kode scope", disabled=True),
@@ -1148,7 +1155,7 @@ elif page == "New Auction Analysis":
             "unit_cost_low": st.column_config.NumberColumn("Harga satuan rendah (Rp)", min_value=0, format="Rp %.0f"),
             "unit_cost": st.column_config.NumberColumn("Harga satuan konservatif (Rp)", min_value=0, format="Rp %.0f", help="Nilai inilah yang dipakai Python untuk menghitung RAB."),
             "unit_cost_high": st.column_config.NumberColumn("Batas atas (Rp)", min_value=0, format="Rp %.0f"),
-            "price_source": st.column_config.TextColumn("Sumber pricebook / harga", disabled=True),
+            "price_source": st.column_config.TextColumn("Sumber harga", disabled=True),
             "priority": st.column_config.SelectboxColumn("Prioritas", options=["Wajib", "Disarankan", "Bersyarat", "Opsional", "Tidak diperlukan setelah ditinjau"]),
             "evidence_basis": st.column_config.SelectboxColumn("Dasar", options=["Fakta visual", "Deskripsi pengguna", "Asumsi kuantitas"]),
             "confidence": st.column_config.SelectboxColumn("Keyakinan", options=["Tinggi", "Sedang", "Rendah"]),
@@ -1177,7 +1184,7 @@ elif page == "New Auction Analysis":
         current_rab_rows = [r for r in st.session_state.na_renovation_items_current if str(r.get("work_item") or "").strip()]
         renovation_items = current_rab_rows
         renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items if rab_item_is_in_scope(r))
-        # Read-only calculated view: unit rates, line subtotals and grouped scope totals.
+        # Read-only calculated view: deterministic line subtotals and grouped totals.
         detailed_rows = []
         for row in renovation_items:
             sub = rab_row_subtotals(row)
@@ -1189,7 +1196,7 @@ elif page == "New Auction Analysis":
                 "Status": "Masuk RAB" if rab_item_is_in_scope(row) else str(row.get("priority") or "Di luar RAB"),
             })
         st.markdown("#### Rincian biaya hasil perhitungan Python")
-        st.caption("Subtotal per item dihitung otomatis: volume dipakai × harga satuan. Item Bersyarat/Tidak diperlukan tetap terlihat, tetapi tidak dijumlahkan ke RAB dasar sampai scope dikonfirmasi.")
+        st.caption("Subtotal per baris = volume dipakai × harga satuan. Harga dari pricebook regional berversi digunakan bila scope dan satuan cocok; item yang tidak tercakup ditandai untuk quotation/override. Item bersyarat tetap terlihat sesuai scope yang disetujui.")
         with st.expander("Dasar acuan harga dan versi pricebook", expanded=False):
             st.write(f"**Versi:** {PRICE_CATALOG_VERSION}")
             st.write(PRICE_CATALOG_BASIS)
@@ -1197,13 +1204,9 @@ elif page == "New Auction Analysis":
             st.markdown(f"- [ASB/HSPK Sidoarjo — Perbup 75/2025]({PRICE_CATALOG_REFERENCES['hspk_sidoarjo_2026']})")
             st.markdown(f"- [Pedoman AHSP — Permen PUPR 8/2023]({PRICE_CATALOG_REFERENCES['ahsp_pupr_2023']})")
             st.markdown("**Contoh jangkar harga komponen dari SSH Sidoarjo TA 2026**")
-            anchor_frame = pd.DataFrame(PRICE_CATALOG_ANCHORS).rename(columns={
-                "item": "Komponen", "specification": "Sumber", "unit": "Satuan", "rate": "Harga SSH 2026 (Rp)"
-            })
-            st.dataframe(anchor_frame, use_container_width=True, hide_index=True, column_config={
-                "Harga SSH 2026 (Rp)": st.column_config.NumberColumn(format="Rp %.0f")
-            })
-            st.caption("Harga SSH di atas adalah jangkar harga komponen, bukan harga satuan pekerjaan terpasang. Harga komposit PFMS memasukkan allowance bahan+upah+metode kerja dan bukan salinan tarif resmi HSPK. Harga override manual pengguna selalu dipertahankan saat analisis ulang.")
+            anchor_frame = pd.DataFrame(PRICE_CATALOG_ANCHORS).rename(columns={"item": "Komponen", "specification": "Sumber", "unit": "Satuan", "rate": "Harga SSH 2026 (Rp)"})
+            st.dataframe(anchor_frame, use_container_width=True, hide_index=True, column_config={"Harga SSH 2026 (Rp)": st.column_config.NumberColumn(format="Rp %.0f")})
+            st.caption("Jangkar SSH di atas adalah harga komponen, bukan harga pekerjaan terpasang. Pricebook PFMS adalah estimasi screening bahan+upah, bukan SSH/HSPK all-in atau quotation vendor. Override manual pengguna dipertahankan saat analisis ulang.")
         if detailed_rows:
             st.dataframe(pd.DataFrame(detailed_rows), use_container_width=True, hide_index=True, column_config={
                 "Harga satuan dasar (Rp)": st.column_config.NumberColumn(format="Rp %.0f"),
@@ -1283,6 +1286,7 @@ elif page == "New Auction Analysis":
             "address": st.session_state.na_address, "district": st.session_state.na_district, "province": st.session_state.na_province,
             "auction_office": st.session_state.na_office, "seller": st.session_state.na_seller, "auction_type": st.session_state.na_auction_type,
             "auction_date": st.session_state.na_auction_date, "auction_time": st.session_state.get("na_auction_time", ""), "deposit_deadline": st.session_state.get("na_deposit_deadline", ""), "payment_deadline": st.session_state.get("na_payment_deadline", ""), "auction_url": st.session_state.get("na_auction_url", ""),
+            "auction_date_evidence": st.session_state.get("na_auction_date_evidence", {}), "auction_date_document_hash": st.session_state.get("na_auction_date_document_hash", ""),
             "auction_limit": st.session_state.na_limit, "deposit_amount": st.session_state.na_deposit, "bid_increment": st.session_state.na_increment,
             "certificate_type": st.session_state.na_certificate, "certificate_no": st.session_state.na_certificate_no, "rights_expiry": st.session_state.get("na_rights_expiry", ""),
             "land_area": st.session_state.na_land, "building_area": st.session_state.na_building, "building_footprint_m2": st.session_state.get("na_building_footprint"), "njop": st.session_state.na_njop,
@@ -1551,16 +1555,12 @@ elif page == "New Auction Analysis":
         if st.session_state.ai_review:
             st.json(st.session_state.ai_review)
         report = build_analysis_markdown(snap)
-        memo_docx = build_investment_memo_docx(snap)
-        memo_docx_name = investment_memo_filename(snap, "docx")
-        memo_md_name = investment_memo_filename(snap, "md")
-        st.markdown("### Dokumen untuk investor")
-        st.caption("Memo mencakup ringkasan investasi, jadwal dan ketentuan lelang, valuasi pembanding, rincian RAB per scope, proyeksi modal/ROI, strategi bid, risk register, serta checklist due diligence. Dokumen dibuat dari snapshot Python tanpa panggilan AI tambahan.")
-        dl1, dl2 = st.columns(2)
-        with dl1:
-            st.download_button("Unduh Investment Memo (Word)", memo_docx, file_name=memo_docx_name, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
-        with dl2:
-            st.download_button("Unduh Investment Memo (Markdown)", report, file_name=memo_md_name, mime="text/markdown", use_container_width=True)
+        memo_col1, memo_col2 = st.columns(2)
+        with memo_col1:
+            st.download_button("Unduh Investment Memo (Word)", build_analysis_docx(snap), file_name=property_filename(snap, "docx"), mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+        with memo_col2:
+            st.download_button("Unduh Investment Memo (Markdown)", report, file_name=property_filename(snap, "md"), mime="text/markdown", use_container_width=True)
+        st.caption("Memo Word menggunakan font minimum 11 pt dan mencantumkan Kayna Property sebagai pelaksana proyek. Konteks ekonomi resmi hanya dicantumkan bila snapshot sesuai lokasi dan masih dalam jendela kesegaran data.")
         if st.button("💾 SIMPAN / UPDATE ANALISIS KE DATABASE", type="primary", use_container_width=True):
             try:
                 propid = snap["property_id"]
@@ -1850,6 +1850,129 @@ elif page == "Portfolio Comparison":
                 for b in r.get("blockers", []): st.write("•", b)
 
 # ============================ PAGE 6: ACTIVE ===============================
+elif page == "Market & Auction Data":
+    st.markdown("<div class='hero'><h1>Explorer Properti & Database Hasil Lelang</h1><p>Telusuri data yang sudah tersimpan dengan filter dan pengurutan lokal. Hasil lelang yang dimenangkan pihak lain dapat disimpan sebagai referensi harga pasar.</p></div>", unsafe_allow_html=True)
+    # Each worksheet is read once through the existing 5-minute Streamlit cache.
+    # All filtering/sorting below runs in memory; changing a filter does not call Sheets again.
+    saved_properties = list_properties()
+    auction_outcomes = read_table("AUCTION_OUTCOMES")
+    explore_tab, outcome_tab = st.tabs(["Data objek tersimpan", "Database hasil lelang"])
+    with explore_tab:
+        if not saved_properties:
+            st.info("Belum ada data properti tersimpan.")
+        else:
+            explore_rows = []
+            for prop in saved_properties:
+                prop_payload = record_payload(prop)
+                latest = prop_payload.get("latest_analysis") if isinstance(prop_payload.get("latest_analysis"), dict) else {}
+                market_data = latest.get("market") if isinstance(latest.get("market"), dict) else {}
+                at_data = latest.get("at_limit") if isinstance(latest.get("at_limit"), dict) else {}
+                explore_rows.append({
+                    "Property ID": prop.get("property_id"), "Nama properti": prop.get("name"), "Kode lot": prop.get("lot_code"),
+                    "Alamat": prop.get("address"), "Status perjalanan": prop.get("lifecycle_status"), "Keputusan": prop.get("decision_status"),
+                    "Tanggal lelang": prop.get("auction_date"), "Nilai limit": to_float(prop.get("auction_limit")),
+                    "ARV dasar": to_float(market_data.get("base_exit")), "ARV konservatif": to_float(market_data.get("conservative_exit")),
+                    "ROI pada limit (%)": to_float(at_data.get("roi_pct")), "Diubah": prop.get("updated_at"),
+                })
+            frame = pd.DataFrame(explore_rows)
+            f1, f2, f3 = st.columns(3)
+            status_values = ["Semua"] + sorted(x for x in frame["Status perjalanan"].dropna().astype(str).unique() if x)
+            decision_values = ["Semua"] + sorted(x for x in frame["Keputusan"].dropna().astype(str).unique() if x)
+            selected_status = f1.selectbox("Filter status", status_values, key="explorer_status")
+            selected_decision = f2.selectbox("Filter keputusan", decision_values, key="explorer_decision")
+            search_text = f3.text_input("Cari nama / alamat / lot", key="explorer_search")
+            f4, f5 = st.columns(2)
+            sort_label = f4.selectbox("Urutkan berdasarkan", ["Tanggal terdekat dari hari ini", "Tanggal paling jauh dari hari ini", "Tanggal lelang paling awal", "Tanggal lelang paling akhir", "Nilai limit termurah", "Nilai limit termahal", "ARV dasar tertinggi", "ROI tertinggi", "Update terbaru"], key="explorer_sort")
+            minimum_price = f5.number_input("Limit minimum (Rp, 0 = semua)", min_value=0, step=10_000_000, value=0, key="explorer_min_limit")
+            if selected_status != "Semua": frame = frame[frame["Status perjalanan"] == selected_status]
+            if selected_decision != "Semua": frame = frame[frame["Keputusan"] == selected_decision]
+            if search_text.strip():
+                mask = frame[["Nama properti", "Kode lot", "Alamat"]].fillna("").astype(str).apply(lambda col: col.str.contains(search_text.strip(), case=False, regex=False)).any(axis=1)
+                frame = frame[mask]
+            if minimum_price > 0: frame = frame[frame["Nilai limit"] >= minimum_price]
+            frame["_auction_dt"] = pd.to_datetime(frame["Tanggal lelang"], errors="coerce")
+            frame["_updated_dt"] = pd.to_datetime(frame["Diubah"], errors="coerce")
+            today_ts = pd.Timestamp(jakarta_today())
+            frame["_distance"] = (frame["_auction_dt"] - today_ts).abs().dt.days
+            if sort_label == "Tanggal terdekat dari hari ini":
+                frame = frame.sort_values(["_distance", "_auction_dt"], ascending=[True, True], na_position="last")
+            elif sort_label == "Tanggal paling jauh dari hari ini":
+                frame = frame.sort_values("_distance", ascending=False, na_position="last")
+            elif sort_label == "Tanggal lelang paling awal": frame = frame.sort_values("_auction_dt", ascending=True, na_position="last")
+            elif sort_label == "Tanggal lelang paling akhir": frame = frame.sort_values("_auction_dt", ascending=False, na_position="last")
+            elif sort_label == "Nilai limit termurah": frame = frame.sort_values("Nilai limit", ascending=True)
+            elif sort_label == "Nilai limit termahal": frame = frame.sort_values("Nilai limit", ascending=False)
+            elif sort_label == "ARV dasar tertinggi": frame = frame.sort_values("ARV dasar", ascending=False)
+            elif sort_label == "ROI tertinggi": frame = frame.sort_values("ROI pada limit (%)", ascending=False)
+            else: frame = frame.sort_values("_updated_dt", ascending=False, na_position="last")
+            visible_cols = ["Nama properti", "Kode lot", "Alamat", "Status perjalanan", "Keputusan", "Tanggal lelang", "Nilai limit", "ARV dasar", "ARV konservatif", "ROI pada limit (%)"]
+            st.caption(f"Menampilkan {len(frame)} dari {len(explore_rows)} objek. Filter dan pengurutan dilakukan lokal dari data cache; tidak menambah pemanggilan Google Sheets untuk setiap perubahan filter.")
+            st.dataframe(frame[visible_cols], use_container_width=True, hide_index=True, column_config={
+                "Nilai limit": st.column_config.NumberColumn(format="Rp %.0f"), "ARV dasar": st.column_config.NumberColumn(format="Rp %.0f"),
+                "ARV konservatif": st.column_config.NumberColumn(format="Rp %.0f"), "ROI pada limit (%)": st.column_config.NumberColumn(format="%.1f%%"),
+            })
+            st.download_button("Unduh hasil filter CSV", frame[visible_cols].to_csv(index=False).encode("utf-8-sig"), "pfms-property-explorer.csv", "text/csv")
+    with outcome_tab:
+        st.markdown("### Catat hasil lelang, termasuk bila dimenangkan peserta lain")
+        property_link_options = {"Tidak ditautkan ke objek tersimpan": None}
+        for prop in saved_properties:
+            property_link_options[f"{prop.get('name') or 'Properti'} · {prop.get('lot_code') or prop.get('property_id')}"] = prop
+        linked_label = st.selectbox("Hubungkan ke objek tersimpan (opsional)", list(property_link_options.keys()), key="auction_result_link")
+        linked = property_link_options[linked_label]
+        with st.form("auction_outcome_capture_form"):
+            a1, a2, a3 = st.columns(3)
+            with a1:
+                result_name = st.text_input("Nama properti", value=str((linked or {}).get("name") or ""))
+                result_lot = st.text_input("Kode lot / nomor objek", value=str((linked or {}).get("lot_code") or ""))
+                result_address = st.text_input("Alamat / perumahan", value=str((linked or {}).get("address") or ""))
+            with a2:
+                result_auction_date = st.date_input("Tanggal lelang", value=as_date((linked or {}).get("auction_date")))
+                result_limit = st.number_input("Nilai limit (Rp)", min_value=0, step=1_000_000, value=safe_int((linked or {}).get("auction_limit", 0)))
+                result_status = st.selectbox("Hasil lelang", OUTCOME_STATUSES)
+            with a3:
+                result_price = st.number_input("Harga menang / penawaran tertinggi (Rp)", min_value=0, step=1_000_000, value=0, help="Masukkan 0 hanya bila tidak ada harga yang diketahui atau lelang dibatalkan.")
+                result_price_type = st.selectbox("Jenis harga", [""] + PRICE_TYPES)
+                result_source_grade = st.selectbox("Kualitas sumber", SOURCE_GRADES)
+            result_url = st.text_input("URL bukti hasil lelang (opsional)")
+            result_note = st.text_area("Catatan / kutipan bukti (tanpa data pribadi pemenang)", height=80)
+            result_confirm = st.checkbox("Saya sudah memeriksa harga, tanggal, status dan sumber hasil lelang.")
+            save_outcome = st.form_submit_button("Simpan hasil lelang sebagai referensi", type="primary")
+        if save_outcome:
+            if not result_confirm:
+                st.warning("Konfirmasi pemeriksaan data terlebih dahulu.")
+            else:
+                try:
+                    existing_match = next((r for r in auction_outcomes if (linked and str(r.get("property_id")) == str(linked.get("property_id")) and str(r.get("auction_date"))[:10] == result_auction_date.isoformat()) or (not linked and str(r.get("lot_code", "")).strip().lower() == result_lot.strip().lower() and result_lot.strip() and str(r.get("auction_date"))[:10] == result_auction_date.isoformat())), None)
+                    rec = build_auction_outcome_record(
+                        property_id=(linked or {}).get("property_id", ""), property_name=result_name, lot_code=result_lot, address=result_address,
+                        auction_date=result_auction_date.isoformat(), auction_limit=result_limit, outcome_status=result_status,
+                        winning_price=result_price, price_type=result_price_type, source_grade=result_source_grade, source_url=result_url, source_note=result_note,
+                        outcome_id=(existing_match or {}).get("outcome_id"),
+                    )
+                    upsert_record("AUCTION_OUTCOMES", "outcome_id", rec)
+                    log_event("AUCTION_OUTCOME", rec["outcome_id"], "UPSERTED", {"property_id": rec["property_id"], "outcome_status": rec["outcome_status"], "winning_price": rec["winning_price"], "source_grade": rec["source_grade"]})
+                    st.success("Hasil lelang tersimpan. Data dapat dipakai sebagai referensi historis tanpa mengubah status proyek/prospek terkait.")
+                    cached_read.clear(); st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+        st.markdown("### Riwayat harga hasil lelang")
+        if auction_outcomes:
+            outcome_frame = pd.DataFrame(auction_outcomes)
+            status_filter = st.selectbox("Filter hasil", ["Semua"] + sorted(outcome_frame["outcome_status"].dropna().astype(str).unique().tolist()), key="auction_outcome_status_filter")
+            sort_result = st.selectbox("Urutkan hasil", ["Tanggal terbaru", "Tanggal terlama", "Harga menang termurah", "Harga menang tertinggi"], key="auction_outcome_sort")
+            if status_filter != "Semua": outcome_frame = outcome_frame[outcome_frame["outcome_status"] == status_filter]
+            outcome_frame["_date"] = pd.to_datetime(outcome_frame["auction_date"], errors="coerce")
+            outcome_frame["_price"] = pd.to_numeric(outcome_frame["winning_price"], errors="coerce")
+            if sort_result == "Tanggal terbaru": outcome_frame = outcome_frame.sort_values("_date", ascending=False, na_position="last")
+            elif sort_result == "Tanggal terlama": outcome_frame = outcome_frame.sort_values("_date", ascending=True, na_position="last")
+            elif sort_result == "Harga menang termurah": outcome_frame = outcome_frame.sort_values("_price", ascending=True, na_position="last")
+            else: outcome_frame = outcome_frame.sort_values("_price", ascending=False, na_position="last")
+            show_cols = [c for c in ["property_name", "lot_code", "address", "auction_date", "auction_limit", "outcome_status", "winning_price", "price_type", "source_grade", "source_url", "source_note"] if c in outcome_frame.columns]
+            st.dataframe(outcome_frame[show_cols], use_container_width=True, hide_index=True, column_config={"auction_limit": st.column_config.NumberColumn("Limit", format="Rp %.0f"), "winning_price": st.column_config.NumberColumn("Harga menang / tertinggi", format="Rp %.0f")})
+            st.download_button("Unduh database hasil lelang CSV", outcome_frame[show_cols].to_csv(index=False).encode("utf-8-sig"), "pfms-auction-outcomes.csv", "text/csv")
+        else:
+            st.info("Belum ada hasil lelang yang dicatat. Anda dapat menyimpan harga pemenang lain sebagai referensi sekalipun Anda tidak menang.")
+
 elif page == "Active Properties":
     st.markdown("<div class='hero'><h1>Properti Aktif</h1><p>Pantau uang yang sudah keluar, kewajiban belum dibayar, perkiraan biaya tersisa, dan progres pekerjaan setiap proyek.</p></div>", unsafe_allow_html=True)
     props = [p for p in list_properties() if p.get("lifecycle_status") in {"WON", "ACTIVE"}]
@@ -1886,6 +2009,74 @@ elif page == "Active Properties":
             fallback_remaining = 0.0
         stage_now = payload.get("project_stage", "Settlement")
         st.markdown(f"### {p.get('name')} · {p.get('address') or 'Alamat belum diisi'}")
+
+        # Schedule estimate is based on the saved RAB quantities. If the original
+        # analysis is unavailable, fall back to renovation budget items without
+        # inventing measured quantities.
+        schedule_items = []
+        latest_costs_for_schedule = latest.get("costs", {}) if isinstance(latest.get("costs"), dict) else {}
+        schedule_items = [x for x in latest_costs_for_schedule.get("renovation_items", []) if isinstance(x, dict)]
+        if not schedule_items:
+            for budget_row in project_budget_rows:
+                if str(budget_row.get("category") or "").strip().lower() != "renovasi":
+                    continue
+                row_payload = budget_row.get("payload") if isinstance(budget_row.get("payload"), dict) else parse_json(budget_row.get("payload_json"), {})
+                if str(row_payload.get("baseline_key") or "").upper().find("CONTINGENCY") >= 0 or "cadangan" in str(budget_row.get("description") or "").lower():
+                    continue
+                schedule_items.append({"work_item": budget_row.get("description"), "quantity": row_payload.get("quantity"), "unit": row_payload.get("unit")})
+        schedule_estimate = estimate_renovation_duration(schedule_items) if schedule_items else {"available": False}
+        with st.expander("Estimasi durasi renovasi otomatis", expanded=False):
+            if schedule_estimate.get("available"):
+                dfast, dbase, dslow = st.columns(3)
+                dfast.metric("Cepat", f"{schedule_estimate['calendar_days']['fast']} hari kalender")
+                dbase.metric("Dasar", f"{schedule_estimate['calendar_days']['base']} hari kalender")
+                dslow.metric("Konservatif", f"{schedule_estimate['calendar_days']['slow']} hari kalender")
+                st.dataframe(pd.DataFrame(schedule_estimate.get("phases", [])), use_container_width=True, hide_index=True, column_config={
+                    "fast_days": st.column_config.NumberColumn("Cepat (hari kerja)", format="%.1f"),
+                    "base_days": st.column_config.NumberColumn("Dasar (hari kerja)", format="%.1f"),
+                    "slow_days": st.column_config.NumberColumn("Konservatif (hari kerja)", format="%.1f"),
+                })
+                st.caption(f"Asumsi: {schedule_estimate['crew_assumption']} Kalender memakai {schedule_estimate['working_days_per_week']} hari kerja/minggu dan buffer {schedule_estimate['buffer_pct']:.0f}%. Tidak termasuk waktu tunggu material, cuaca, izin, perubahan lingkup, atau keterlambatan vendor.")
+                if schedule_estimate.get("unmapped_items"):
+                    st.warning(f"{schedule_estimate['unmapped_items']} item belum dikenali jenis pekerjaannya dan memakai allowance umum. Periksa kembali klasifikasi serta volumenya.")
+            else:
+                st.info("Durasi belum dapat dihitung karena daftar item/volume renovasi belum tersedia. Lengkapi BoQ atau rincian budget pekerjaan renovasi.")
+
+        # User-editable target date: use initial underwriting holding estimate as a
+        # suggestion only; do not activate overdue alerts until the user saves it.
+        stored_target = None
+        try:
+            stored_target = date.fromisoformat(str(payload.get("planned_sale_date") or "")[:10])
+        except (TypeError, ValueError):
+            stored_target = None
+        suggested_target = None
+        try:
+            start_for_target = date.fromisoformat(str(win.get("win_date") or "")[:10])
+            planned_months = to_float((latest.get("at_limit") or {}).get("holding_months", active_estimate.get("holding_months", 0)))
+            if planned_months > 0:
+                suggested_target = start_for_target + timedelta(days=round(planned_months * 30.44))
+        except (TypeError, ValueError):
+            suggested_target = None
+        target_picker_default = stored_target or suggested_target or date.today()
+        with st.expander("Target waktu penjualan & pengingat", expanded=not bool(stored_target)):
+            with st.form(f"planned_sale_target_form_{pid}"):
+                target_enabled = st.checkbox("Aktifkan target tanggal properti terjual", value=bool(stored_target), key=f"planned_sale_enabled_{pid}")
+                planned_sale_input = st.date_input("Target tanggal closing/terjual", value=target_picker_default, disabled=not target_enabled, key=f"planned_sale_date_picker_{pid}")
+                if suggested_target and not stored_target:
+                    st.caption(f"Saran awal dari holding pada analisis pra-lelang: {suggested_target.isoformat()}. Anda dapat mengubah tanggal ini sesuai rencana aktual.")
+                save_sale_target = st.form_submit_button("Simpan target penjualan")
+            if save_sale_target:
+                if target_enabled:
+                    payload["planned_sale_date"] = planned_sale_input.isoformat()
+                    payload["planned_sale_target_source"] = "USER_CONFIRMED"
+                else:
+                    payload.pop("planned_sale_date", None)
+                    payload.pop("planned_sale_target_source", None)
+                upsert_record("PROPERTIES", "property_id", {**p, "updated_at": iso_now(), "payload": payload})
+                log_event("PROPERTY", pid, "SALE_TARGET_UPDATED", {"planned_sale_date": payload.get("planned_sale_date")})
+                cached_read.clear(); st.rerun()
+        current_target_date = stored_target
+
         origin = payload.get("project_origin") or payload.get("project_onboarding", {}).get("onboarding_version")
         if origin == "PROJECT_ONBOARDING":
             st.caption("Asal data: Project Onboarding · Proyek sudah diperoleh sebelum/di luar alur analisis baru PFMS. Keputusan INCOMPLETE pada onboarding tidak berarti aset belum dimenangkan.")
@@ -1966,10 +2157,22 @@ elif page == "Active Properties":
                     "committed_unpaid": st.column_config.NumberColumn("Komitmen belum dibayar", format="Rp %.0f"),
                     "forecast_remaining": st.column_config.NumberColumn("Forecast tersisa", format="Rp %.0f"),
                     "expected_at_completion": st.column_config.NumberColumn("Estimasi akhir", format="Rp %.0f"),
-                    "variance_at_completion": st.column_config.NumberColumn("Selisih vs budget", format="Rp %.0f"),
+                    "variance_at_completion": st.column_config.NumberColumn("Sisa budget / (overrun)", format="Rp %.0f"),
                 })
             project_budget_total = sum(to_float(x.get("budget_amount")) for x in project_budget_rows if str(x.get("category") or "").strip().lower() not in {"penjualan", "selling", "biaya penjualan", "pajak penjualan", "komisi agen"})
             st.caption(f"Budget biaya proyek sampai siap jual: {idr(project_budget_total)} · Actual paid proyek: {idr(ledger['actual_project_cost'])} · Komitmen proyek: {idr(committed_total)} · Forecast proyek: {idr(forecast_total)}. Budget penjualan {idr(selling_budget)} dicatat terpisah.")
+            budget_cta = assess_project_alerts(today=jakarta_today(), target_sale_date=current_target_date, is_sold=False, budget_total=project_budget_total, projected_completion=projected_completion)
+            b1, b2, b3 = st.columns(3)
+            b1.metric("Budget sampai siap jual", idr(project_budget_total))
+            b2.metric("Proyeksi biaya akhir", idr(projected_completion))
+            b3.metric("Sisa budget / (overrun)", idr(budget_cta.get("budget_remaining")), help="Budget dikurangi proyeksi biaya akhir. Positif berarti masih ada sisa; negatif berarti proyeksi melewati budget.")
+            if budget_cta.get("budget_remaining") is not None:
+                if budget_cta["budget_remaining"] < 0:
+                    st.error(f"Budget terlampaui: proyeksi biaya lebih tinggi {idr(abs(budget_cta['budget_remaining']))} dari budget yang disetujui.")
+                elif budget_cta.get("budget_usage_pct", 0) >= 85:
+                    st.warning(f"Anggaran mendekati batas: {budget_cta['budget_usage_pct']:.1f}% sudah terpakai oleh proyeksi. Tinjau pekerjaan tambahan sebelum membuat komitmen baru.")
+                elif budget_cta.get("budget_usage_pct", 0) >= 70:
+                    st.info(f"Pemantauan budget: proyeksi sudah {budget_cta['budget_usage_pct']:.1f}% dari budget.")
             if ledger.get("unlinked_actual_cost", 0) > 0:
                 st.warning(f"Ada {idr(ledger['unlinked_actual_cost'])} realisasi yang belum ditautkan ke item budget. Jika transaksi tersebut sebenarnya merupakan pembayaran atas pekerjaan yang sudah masuk forecast/komitmen, buka 'Koreksi transaksi yang sudah tercatat', tautkan ke item budget yang sesuai, lalu pilih sumber pembayaran yang benar. Jika memang pekerjaan tambahan di luar budget, biarkan tidak tertaut. Transaksi yang seharusnya mengurangi forecast tetapi dibiarkan tidak tertaut dapat membuat proyeksi biaya akhir terlihat terlalu tinggi.")
         elif active_estimate:
@@ -1978,6 +2181,16 @@ elif page == "Active Properties":
             st.dataframe(bva, use_container_width=True, hide_index=True, column_config={"Anggaran": st.column_config.NumberColumn(format="Rp %.0f"), "Aktual": st.column_config.NumberColumn(format="Rp %.0f"), "Varians (Aktual - Anggaran)": st.column_config.NumberColumn(format="Rp %.0f")})
         else:
             st.warning("Belum ada budget per item. Isi anggaran dan forecast sisa pekerjaan agar total biaya sampai selesai dapat dihitung dari kondisi proyek yang sebenarnya.")
+
+        # Sale-date reminders are independent of budget-row availability. A project
+        # may have a confirmed target sale date before a detailed project budget is built.
+        if current_target_date:
+            sale_cta = assess_project_alerts(today=jakarta_today(), target_sale_date=current_target_date, is_sold=False, budget_total=0, projected_completion=0)
+            for alert in sale_cta.get("alerts", []):
+                if alert["severity"] == "critical": st.error(f"{alert['title']}. {alert['action']}")
+                else: st.warning(f"{alert['title']}. {alert['action']}")
+        else:
+            st.caption("Pengingat keterlambatan penjualan belum aktif. Tetapkan target tanggal penjualan di bagian Target waktu penjualan & pengingat.")
 
         st.markdown("### 2. Perbarui progres proyek")
         with st.form("win_update_form_v110"):

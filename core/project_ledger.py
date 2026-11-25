@@ -48,7 +48,7 @@ def summarize_project_ledger(
         forecast = max(0.0, to_float(budget.get("forecast_remaining")))
         paid = actual_by_budget.get(item_id, 0.0)
         expected = paid + committed + forecast
-        variance = expected - planned if planned > 0 else None
+        variance = planned - expected if planned > 0 else None
         total_budget += planned
         total_committed += committed
         total_forecast += forecast
@@ -70,7 +70,7 @@ def summarize_project_ledger(
             "committed_unpaid": committed,
             "forecast_remaining": forecast,
             "expected_at_completion": expected,
-            "variance_at_completion": variance,
+            "variance_at_completion": variance,  # positive = budget remaining; negative = over budget
             "vendor": budget.get("vendor", ""),
             "due_date": budget.get("due_date", ""),
             "status": budget.get("status", "Active"),

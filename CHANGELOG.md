@@ -1,3 +1,23 @@
+## [1.0.18] - 2026-11-25
+
+### Added
+- Prefill editable KPKNL auction/deposit/payment date pickers from source-document extraction with evidence; ambiguous dates are not guessed.
+- Add `AUCTION_OUTCOMES` reference records for the user's wins, other winners, unsold and cancelled auctions, with price type/source grade and without winner personal data.
+- Add local Market & Auction Data explorer with filters, sorting and CSV export; Google Sheets reads use a 300-second cache.
+- Add an optional official BPS/Bank Indonesia regional economic context snapshot; it is not used as an ARV multiplier and is omitted when stale or unmatched.
+- Add deterministic BoQ-based renovation duration scenarios and phase schedule.
+- Add in-app sale deadline reminders and budget monitoring alerts at 70%, 85% and 100%.
+- Expand Investment Memo with Kayna Property header, >=11 pt DOCX font, property-based filenames, regional context, RAB and renovation schedule.
+
+### Fixed
+- Budget variance is `budget - projected completion`; positive is remaining budget and negative is forecast overrun.
+- Sorting/filtering saved property and auction data runs in memory over cached data, avoiding repeated Google Sheets reads.
+- Restore the V1.0.17 deterministic regional pricebook and per-item/per-scope RAB subtotals; Gemini prices are not used for project calculations.
+
+### Verification
+- Local unit tests and compile checks run; see release guide for scope and limitations.
+- Live Streamlit Cloud/Gemini/Google Sheets credentials have not been tested.
+
 ## [1.0.17] - 2026-11-24
 
 ### Fixed

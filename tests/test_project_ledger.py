@@ -22,7 +22,7 @@ def test_project_ledger_separates_paid_commitment_forecast_and_selling():
     assert result["project_cost_at_completion_ex_selling"] == 38_000_000
     assert result["budget_lines"][0]["actual_paid"] == 20_000_000
     assert result["budget_lines"][0]["expected_at_completion"] == 35_000_000
-    assert result["budget_lines"][0]["variance_at_completion"] == -5_000_000
+    assert result["budget_lines"][0]["variance_at_completion"] == 5_000_000  # budget remaining
 
 
 def test_onboarding_creates_active_project_and_preserves_paid_vs_budget_records():
