@@ -107,9 +107,26 @@ div.stButton>button,div.stDownloadButton>button{border-radius:10px;min-height:2.
 div[data-testid="stDataFrame"]{border:1px solid var(--pfms-line);border-radius:12px;overflow:hidden}
 div[data-testid="stExpander"]{border:1px solid var(--pfms-line);border-radius:12px}
 [data-testid="stAlert"]{border-radius:12px}
-section[data-testid="stSidebar"]{border-right:1px solid var(--pfms-line);background: #10243E}
-section[data-testid="stSidebar"] [data-testid="stRadio"] label{padding:.32rem .45rem;border-radius:8px;font-weight:550}
-.kayna-sidebar-brand{padding:1rem .9rem;border-radius:14px;background:linear-gradient(135deg,#10243E,#173B5B 72%,#0F766E);color:#FFF;margin:.15rem 0 .8rem;box-shadow:0 8px 22px rgba(16,36,62,.12)}
+section[data-testid="stSidebar"] {
+    border-right: 1px solid rgba(255, 255, 255, 0.12);
+    background: linear-gradient(160deg, #10243E 0%, #173B5B 62%, #0F766E 100%) !important;
+}
+section[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    padding: .32rem .45rem;
+    border-radius: 8px;
+    font-weight: 550;
+    transition: background-color 0.2s ease;
+}
+.kayna-sidebar-brand {
+    padding: 1rem .9rem;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    backdrop-filter: blur(8px);
+    color: #FFF;
+    margin: .15rem 0 .8rem;
+    box-shadow: 0 8px 22px rgba(10, 22, 38, 0.18);
+}
 .kayna-sidebar-brand .kp-mark{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid rgba(255,255,255,.45);border-radius:9px;font-weight:850;letter-spacing:.04em;margin-bottom:.6rem}
 .kayna-sidebar-brand strong{display:block;color:#FFF;font-size:.92rem;letter-spacing:.035em;line-height:1.35}
 .kayna-sidebar-brand small{display:block;color:#D9E5EF;margin-top:.35rem;font-size:.69rem;letter-spacing:.08em}
