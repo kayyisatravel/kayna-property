@@ -1,3 +1,9 @@
+# PFMS V1.0.24 — Runtime Stability & Sequential Auction Analysis
+
+V1.0.24 memperbaiki deklarasi helper date picker agar tersedia sebelum authentication/page routing, menambahkan static scan untuk global reference yang belum didefinisikan/diimpor, serta memperkuat perpindahan langkah Analisis Objek Lelang. Pengguna mengisi 4 langkah berurutan (Data Lelang & Legal → Survei & Risiko → Pembanding → Biaya & RAB); tombol Analisa/Update Data hanya tampil pada langkah terakhir ketika data wajib sudah lengkap.
+
+Informasi pelunasan ditampilkan sebagai estimasi internal lima hari kerja Senin–Jumat setelah tanggal menang aktual. Sebelum menang, tanggal dari jadwal lelang hanya simulasi. Sistem tidak lagi membawa kalender hari libur tahunan di dalam kode; pengumuman/konfirmasi KPKNL tetap menjadi acuan resmi.
+
 # PFMS V1.0.22 — Kebijakan Underwriting Kayna Property
 
 V1.0.22 menetapkan kebijakan flipping Kayna Property: minimum Project ROI all-in 20%, target 30%, profit bersih minimum Rp50.000.000, target holding period 90 hari, dan batas maksimum 180 hari. Tidak ada batas maksimum ROI. Quick Sale ARV menjadi dasar actionable Maximum Bid; Base ARV dan Upper ARV hanya analisis sensitivitas. Lihat `docs/KAYNA_FLIP_UNDERWRITING_POLICY_V1.0.22.md`.

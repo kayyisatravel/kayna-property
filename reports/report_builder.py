@@ -239,6 +239,14 @@ def _matrix_markdown(title: str, scenarios: list[dict[str, Any]], rows: list[lis
     return output
 
 
+def _payment_deadline_display(p: dict[str, Any]) -> tuple[str, str]:
+    source = str(p.get("payment_deadline_source") or "")
+    basis = str(p.get("payment_deadline_basis") or "Belum tercatat")
+    if source == "Dokumen KPKNL":
+        return "Batas pelunasan menurut dokumen KPKNL", basis
+    return "Informasi perkiraan pelunasan (5 hari kerja; bukan tenggat resmi)", basis
+
+
 def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     p = _property(snapshot)
     market = snapshot.get("market", {}) if isinstance(snapshot.get("market"), dict) else {}
@@ -247,6 +255,7 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     costs = snapshot.get("costs", {}) if isinstance(snapshot.get("costs"), dict) else {}
     rab_rows = _as_rows(costs.get("renovation_items"))
     scenarios = _scenario_rows(snapshot)
+    payment_label, payment_basis = _payment_deadline_display(p)
     lines = [
         f"# {DOCUMENT_TITLE}", f"**{BRAND} | {BRAND_DESCRIPTOR}**", "",
         f"## {p.get('name') or p.get('lot_code') or 'Properti Lelang'}", "",
@@ -257,8 +266,8 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
         "## 2. Identitas dan Jadwal Lelang",
         f"- Alamat: {p.get('address', '—')}", f"- KPKNL: {p.get('auction_office', '—')}",
         f"- Tanggal lelang: {_fmt_short_date(p.get('auction_date'))}", f"- Batas setor jaminan: {_fmt_short_date(p.get('deposit_deadline'))}",
-        f"- Batas pelunasan: {_fmt_short_date(p.get('payment_deadline'))}",
-        f"- Dasar batas pelunasan: {p.get('payment_deadline_basis') or 'Belum tercatat'}",
+        f"- {payment_label}: {_fmt_short_date(p.get('payment_deadline'))}",
+        f"- Dasar estimasi / sumber tanggal: {payment_basis}",
         f"- Dokumen sumber jadwal: {p.get('auction_date_source_file') or 'Dokumen KPKNL belum tercatat'}",
         f"- Limit: {idr(p.get('auction_limit'))}", f"- LT/LB: {p.get('land_area', '—')} / {p.get('building_area', '—')} m²", "",
         "## 3. Penilaian Pasar",
@@ -421,6 +430,7 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         raise RuntimeError("Library python-docx belum tersedia. Tambahkan python-docx pada requirements.txt.") from exc
 
     p = _property(snapshot)
+    payment_label, payment_basis = _payment_deadline_display(p)
     market = snapshot.get("market", {}) if isinstance(snapshot.get("market"), dict) else {}
     bid = snapshot.get("bidding", {}) if isinstance(snapshot.get("bidding"), dict) else {}
     decision = snapshot.get("decision", {}) if isinstance(snapshot.get("decision"), dict) else {}
@@ -531,8 +541,8 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         ["Nama objek", p.get("name")], ["Kode lot", p.get("lot_code")], ["Alamat lengkap", p.get("address")],
         ["KPKNL", p.get("auction_office")], ["Tanggal lelang", _fmt_short_date(p.get("auction_date"))],
         ["Batas setor jaminan", _fmt_short_date(p.get("deposit_deadline"))],
-        ["Batas pelunasan", _fmt_short_date(p.get("payment_deadline"))],
-        ["Dasar batas pelunasan", p.get("payment_deadline_basis") or "Belum tercatat"],
+        [payment_label, _fmt_short_date(p.get("payment_deadline"))],
+        ["Dasar estimasi / sumber tanggal", payment_basis],
         ["Dokumen sumber jadwal", p.get("auction_date_source_file") or "Dokumen KPKNL belum tercatat"],
         ["Nilai limit", idr(p.get("auction_limit"))], ["LT / LB", f"{p.get('land_area', '—')} / {p.get('building_area', '—')} m²"],
         ["Sertifikat", p.get("certificate_type")],

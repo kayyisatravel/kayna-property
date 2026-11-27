@@ -1,3 +1,20 @@
+## [1.0.24] - 2026-11-27
+
+### Fixed
+- Defined the optional SHGB-rights expiry date picker before authentication gates and page routing, eliminating a `NameError` path when the legal form renders. Date helper declarations are now available regardless of which page branch is active.
+- Added a Python `symtable` static regression test that scans all global references in `app.py` for missing definitions/imports (including names used inside nested functions).
+- Preserved editable KPKNL auction/deposit date pickers. The payment-date information is now explicitly a weekday-only internal estimate: five Monday-to-Friday days after the actual win date; before the auction it is only a planning scenario based on the scheduled date. No annual holiday table is embedded or requires patch updates. The actual KPKNL notice/confirmation remains authoritative.
+
+### Improved
+- Simplified sequential workflow buttons to clear navigation actions: Data Lelang & Legal → Survei & Risiko → Pembanding → Biaya & RAB. The analysis/update button is only shown on the final step after required data, reviews, comparables and in-scope RAB rows are complete.
+- Moved step-state persistence/restoration into pure tested helpers. Form values survive step navigation without copying temporary widget keys or upload objects; permanent Google Sheets save happens after the final analysis/update action.
+- Clarified that three unique sourced comparables enable indicative analysis, while the underwriting GO gate may still require five stronger individual comparables.
+- Added static layout regression test to ensure `st.columns()` calls do not exceed four columns.
+
+### Compatibility and safeguards
+- No Google Sheets tab/header/schema migrations. No annual holiday calendar to maintain. `.streamlit/secrets.toml` is not included in release packages.
+- Local verification: `pytest -q` 238 passed; `python -m compileall -q .` passed; unresolved-global scan passed. Streamlit Cloud with the user's secrets/Google Sheets credentials was not live-tested.
+
 ## V1.0.22 — Kayna Flip Underwriting Policy & Time-Adjusted Returns
 
 - Set Kayna underwriting defaults to minimum all-in Project ROI 20%, target ROI 30%, minimum net profit Rp50 million, ideal holding period 90 days, and maximum holding period 180 days; profit above the target ROI is not capped.

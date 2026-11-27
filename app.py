@@ -26,6 +26,7 @@ from core.project_form_options import ACTUAL_CATEGORIES, BUDGET_CATEGORIES, subc
 from core.onboarding import build_project_onboarding_records
 from core.market_engine import assess_comparables
 from core.form_state import form_state_from_input_data
+from core.analysis_workflow import analysis_step1_missing, count_valid_comparables, persist_analysis_step_state, restore_analysis_step_state
 from core.review_state import sync_review_confirmation
 from core.user_boq import parse_user_boq_table
 from core.renovation_engine import CATEGORIES as RENOVATION_CATEGORIES, rab_item_is_in_scope, infer_renovation_category, summarize_rab_totals, rab_row_subtotals, summarize_rab_scope_totals
@@ -39,6 +40,56 @@ from reports.report_builder import build_analysis_markdown, build_analysis_docx,
 from reports.portfolio_context import build_portfolio_report_context
 
 st.set_page_config(page_title=APP_NAME, page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
+
+def jakarta_today() -> date:
+    """Return local business date independent of the Streamlit server timezone."""
+    return datetime.now(ZoneInfo("Asia/Jakarta")).date()
+
+
+def as_date(value: Any, fallback: date | None = None) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except (TypeError, ValueError):
+        return fallback or date.today()
+
+
+def _mark_date_picker_edited(state_key: str) -> None:
+    st.session_state[f"{state_key}_user_edited"] = True
+
+
+def prefilled_editable_date_picker(label: str, value: Any, key: str, *, help_text: str = "") -> str:
+    """Date picker prefilled from source documents, without a redundant checkbox.
+
+    When the source date is unavailable, today's date is only a visual starting
+    point and is NOT persisted until the user changes the date.
+    """
+    existing = str(value or "").strip()
+    widget_key = f"{key}_picker"
+    edited_key = f"{key}_user_edited"
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = as_date(existing) if existing else jakarta_today()
+        st.session_state[edited_key] = False
+    selected = st.date_input(
+        label, key=widget_key, on_change=_mark_date_picker_edited, args=(key,), help=help_text or None
+    )
+    if existing or bool(st.session_state.get(edited_key)):
+        return selected.isoformat() if isinstance(selected, (date, datetime)) else ""
+    return ""
+
+
+def optional_date_picker(label: str, value: Any, key: str) -> str:
+    """Render an optional date picker; blank remains genuinely blank."""
+    widget_key = f"{key}_optional_picker"
+    parsed = as_date(value) if value not in (None, "") else None
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = parsed
+    selected = st.date_input(label, value=st.session_state.get(widget_key), key=widget_key, format="DD/MM/YYYY")
+    return selected.isoformat() if isinstance(selected, (date, datetime)) else ""
+
 st.markdown("""
 <style>
 :root{--pfms-ink:#172B4D;--pfms-muted:#667085;--pfms-line:#E5EAF0;--pfms-brand:#0F766E;--pfms-soft:#F5F8FA}
@@ -56,8 +107,15 @@ div.stButton>button,div.stDownloadButton>button{border-radius:10px;min-height:2.
 div[data-testid="stDataFrame"]{border:1px solid var(--pfms-line);border-radius:12px;overflow:hidden}
 div[data-testid="stExpander"]{border:1px solid var(--pfms-line);border-radius:12px}
 [data-testid="stAlert"]{border-radius:12px}
-section[data-testid="stSidebar"]{border-right:1px solid var(--pfms-line)}
-section[data-testid="stSidebar"] [data-testid="stRadio"] label{padding-top:.18rem;padding-bottom:.18rem}
+section[data-testid="stSidebar"]{border-right:1px solid var(--pfms-line);background:#F8FAFC}
+section[data-testid="stSidebar"] [data-testid="stRadio"] label{padding:.32rem .45rem;border-radius:8px;font-weight:550}
+.kayna-sidebar-brand{padding:1rem .9rem;border-radius:14px;background:linear-gradient(135deg,#10243E,#173B5B 72%,#0F766E);color:#FFF;margin:.15rem 0 .8rem;box-shadow:0 8px 22px rgba(16,36,62,.12)}
+.kayna-sidebar-brand .kp-mark{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid rgba(255,255,255,.45);border-radius:9px;font-weight:850;letter-spacing:.04em;margin-bottom:.6rem}
+.kayna-sidebar-brand strong{display:block;color:#FFF;font-size:.92rem;letter-spacing:.035em;line-height:1.35}
+.kayna-sidebar-brand small{display:block;color:#D9E5EF;margin-top:.35rem;font-size:.69rem;letter-spacing:.08em}
+.kayna-pagebar{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.48rem .8rem;margin:0 0 .9rem;border:1px solid #E2E8F0;border-radius:10px;background:#FFFFFF;color:#526174;font-size:.76rem}
+.kayna-pagebar b{color:#172B4D;letter-spacing:.08em}
+.kayna-pagebar span:last-child{font-weight:650;color:#0F766E}
 .kayna-dashboard-hero{position:relative;overflow:hidden;padding:2rem 2.15rem;border-radius:22px;margin:.15rem 0 1.1rem;background:linear-gradient(118deg,#10243E 0%,#173B5B 58%,#0F766E 100%);box-shadow:0 12px 30px rgba(16,36,62,.14);color:#FFFFFF}
 .kayna-dashboard-hero:after{content:"";position:absolute;right:-56px;top:-110px;width:290px;height:290px;border:1px solid rgba(255,255,255,.13);border-radius:50%;box-shadow:0 0 0 34px rgba(255,255,255,.035),0 0 0 70px rgba(255,255,255,.025)}
 .kayna-kicker{font-size:.76rem;letter-spacing:.19em;font-weight:800;color:#B9D8D5;margin-bottom:.65rem}
@@ -342,44 +400,13 @@ def set_default(key: str, value: Any):
     if key not in st.session_state: st.session_state[key] = value
 
 
-def jakarta_today() -> date:
-    """Return local business date independent of the Streamlit server timezone."""
-    return datetime.now(ZoneInfo("Asia/Jakarta")).date()
+def _persist_and_go_analysis_step(step: int) -> None:
+    """Save current step values in session state, then move to the next step."""
+    persist_analysis_step_state(st.session_state, step)
 
 
-def as_date(value: Any, fallback: date | None = None) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    try:
-        return date.fromisoformat(str(value or "")[:10])
-    except (TypeError, ValueError):
-        return fallback or date.today()
-
-
-def _mark_date_picker_edited(state_key: str) -> None:
-    st.session_state[f"{state_key}_user_edited"] = True
-
-
-def prefilled_editable_date_picker(label: str, value: Any, key: str, *, help_text: str = "") -> str:
-    """Date picker prefilled from source documents, without a redundant checkbox.
-
-    When the source date is unavailable, today's date is only a visual starting
-    point and is NOT persisted until the user changes the date.
-    """
-    existing = str(value or "").strip()
-    widget_key = f"{key}_picker"
-    edited_key = f"{key}_user_edited"
-    if widget_key not in st.session_state:
-        st.session_state[widget_key] = as_date(existing) if existing else jakarta_today()
-        st.session_state[edited_key] = False
-    selected = st.date_input(
-        label, key=widget_key, on_change=_mark_date_picker_edited, args=(key,), help=help_text or None
-    )
-    if existing or bool(st.session_state.get(edited_key)):
-        return selected.isoformat()
-    return ""
+def _restore_analysis_form_state() -> None:
+    restore_analysis_step_state(st.session_state)
 
 
 def _indonesian_date_label(value: Any) -> str:
@@ -424,7 +451,7 @@ def comparable_date_to_iso(value: Any) -> str | None:
 
 
 # ------------------------------- Sidebar -----------------------------------
-st.sidebar.markdown(f"## 🏠 {APP_NAME}")
+st.sidebar.markdown("<div class='kayna-sidebar-brand'><span class='kp-mark'>KP</span><strong>KAYNA PROPERTY MANAGEMENT SYSTEM</strong><small>INVESTMENT · AUCTION · PROJECT CONTROL</small></div>", unsafe_allow_html=True)
 st.sidebar.caption(f"Version {APP_VERSION}")
 if repo: st.sidebar.success("Database terhubung")
 else: st.sidebar.warning("Mode sementara · database belum terhubung" if not db_error else db_error[:180])
@@ -445,6 +472,7 @@ page_labels = {
 }
 selected_page_label = st.sidebar.radio("MENU UTAMA", list(page_labels.keys()))
 page = page_labels[selected_page_label]
+st.markdown(f"<div class='kayna-pagebar'><b>KAYNA PROPERTY MANAGEMENT SYSTEM</b><span>{selected_page_label}</span></div>", unsafe_allow_html=True)
 if st.sidebar.button("↻ Refresh Data", use_container_width=True):
     cached_read.clear()
     st.rerun()
@@ -564,32 +592,12 @@ elif page == "New Auction Analysis":
         3. **Harga pasar:** masukkan listing pembanding. Tanggal terbit iklan boleh kosong; tanggal ditemukan berarti tanggal listing dikumpulkan.
         4. **Biaya & RAB:** periksa setiap komponen biaya, lalu centang konfirmasi setelah selesai meninjau.
 
-        Klik **Analisis Sekarang** untuk menghitung. Klik **Simpan / Update Analisis** agar hasil tercatat di database.
+        Gunakan tombol di bagian bawah setiap langkah untuk melanjutkan. Tombol **Analisa / Update Data** muncul pada langkah terakhir setelah seluruh data wajib terisi.
         """)
-    # Non-blocking progress indicator: it shows the user's place in the workflow,
-    # but never prevents analysis of partial data.
-    loaded_comp_rows = st.session_state.get("na_comparables_current")
-    if loaded_comp_rows is None:
-        loaded_comp_rows = st.session_state.get("na_comparables_editor")
-    if isinstance(loaded_comp_rows, pd.DataFrame):
-        comp_progress_rows = loaded_comp_rows.to_dict(orient="records")
-    elif isinstance(loaded_comp_rows, list):
-        comp_progress_rows = loaded_comp_rows
-    else:
-        comp_progress_rows = []
-    comparable_progress_count = sum(
-        1 for row in comp_progress_rows
-        if str(row.get("name") or "").strip() and to_float(row.get("price")) > 0
-        and (to_float(row.get("land_area")) > 0 or to_float(row.get("building_area")) > 0)
-    )
-    steps_done = [
-        bool(st.session_state.get("na_lot_code") and st.session_state.get("na_address") and to_float(st.session_state.get("na_limit")) > 0),
-        bool(st.session_state.get("na_survey_status") and st.session_state.get("na_survey_status") != "Belum Survei"),
-        comparable_progress_count >= 5,
-        bool(st.session_state.get("na_costs_reviewed", False) and st.session_state.get("na_risk_reviewed", False)),
-    ]
-    completed_steps = sum(steps_done)
-    st.progress(completed_steps / 4, text=f"Kemajuan pengisian: {completed_steps} dari 4 langkah memiliki data utama")
+    if "na_analysis_step" not in st.session_state:
+        st.session_state.na_analysis_step = 1
+    st.markdown("**Alur analisis bertahap** · Selesaikan data wajib pada setiap langkah sebelum melanjutkan.")
+    st.caption("Data tiap langkah dipertahankan sementara di sesi aplikasi saat Anda berpindah langkah. Penyimpanan permanen ke Google Sheets dilakukan setelah Anda menjalankan Analisa / Update Data di langkah terakhir.")
     existing_props = list_properties()
     load_options = {"Buat objek baru": ""}
     for p in existing_props: load_options[f"{p.get('lot_code') or p.get('property_id')} · {p.get('name','')} [{p.get('decision_status','')}] "] = p.get("property_id")
@@ -600,17 +608,23 @@ elif page == "New Auction Analysis":
             for state_key in list(st.session_state.keys()):
                 if state_key.startswith("na_"):
                     del st.session_state[state_key]
+            st.session_state["_na_persisted_form_state"] = {}
+            st.session_state["na_analysis_step"] = 1
+            st.session_state.pop("na_rights_expiry_optional_picker", None)
             st.session_state.loaded_property_id = ""
             st.session_state.current_analysis = None
             st.session_state.current_inputs = None
             for date_key in ("na_auction_date", "na_deposit_deadline"):
                 st.session_state.pop(f"{date_key}_picker", None)
                 st.session_state[f"{date_key}_user_edited"] = False
+            st.session_state.pop("na_rights_expiry_optional_picker", None)
             st.session_state.parse_info = None
             st.session_state.ai_review = None
             st.success("Form dibersihkan. Siap membuat analisis objek baru.")
             st.rerun()
         if pid:
+            st.session_state["_na_persisted_form_state"] = {}
+            st.session_state["na_analysis_step"] = 1
             row = next(x for x in existing_props if x.get("property_id") == pid)
             payload = record_payload(row)
             latest_saved = payload.get("latest_analysis") or {}
@@ -630,6 +644,7 @@ elif page == "New Auction Analysis":
             for date_key in ("na_auction_date", "na_deposit_deadline"):
                 st.session_state.pop(f"{date_key}_picker", None)
                 st.session_state[f"{date_key}_user_edited"] = False
+            st.session_state.pop("na_rights_expiry_optional_picker", None)
             st.session_state.na_last_occupancy = mapping.get("na_survey_status", "Belum Survei")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", latest_saved.get("risk_reviewed", False)))
             comparable_columns = ["name", "address", "latitude", "longitude", "distance_m", "market_segment", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
@@ -660,6 +675,7 @@ elif page == "New Auction Analysis":
             st.success("Data objek dimuat. Silakan koreksi dan analisis ulang.")
             st.rerun()
 
+    _restore_analysis_form_state()
     uploaded = st.file_uploader("Upload pengumuman lelang (PDF, PNG, JPG, WEBP)", type=["pdf", "png", "jpg", "jpeg", "webp"], key="na_document")
     if st.button("Parse dengan Gemini AI", type="secondary", disabled=uploaded is None):
         try:
@@ -717,8 +733,25 @@ elif page == "New Auction Analysis":
             if d.get("field_evidence"): st.json(d["field_evidence"])
 
     st.markdown("---")
-    t1, t2, t3, t4 = st.tabs(["1 · Data lelang & legal", "2 · Survei & risiko", "3 · Harga pembanding", "4 · Biaya & RAB"])
-    with t1:
+    if "na_analysis_step" not in st.session_state:
+        st.session_state.na_analysis_step = 1
+    active_step = max(1, min(4, safe_int(st.session_state.na_analysis_step, 1)))
+    step_titles = ["Data Lelang & Legal", "Survei & Risiko", "Harga Pembanding", "Biaya & RAB"]
+    step_cols = st.columns(4)
+    for step_index, step_title in enumerate(step_titles, start=1):
+        with step_cols[step_index - 1]:
+            if step_index < active_step:
+                st.success(f"✓ LANGKAH {step_index}\n{step_title}")
+            elif step_index == active_step:
+                st.info(f"● LANGKAH {step_index}\n{step_title}")
+            else:
+                st.caption(f"LANGKAH {step_index}\n{step_title}")
+    st.progress(active_step / 4, text=f"Langkah {active_step} dari 4 · Selesaikan tahapan secara berurutan")
+    # Keep the optional survey uploader mounted across all steps so files are
+    # not discarded when Streamlit cleans widgets from hidden sections.
+    survey_photos = st.file_uploader("Foto hasil survei (opsional; pilih beberapa foto)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, key="na_survey_photos")
+    st.caption("Foto survei tidak otomatis dikirim ke Gemini. Bila Google Drive archive diaktifkan, foto disimpan ke folder Drive dan metadata/hash dicatat di database.")
+    if active_step == 1:
         st.subheader("Identitas lelang")
         c1,c2,c3 = st.columns(3)
         with c1:
@@ -741,8 +774,8 @@ elif page == "New Auction Analysis":
                 "Batas setor uang jaminan", st.session_state.na_deposit_deadline, "na_deposit_deadline",
                 help_text="Terisi otomatis dari dokumen KPKNL. Tetap dapat dikoreksi melalui date picker."
             )
-            # Payment deadline is derived from the auction date (or an explicit
-            # KPKNL deadline, if present); it is not a user-entered reminder.
+            # Pre-win display is a scenario only. The actual estimate is refreshed
+            # from the real win date in the WON/ACTIVE workflow.
             current_auction_date = st.session_state.get("na_auction_date", "")
             document_payment_date = st.session_state.get("na_payment_deadline_document_value", "")
             document_payment_auction_date = st.session_state.get("na_payment_deadline_document_auction_date", "")
@@ -756,8 +789,14 @@ elif page == "New Auction Analysis":
             st.session_state.na_payment_deadline = payment_due.get("payment_deadline", "")
             st.session_state.na_payment_deadline_basis = payment_due.get("payment_deadline_basis", "")
             st.session_state.na_payment_deadline_source = payment_due.get("payment_deadline_source", "")
-            st.text_input("Batas pelunasan (otomatis)", value=_indonesian_date_label(st.session_state.na_payment_deadline), disabled=True, help="Default lima hari kerja setelah tanggal lelang sesuai PMK 122/2023 Pasal 88. Tanggal eksplisit pada dokumen KPKNL diutamakan. Pengecualian jenis lelang tertentu mengikuti peraturan.")
-            st.caption(st.session_state.na_payment_deadline_basis or "Unggah dan parse dokumen KPKNL agar tanggal lelang terisi.")
+            if st.session_state.na_payment_deadline:
+                if st.session_state.get("na_payment_deadline_source") == "Dokumen KPKNL":
+                    st.info(f"**Batas pelunasan yang tertulis pada dokumen KPKNL:** {_indonesian_date_label(st.session_state.na_payment_deadline)}. Ikuti dokumen resmi tersebut.")
+                else:
+                    st.info(f"**Informasi internal jika menang pada tanggal lelang:** perkiraan lima hari kerja jatuh pada {_indonesian_date_label(st.session_state.na_payment_deadline)}. Ini bukan tenggat resmi.")
+                st.caption(st.session_state.na_payment_deadline_basis)
+            else:
+                st.caption("Perkiraan lima hari kerja akan muncul setelah tanggal lelang diketahui.")
             if st.session_state.get("na_auction_date_document_hash"):
                 st.caption("Tanggal lelang dan setor jaminan diisi otomatis dari dokumen KPKNL. Keduanya tetap dapat dikoreksi melalui date picker.")
         with c3:
@@ -812,7 +851,13 @@ elif page == "New Auction Analysis":
         with tc3:
             set_default("na_tax_rule_source", ""); st.text_input("URL sumber aturan resmi", key="na_tax_rule_source")
             set_default("na_tax_verified", False); st.checkbox("Saya sudah memverifikasi tarif dan dasar pengenaan untuk objek ini", key="na_tax_verified")
-    with t2:
+        step1_missing = analysis_step1_missing(st.session_state)
+        if step1_missing:
+            st.warning("Lengkapi data wajib sebelum melanjutkan: " + "; ".join(step1_missing))
+        st.button("LANJUT KE SURVEI →", type="primary", use_container_width=True,
+                  disabled=bool(step1_missing), on_click=_persist_and_go_analysis_step, args=(2,), key="na_go_step_2")
+
+    if active_step == 2:
         st.subheader("Survei lapangan dan kondisi penghuni")
         st.caption("Catat hanya hal yang benar-benar diketahui dari survei atau sumber yang dapat Anda jelaskan. Status belum survei akan menahan keputusan final.")
         statuses = list(OCCUPANCY_DEFAULTS.keys())
@@ -846,8 +891,6 @@ elif page == "New Auction Analysis":
         set_default("na_interior_inspected", False); st.checkbox("Interior sudah diperiksa", key="na_interior_inspected")
         set_default("na_facade_manual", st.session_state.get("na_facade_ai", "")); st.text_area("Deskripsi fasad (hasil AI dapat diedit)", key="na_facade_manual", height=90)
         set_default("na_survey_notes", ""); st.text_area("Catatan survei, penghuni, RT/tetangga, utilitas, banjir, struktur", key="na_survey_notes", height=100)
-        survey_photos = st.file_uploader("Foto hasil survei (opsional; pilih beberapa foto)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, key="na_survey_photos")
-        st.caption("Foto survei tidak otomatis dikirim ke Gemini. Bila Google Drive archive diaktifkan, foto disimpan ke folder Drive dan metadata/hash dicatat di database.")
         st.markdown("### Risk register dan mitigasi")
         st.caption("Pilih risiko yang relevan; sistem mengisi deskripsi, skor awal, mitigasi dan cadangan indikatif. Anda tetap dapat mengubah seluruh nilai. Cadangan risiko menambah kebutuhan kas, bukan biaya profit sampai benar-benar terpakai.")
         risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "mitigation", "status"]
@@ -886,12 +929,28 @@ elif page == "New Auction Analysis":
             "status": st.column_config.SelectboxColumn("Status", options=["Open", "Mitigated", "Resolved"]),
         })
         st.session_state.na_risk_current = risk_edited.to_dict(orient="records")
+        st.session_state.na_risk_editor = risk_edited.copy()
         if len(risk_edited):
             st.caption("Skor risiko dihitung otomatis: kemungkinan × dampak. Skor 20–25 ditandai sangat tinggi. Risiko kritis yang masih terbuka akan menahan keputusan GO.")
         risk_signature = hashlib.sha256(safe_json(st.session_state.na_risk_current).encode("utf-8")).hexdigest()
         sync_review_confirmation(st.session_state, "na_risk_reviewed", "na_risk_reviewed_signature", risk_signature)
         st.checkbox("Saya sudah meninjau risiko yang relevan dan mitigasinya; saya memahami bahwa risiko yang belum terselesaikan dapat menahan keputusan GO.", key="na_risk_reviewed")
-    with t3:
+        st.session_state.na_risk_editor = risk_edited.copy()
+        step2_missing = []
+        if not st.session_state.get("na_survey_status"):
+            step2_missing.append("Pilih status survei/penghuni (Belum Survei juga merupakan pilihan yang sah)")
+        if not st.session_state.get("na_risk_reviewed", False):
+            step2_missing.append("Tinjau dan konfirmasi risk register")
+        if step2_missing:
+            st.warning("Selesaikan tahap survei: " + "; ".join(step2_missing))
+        b2, b2next = st.columns(2)
+        with b2:
+            st.button("← KEMBALI KE DATA LELANG", use_container_width=True, on_click=_persist_and_go_analysis_step, args=(1,), key="na_back_step_1")
+        with b2next:
+            st.button("LANJUT KE PEMBANDING →", type="primary", use_container_width=True,
+                      disabled=bool(step2_missing), on_click=_persist_and_go_analysis_step, args=(3,), key="na_go_step_3")
+
+    if active_step == 3:
         st.subheader("Data pembanding harga pasar")
         st.caption("Masukkan listing rumah yang benar-benar dapat ditelusuri. Satu listing = satu baris. Gemini membantu membaca narasi, tetapi tidak boleh mengarang harga, ukuran, URL, maupun tanggal.")
         st.info("Tanggal publikasi iklan tidak wajib tersedia. **Tanggal ditemukan** adalah tanggal Anda mengumpulkan atau mencatat listing di PFMS. URL harus mengarah ke iklan rumah tertentu, bukan halaman pencarian atau daftar kategori.")
@@ -964,7 +1023,7 @@ elif page == "New Auction Analysis":
                 if column not in comp_frame.columns:
                     comp_frame[column] = None
             st.session_state.na_comparables_editor = comp_frame[default_cols]
-        st.caption("Untuk estimasi indikatif: nama, harga, minimal salah satu LT/LB dan sumber listing/platform sudah dapat digunakan. Untuk rumah lelang/resale, tandai segmen Secondary atau Primary. Listing developer dipisahkan sebagai kompetisi bila tersedia pembanding secondary. Promo hanya mengurangi harga efektif bila nilai rupiahnya benar-benar terverifikasi. Gunakan ID objek fisik yang sama untuk mencegah rumah yang sama dihitung dua kali lintas portal.")
+        st.caption("Untuk estimasi indikatif dibutuhkan minimal 3 pembanding unik yang memiliki nama, harga, minimal salah satu LT/LB, dan sumber yang dapat ditelusuri. Keputusan GO dapat mensyaratkan minimal 5 pembanding individual yang lebih kuat. Untuk rumah lelang/resale, tandai segmen Secondary atau Primary. Listing developer dipisahkan sebagai kompetisi bila tersedia pembanding secondary. Promo hanya mengurangi harga efektif bila nilai rupiahnya benar-benar terverifikasi. Gunakan ID objek fisik yang sama untuk mencegah rumah yang sama dihitung dua kali lintas portal.")
         comparable_editor_input = st.session_state.na_comparables_editor.copy()
         # Streamlit DateColumn expects date-like values; normalize back to ISO strings after editing.
         for date_col in ("listing_date", "date_found"):
@@ -1130,7 +1189,18 @@ elif page == "New Auction Analysis":
         c1,c2 = st.columns(2)
         with c1: st.number_input("Negotiation discount listing aktif (%)", min_value=0.0, max_value=50.0, step=1.0, key="na_negotiation_discount")
         with c2: st.number_input("Quick-sale discount (%)", min_value=0.0, max_value=30.0, step=1.0, key="na_quick_sale_discount")
-    with t4:
+        step3_count = count_valid_comparables(st.session_state.get("na_comparables_current", []))
+        step3_missing = [] if step3_count >= 3 else [f"Minimal 3 pembanding unik dengan harga, LT/LB, dan sumber yang dapat ditelusuri (saat ini {step3_count})"]
+        if step3_missing:
+            st.warning("Lengkapi data pembanding: " + "; ".join(step3_missing))
+        b3, b3next = st.columns(2)
+        with b3:
+            st.button("← KEMBALI KE SURVEI", use_container_width=True, on_click=_persist_and_go_analysis_step, args=(2,), key="na_back_step_2")
+        with b3next:
+            st.button("LANJUT KE BIAYA / RAB →", type="primary", use_container_width=True,
+                      disabled=bool(step3_missing), on_click=_persist_and_go_analysis_step, args=(4,), key="na_go_step_4")
+
+    if active_step == 4:
         st.subheader("Biaya proyek dan target")
         rules = get_rules()
         st.markdown("### RAB renovasi — AI-assisted draft")
@@ -1319,6 +1389,7 @@ elif page == "New Auction Analysis":
                 if "Harga satuan diubah manual oleh pengguna" not in note:
                     edited_row["notes"] = (note + " | Harga satuan diubah manual oleh pengguna; dokumentasikan penawaran/rujukan harga.").strip(" |")
         st.session_state.na_renovation_items_current = edited_rab_rows
+        st.session_state.na_renovation_items_editor = pd.DataFrame(edited_rab_rows, columns=renovation_columns)
         updated_estimate = dict(st.session_state.get("na_rab_estimate") or {})
         if updated_estimate:
             updated_estimate["editor_rows"] = edited_rab_rows
@@ -1425,7 +1496,25 @@ elif page == "New Auction Analysis":
         with st.expander("Asumsi biaya dan pajak (editable pada Settings & Rules)"):
             st.json(rules)
 
-    if st.button("🚀 ANALISIS SEKARANG", type="primary", use_container_width=True):
+    analysis_ready = False
+    if active_step == 4:
+        final_missing = []
+        if not st.session_state.get("na_risk_reviewed", False):
+            final_missing.append("Konfirmasi review risiko pada Langkah 2")
+        if count_valid_comparables(st.session_state.get("na_comparables_current", [])) < 3:
+            final_missing.append("Minimal 3 pembanding unik dan bersumber")
+        if not st.session_state.get("na_costs_reviewed", False):
+            final_missing.append("Konfirmasi review biaya pada Langkah 4")
+        final_rab_rows = [r for r in st.session_state.get("na_renovation_items_current", []) if rab_item_is_in_scope(r) and str(r.get("work_item") or "").strip()]
+        final_unpriced = [r for r in final_rab_rows if r.get("quantity") in (None, "") or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") in (None, "") or to_float(r.get("unit_cost")) <= 0]
+        if final_unpriced:
+            final_missing.append(f"{len(final_unpriced)} item RAB dalam lingkup belum memiliki volume/harga satuan")
+        if final_missing:
+            st.warning("Analisis belum dapat dijalankan. Selesaikan: " + "; ".join(final_missing))
+        else:
+            analysis_ready = st.button("🚀 ANALISA / UPDATE DATA", type="primary", use_container_width=True, key="na_run_underwriting")
+        st.button("← KEMBALI KE PEMBANDING", use_container_width=True, on_click=_persist_and_go_analysis_step, args=(3,), key="na_back_step_3")
+    if analysis_ready:
         property_data = {
             "lot_code": st.session_state.na_lot_code, "name": st.session_state.na_name, "complex_name": st.session_state.na_complex,
             "address": st.session_state.na_address, "district": st.session_state.na_district, "province": st.session_state.na_province,
@@ -1848,6 +1937,8 @@ elif page == "Project Onboarding":
             onboard_limit = st.number_input("Nilai limit lelang (Rp, opsional)", min_value=0, step=1_000_000)
         with c2:
             onboard_win_date = st.date_input("Tanggal menang / perolehan", value=date.today())
+            onboard_payment_info = derive_payment_deadline(win_date=onboard_win_date.isoformat())
+            st.caption(f"Informasi estimasi 5 hari kerja setelah menang: {_indonesian_date_label(onboard_payment_info['payment_deadline'])}. Bukan tenggat resmi; verifikasi ke KPKNL.")
             onboard_deposit = st.number_input("Uang jaminan (informasi, bukan biaya tambahan)", min_value=0, step=500_000)
         with c3:
             onboard_stage = st.selectbox("Tahap proyek saat ini", PROJECT_STAGES[:-1], index=2)
@@ -1865,7 +1956,8 @@ elif page == "Project Onboarding":
             "certificate_type": onboard_certificate, "certificate_no": onboard_certificate_no.strip(),
             "property_type": onboard_property_type,
         }
-        win_details = {"win_price": onboard_win_price, "win_date": onboard_win_date.isoformat(), "deposit_amount": onboard_deposit or None}
+        onboard_payment_info = derive_payment_deadline(win_date=onboard_win_date.isoformat())
+        win_details = {"win_price": onboard_win_price, "win_date": onboard_win_date.isoformat(), "deposit_amount": onboard_deposit or None, "payment_deadline_info": onboard_payment_info["payment_deadline"], "payment_deadline_info_basis": onboard_payment_info["payment_deadline_basis"]}
         # Safely merge with an existing prospect when the same lot code is already in PFMS.
         existing_matches = []
         for existing_row in list_properties():
@@ -2394,6 +2486,8 @@ elif page == "Active Properties":
                 try: win_date_default = date.fromisoformat(str(win.get("win_date") or date.today().isoformat())[:10])
                 except ValueError: win_date_default = date.today()
                 win_date = st.date_input("Tanggal menang / perolehan", value=win_date_default)
+                win_payment_info = derive_payment_deadline(win_date=win_date.isoformat())
+                st.caption(f"Informasi estimasi pelunasan 5 hari kerja: {_indonesian_date_label(win_payment_info['payment_deadline'])}. Bukan tenggat resmi; periksa pengumuman/konfirmasi KPKNL.")
             with c3:
                 stage_options = PROJECT_STAGES[:-1]
                 stage_index = stage_options.index(stage_now) if stage_now in stage_options else 0
@@ -2404,7 +2498,8 @@ elif page == "Active Properties":
         if upd and not progress_confirm:
             st.warning("Centang konfirmasi setelah memastikan perubahan data proyek sudah benar.")
         if upd and progress_confirm:
-            payload["win_details"] = {**win, "win_price": win_price, "win_date": win_date.isoformat()}
+            win_payment_info = derive_payment_deadline(win_date=win_date.isoformat())
+            payload["win_details"] = {**win, "win_price": win_price, "win_date": win_date.isoformat(), "payment_deadline_info": win_payment_info["payment_deadline"], "payment_deadline_info_basis": win_payment_info["payment_deadline_basis"]}
             payload["project_stage"] = lifecycle_stage
             payload["progress_notes"] = notes
             upsert_record("PROPERTIES", "property_id", {**p, "updated_at": iso_now(), "lifecycle_status": "ACTIVE", "payload": payload})
@@ -2859,12 +2954,15 @@ elif page == "Database & History":
                 new_lifecycle = st.selectbox("Status perjalanan properti", editable_lifecycle, index=editable_lifecycle.index(selected.get("lifecycle_status", "PROSPECT")) if selected.get("lifecycle_status") in editable_lifecycle else 0, help="WON = berhasil menang lelang. ACTIVE = proyek sudah masuk tahap pengelolaan/penyelesaian.")
                 mark_win_price = st.number_input("Harga menang / harga perolehan (Rp)", min_value=0, step=1_000_000, value=safe_int(existing_win.get("win_price", selected.get("auction_limit", 0))))
                 mark_win_date = st.date_input("Tanggal menang", value=default_win_date)
+                mark_payment_info = derive_payment_deadline(win_date=mark_win_date.isoformat())
+                st.caption(f"Informasi estimasi pelunasan 5 hari kerja: {_indonesian_date_label(mark_payment_info['payment_deadline'])}. Bukan tenggat resmi; verifikasi ke KPKNL.")
                 mark_win_deposit = st.number_input("Uang jaminan yang menjadi bagian harga menang (Rp)", min_value=0, step=500_000, value=safe_int(existing_win.get("deposit_amount", 0)))
                 update_status = st.form_submit_button("Simpan status dan data kemenangan", type="primary")
             if update_status:
                 if new_lifecycle in {"WON", "ACTIVE"}:
                     try:
-                        updated_record = mark_property_won(selected, {"win_price": mark_win_price, "win_date": mark_win_date.isoformat(), "deposit_amount": mark_win_deposit or None})
+                        mark_payment_info = derive_payment_deadline(win_date=mark_win_date.isoformat())
+                        updated_record = mark_property_won(selected, {"win_price": mark_win_price, "win_date": mark_win_date.isoformat(), "deposit_amount": mark_win_deposit or None, "payment_deadline_info": mark_payment_info["payment_deadline"], "payment_deadline_info_basis": mark_payment_info["payment_deadline_basis"]})
                         if new_lifecycle == "ACTIVE": updated_record["lifecycle_status"] = "ACTIVE"
                         # Preserve the decision made before bidding (including HOLD).
                         # Winning by owner discretion must not rewrite the historical

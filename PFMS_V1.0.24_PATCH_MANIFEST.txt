@@ -1,0 +1,16 @@
+PFMS V1.0.24 UPGRADE PATCH
+Base: PFMS V1.0.23 release ZIP
+
+Files included:
+- CHANGELOG.md
+- PFMS_V1.0.24_PATCH_NOTES.md
+- PFMS_V1.0.24_RELEASE_GUIDE.md
+- README.md
+- app.py
+- config.py
+- core/analysis_workflow.py
+- core/auction_dates.py
+- docs/SEQUENTIAL_ANALYSIS_WORKFLOW_AND_RUNTIME_STABILITY_V1.0.24.md
+- reports/report_builder.py
+- tests/test_v123_auction_dates_and_nameerror.py
+- tests/test_v124_static_app_safety.py
