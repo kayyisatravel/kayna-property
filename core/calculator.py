@@ -38,13 +38,21 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
     }
     legal = sum(legal_breakdown.values())
     possession = to_float(survey.get("possession_cost"))
-    renovation = to_float(costs.get("renovation_cost"))
-    contingency = renovation * to_float(rules.get("renovation_contingency_pct", 15)) / 100
-    hidden_condition_reserve_pct = max(0.0, to_float(rules.get("hidden_condition_reserve_pct", 7.5)))
+    # Unmeasured work is never treated as zero: the Owner may enter an explicit
+    # allowance when access prevents a complete BoQ/inspection.
+    unverified_scope_allowance = max(0.0, to_float(costs.get("unverified_scope_allowance")))
+    renovation_base = max(0.0, to_float(costs.get("renovation_cost")))
+    renovation = renovation_base + unverified_scope_allowance
+    contingency = renovation * to_float(costs.get("renovation_contingency_pct", rules.get("renovation_contingency_pct", 15))) / 100
+    reserve_default = rules.get("hidden_condition_reserve_pct", 7.5)
+    hidden_condition_reserve_pct = max(0.0, to_float(costs.get("hidden_condition_reserve_pct", reserve_default)))
     # Additional uncertainty buffer for hidden interior/MEP conditions. This is
     # not a claim that hidden damage exists; it is a separate investor reserve.
+    hidden_condition_reserve_amount = max(0.0, to_float(costs.get("hidden_condition_reserve_amount")))
     hidden_condition_reserve = (
-        renovation * hidden_condition_reserve_pct / 100
+        hidden_condition_reserve_amount
+        if survey.get("interior_inspected") is False and hidden_condition_reserve_amount > 0
+        else renovation * hidden_condition_reserve_pct / 100
         if survey.get("interior_inspected") is False else 0.0
     )
     # Underwriting uses a conservative sequential phase estimate from the
@@ -86,7 +94,9 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
         "bid_price": p, "exit_price": sale, "buyer_auction_fee": buyer_fee, "bphtb_basis": bphtb_base, "bphtb": bphtb,
         "legal_bpn_cost": legal, **legal_breakdown,
         "acquisition_cost": acquisition, "possession_cost": possession, "renovation_cost": renovation,
+        "renovation_base_cost": renovation_base, "unverified_scope_allowance": unverified_scope_allowance,
         "renovation_contingency": contingency, "hidden_condition_reserve": hidden_condition_reserve,
+        "hidden_condition_reserve_amount_input": hidden_condition_reserve_amount,
         "hidden_condition_reserve_pct": hidden_condition_reserve_pct if survey.get("interior_inspected") is False else 0.0,
         "holding_months": hold_months, "projected_holding_days": projected_holding_days,
         "target_holding_days": target_holding_days, "maximum_holding_days": maximum_holding_days,

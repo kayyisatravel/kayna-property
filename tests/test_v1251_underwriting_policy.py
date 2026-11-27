@@ -73,18 +73,20 @@ def test_vacant_status_is_not_misread_as_occupied():
     assert not any("pengosongan" in item.lower() or "penghuni" in item.lower() for item in result["hold_reasons"])
 
 
-def test_unverified_original_certificate_or_structure_keeps_decision_on_hold():
+def test_missing_original_certificate_is_post_award_note_and_unverified_structure_is_condition():
     inputs = _base_inputs()
     inputs["legal"]["original_certificate_status"] = "Belum diverifikasi"
     missing_original = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _at_limit())
-    assert missing_original["investment_status"] == "HOLD"
-    assert any("dokumen asli sertifikat" in item.lower() for item in missing_original["hold_reasons"])
+    assert missing_original["investment_status"] == "GO"
+    assert not any(item["category"] == "LEGAL" for item in missing_original["bid_readiness_issues"])
+    assert any("sertifikat asli" in item.lower() for item in missing_original["warnings"])
 
     inputs = _base_inputs()
     inputs["survey"]["structure_verified_safe"] = False
     missing_structure = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _at_limit())
-    assert missing_structure["investment_status"] == "HOLD"
-    assert any("struktur utama" in item.lower() for item in missing_structure["hold_reasons"])
+    assert missing_structure["investment_status"] == "CONDITIONAL GO"
+    assert any("Struktur utama belum diverifikasi" in item for item in missing_structure["conditions"])
+    assert any(item["category"] == "SURVEY" for item in missing_structure["bid_readiness_issues"])
 
 
 def test_cosmetic_renovation_maps_to_ready_to_move_comparable_bucket():
@@ -133,11 +135,12 @@ def test_three_comparables_can_support_conditional_but_not_go():
     assert any(item["category"] == "MARKET" for item in result["bid_readiness_issues"])
 
 
-def test_fewer_than_three_valuation_comparables_remains_hold():
+def test_fewer_than_three_valuation_comparables_is_conditional_not_automatic_hold():
     inputs = _base_inputs()
     market = {"valid_count": 2, "valuation_comparable_count": 2, "go_grade_count": 1, "confidence": 40, "status": "PRELIMINARY"}
     result = evaluate_decision(inputs, market, _tiers_ready(), _at_limit())
-    assert result["investment_status"] == "HOLD"
+    assert result["investment_status"] == "CONDITIONAL GO"
+    assert any(item["category"] == "MARKET" for item in result["bid_readiness_issues"])
 
 
 def test_cooperative_occupant_requires_documented_possession_plan_before_bid_ready():
@@ -161,8 +164,9 @@ def test_cash_for_keys_requires_cost_and_reserve_to_be_quantified():
         "possession_plan_confirmed": True,
     })
     result = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _at_limit())
-    assert result["investment_status"] == "HOLD"
-    assert any("biaya dan cadangan pengosongan belum terukur" in item for item in result["hold_reasons"])
+    assert result["investment_status"] == "CONDITIONAL GO"
+    assert any("biaya pengosongan belum dianggarkan" in item.lower() for item in result["conditions"])
+    assert any(item["category"] == "POSSESSION" for item in result["bid_readiness_issues"])
 
 
 def test_confirmed_non_mitigable_legal_risk_is_do_not_bid():
@@ -180,14 +184,16 @@ def test_inspected_medium_renovation_with_adequate_contingency_is_conditional():
     assert result["investment_status"] == "CONDITIONAL GO"
 
 
-def test_medium_renovation_without_inspection_or_contingency_stays_hold():
+def test_medium_renovation_without_inspection_or_contingency_remains_conditional():
     inputs = _base_inputs()
     inputs["survey"]["physical_condition"] = "Renovasi sedang"
     inputs["survey"]["interior_inspected"] = False
     at_limit = _at_limit()
     at_limit["renovation_contingency"] = 0
     result = evaluate_decision(inputs, _market_ready(), _tiers_ready(), at_limit)
-    assert result["investment_status"] == "HOLD"
+    assert result["investment_status"] == "CONDITIONAL GO"
+    assert any("Interior belum diinspeksi" in item for item in result["conditions"])
+    assert any(item["category"] == "SURVEY" for item in result["bid_readiness_issues"])
 
 
 def test_seventy_percent_mao_stays_below_arv_budget_after_costs():
@@ -306,7 +312,7 @@ def test_fmv_as_is_does_not_count_mixed_condition_proxy_as_matched_sample():
     result = run_underwriting(data, {"cash_confirmed": True, "cash_available_for_new_project": 600_000_000}, data["rules"])
     assert result["market"]["comparable_pool_count"] == 5
     assert result["market"]["fmv_as_is"]["comparable_count"] == 1
-    assert result["market"]["fmv_as_is"]["status"] == "LOW_SAMPLE"
+    assert result["market"]["fmv_as_is"]["status"] == "PROVISIONAL"
     assert result["market"]["fmv_as_is"]["value"] is None
 
 
@@ -418,9 +424,10 @@ def test_unmatched_condition_comparables_do_not_qualify_as_arv_or_final_mao():
         dict(DEFAULT_RULES),
     )
     market = result["market"]
-    assert market["valid_count"] == 5  # visible as a provisional mixed-condition pool
+    assert market.get("valid_count", 0) == 0  # unmatched properties are not used as ARV samples
+    assert market["mixed_pool_diagnostic"]["valid_count"] == 5
     assert market["arv_condition_comparable_count"] == 0
-    assert market["arv_after_repair"]["status"] == "LOW_SAMPLE"
+    assert market["arv_after_repair"]["status"] == "NO_DATA"
     assert market["arv_after_repair"]["value"] is None
     assert result["decision"]["investment_status"] == "HOLD"
     assert result["mao"]["rule_of_thumb"]["mao"] is None
@@ -466,10 +473,10 @@ def test_fmv_as_is_does_not_claim_indicative_value_from_one_comparable():
     )
     fmv = result["market"]["fmv_as_is"]
     assert fmv["comparable_count"] == 1
-    assert fmv["status"] == "LOW_SAMPLE"
+    assert fmv["status"] == "PROVISIONAL"
     assert fmv["value"] is None
     assert fmv["indicative_value"] is not None
-    assert result["market"]["limit_to_fmv_as_is_pct"] is None
+    assert result["market"]["limit_to_fmv_as_is_pct"] is not None  # indicative ratio is labelled provisional, not validated
 
 
 def test_confirmed_fatal_access_or_environment_is_do_not_bid():

@@ -31,7 +31,8 @@ from core.review_state import sync_review_confirmation
 from core.user_boq import parse_user_boq_table
 from core.renovation_engine import CATEGORIES as RENOVATION_CATEGORIES, rab_item_is_in_scope, infer_renovation_category, summarize_rab_totals, rab_row_subtotals, summarize_rab_scope_totals
 from core.calculator import calculate_project
-from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, estimate_renovation_rab, assess_market_with_ai, file_sha256
+from core.feasibility import build_feasibility_scenarios
+from services.gemini_parser import extract_auction_document, parse_comparable_narrative, review_investment, review_portfolio, estimate_renovation_rab, assess_market_with_ai, build_ai_feasibility_brief, file_sha256
 from services.comparable_importer import parse_comparable_paste
 from storage.gsheets_db import GoogleSheetsDB, SCHEMA
 from storage.drive_storage import upload_file_to_drive
@@ -439,6 +440,9 @@ if "current_inputs" not in st.session_state: st.session_state.current_inputs = N
 if "loaded_property_id" not in st.session_state: st.session_state.loaded_property_id = ""
 if "parse_info" not in st.session_state: st.session_state.parse_info = None
 if "ai_review" not in st.session_state: st.session_state.ai_review = None
+if "ai_feasibility_brief" not in st.session_state: st.session_state.ai_feasibility_brief = None
+if "owner_decision" not in st.session_state: st.session_state.owner_decision = "Belum diputuskan"
+if "owner_decision_notes" not in st.session_state: st.session_state.owner_decision_notes = ""
 
 
 def get_rules() -> dict[str, Any]:
@@ -816,6 +820,9 @@ elif page == "New Auction Analysis":
             st.session_state.pop("na_rights_expiry_optional_picker", None)
             st.session_state.parse_info = None
             st.session_state.ai_review = None
+            st.session_state.ai_feasibility_brief = None
+            st.session_state.owner_decision = "Belum diputuskan"
+            st.session_state.owner_decision_notes = ""
             st.success("Form dibersihkan. Siap membuat analisis objek baru.")
             st.rerun()
         if pid:
@@ -1032,6 +1039,8 @@ elif page == "New Auction Analysis":
         set_default("na_building_footprint", None); st.number_input("Luas tapak lantai dasar (m², opsional)", min_value=0.0, step=1.0, value=st.session_state.na_building_footprint, key="na_building_footprint", help="Isi jika diketahui dari site plan/pengukuran. Lebih akurat untuk luas atap daripada LB dibagi jumlah lantai.")
         st.markdown("**Verifikasi legal (berdasarkan dokumen/keterangan resmi yang dapat ditelusuri)**")
         set_default("na_legal_verified", False); st.checkbox("Identitas objek dan dokumen hak sudah saya cocokkan", key="na_legal_verified")
+        set_default("na_skpt_verified", False); st.checkbox("Saya sudah memeriksa SKPT dari KPKNL dan mencocokkan objek/hak dengan pengumuman lelang", key="na_skpt_verified", help="SKPT menjadi dasar penting pemeriksaan status tanah pada tanggal penerbitan. Ini dicatat sebagai verifikasi Owner, bukan jaminan absolut atas fakta di luar dokumen.")
+        set_default("na_skpt_notes", ""); st.text_input("Catatan/nomor atau tanggal SKPT (opsional)", key="na_skpt_notes")
         original_document_options = [
             "Belum diverifikasi",
             "Asli di bank/kreditur dan siap diserahkan",
@@ -1039,7 +1048,7 @@ elif page == "New Auction Analysis":
             "Lokasi dokumen asli belum diketahui",
         ]
         set_default("na_original_certificate_status", "Belum diverifikasi")
-        st.selectbox("Status dokumen asli sertifikat", original_document_options, key="na_original_certificate_status", help="Untuk GO/CONDITIONAL GO, konfirmasi tertulis/tertelusur bahwa dokumen asli berada pada bank/kreditur dan siap diserahkan setelah pelunasan sesuai prosedur.")
+        st.selectbox("Status dokumen asli sertifikat (catatan administrasi)", original_document_options, key="na_original_certificate_status", help="Catat informasi serah-terima dokumen asli dari bank/kreditur. Bila SKPT sudah diperiksa dan objek cocok dengan pengumuman KPKNL, status dokumen asli ini menjadi tindak lanjut administrasi/pasca-lelang, bukan veto otomatis atas kelayakan investasi.")
         set_default("na_dispute", False); st.checkbox("Ada indikasi sengketa/ketidaksesuaian yang masih perlu diklarifikasi", key="na_dispute")
         set_default("na_fatal_legal_confirmed", False); st.checkbox("Gugatan/klaim material atau cacat hak telah diverifikasi dan dinilai tidak dapat dimitigasi (HARD STOP)", key="na_fatal_legal_confirmed")
         set_default("na_fatal_access_environment", False); st.checkbox("Tidak ada akses jalan legal atau objek berada di zona bahaya permanen yang telah diverifikasi dan tidak dapat dimitigasi (HARD STOP)", key="na_fatal_access_environment")
@@ -1064,14 +1073,14 @@ elif page == "New Auction Analysis":
 
     if active_step == 2:
         st.subheader("Survei lapangan dan kondisi penghuni")
-        st.caption("Catat hanya hal yang benar-benar diketahui dari survei atau sumber yang dapat Anda jelaskan. Status belum survei akan menahan keputusan final.")
+        st.caption("Catat fakta lapangan dan asumsi Owner secara terpisah. Informasi yang belum dapat dilihat tidak otomatis membatalkan studi; sistem akan memberi label ketidakpastian dan menghitung cadangan/skenario.")
         statuses = list(OCCUPANCY_DEFAULTS.keys())
         set_default("na_survey_status", "Belum Survei")
         prior_status = st.session_state.get("na_last_occupancy", st.session_state.na_survey_status)
         st.selectbox("Status survei dan penghuni", statuses, key="na_survey_status")
         survey_photos = st.file_uploader("Foto hasil survei (opsional; pilih beberapa foto)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, key="na_survey_photos")
         st.caption("Foto survei tidak otomatis dikirim ke Gemini. Bila Google Drive archive diaktifkan, foto disimpan ke folder Drive dan metadata/hash dicatat di database.")
-        if st.session_state.na_survey_status == "Belum Survei": st.error("PERINGATAN: Objek belum disurvei! Simulasi memakai asumsi biaya penguasaan tinggi. Keputusan final tetap HOLD.")
+        if st.session_state.na_survey_status == "Belum Survei": st.warning("Objek belum disurvei. Anda tetap dapat membuat feasibility study menggunakan asumsi Owner dan cadangan risiko; hasilnya akan ditandai provisional.")
         if st.session_state.na_survey_status != prior_status:
             defaults = OCCUPANCY_DEFAULTS[st.session_state.na_survey_status]
             st.session_state.na_possession_cost = defaults["expected_cost"]
@@ -1106,7 +1115,10 @@ elif page == "New Auction Analysis":
         physical_options = ["Belum diketahui", "Siap huni", "Renovasi kosmetik", "Renovasi ringan", "Renovasi sedang", "Renovasi berat", "Hitung tanah"]
         if st.session_state.na_physical_condition and st.session_state.na_physical_condition not in physical_options: physical_options.append(st.session_state.na_physical_condition)
         st.selectbox("Kondisi fisik umum", physical_options, key="na_physical_condition")
-        set_default("na_structure_verified_safe", False); st.checkbox("Struktur utama/pondasi/dinding penopang sudah diperiksa dan tidak ditemukan indikasi kerusakan struktural fatal", key="na_structure_verified_safe", help="Centang hanya setelah pemeriksaan yang memadai. Kerusakan yang masih dapat diperbaiki tetap harus masuk RAB dan contingency.")
+        set_default("na_structure_verified_safe", False); st.checkbox("Struktur utama/pondasi/dinding penopang sudah diperiksa secara teknis", key="na_structure_verified_safe", help="Centang hanya bila memang diperiksa secara memadai.")
+        set_default("na_building_age_years", 0.0); st.number_input("Usia bangunan (tahun, jika diketahui)", min_value=0.0, max_value=150.0, step=1.0, key="na_building_age_years")
+        set_default("na_owner_assessed_structure_safe", False); st.checkbox("Menurut penilaian visual Owner, struktur tampak aman meski belum diperiksa teknis", key="na_owner_assessed_structure_safe", help="Mencatat asumsi Owner, bukan pengganti inspeksi teknik. Sistem tetap mempertahankan buffer risiko.")
+        set_default("na_structure_assessment_notes", ""); st.text_input("Dasar penilaian Owner (contoh: bangunan 3 tahun, tidak tampak retak mayor)", key="na_structure_assessment_notes")
         set_default("na_interior_inspected", False); st.checkbox("Interior sudah diperiksa", key="na_interior_inspected")
         set_default("na_facade_manual", st.session_state.get("na_facade_ai", "")); st.text_area("Deskripsi fasad (hasil AI dapat diedit)", key="na_facade_manual", height=90)
         set_default("na_survey_notes", ""); st.text_area("Catatan survei, penghuni, RT/tetangga, utilitas, banjir, struktur", key="na_survey_notes", height=100)
@@ -1405,21 +1417,28 @@ elif page == "New Auction Analysis":
                 if "na_comparables_editor_widget" in st.session_state: del st.session_state["na_comparables_editor_widget"]
                 st.success(f"{changed} URL dengan halaman detail ditandai sebagai listing individual. {skipped} URL homepage/portal tetap bukan listing individual.")
                 st.rerun()
+        st.markdown("### Estimasi pasar dari Owner (opsional)")
+        st.caption("Bila tidak ada listing tambahan atau pembanding se-kondisi sulit ditemukan, Owner tetap dapat memasukkan FMV as-is/ARV dari pengalaman, jaringan agen, transaksi sekitar yang diketahui, atau penilaian lapangan. Nilai ini bukan comparable dan akan diberi label asumsi Owner; sistem tetap membuat analisis sensitivitas dengan confidence bukti pasar yang lebih rendah.")
+        ov1, ov2 = st.columns(2)
+        with ov1:
+            set_default("na_owner_fmv_as_is", None); st.number_input("FMV as-is asumsi Owner (Rp)", min_value=0, step=5_000_000, value=st.session_state.na_owner_fmv_as_is, key="na_owner_fmv_as_is")
+        with ov2:
+            set_default("na_owner_arv", None); st.number_input("ARV setelah renovasi asumsi Owner (Rp)", min_value=0, step=5_000_000, value=st.session_state.na_owner_arv, key="na_owner_arv")
+        set_default("na_owner_valuation_basis", ""); st.text_area("Dasar asumsi valuasi Owner (opsional)", key="na_owner_valuation_basis", height=70, placeholder="Contoh: 2 agen lokal, transaksi tetangga, pengalaman closing, kondisi renovasi target...")
         set_default("na_negotiation_discount", DEFAULT_RULES["negotiation_discount_pct"])
         set_default("na_quick_sale_discount", DEFAULT_RULES["quick_sale_discount_pct"])
         c1,c2 = st.columns(2)
         with c1: st.number_input("Negotiation discount listing aktif (%)", min_value=0.0, max_value=50.0, step=1.0, key="na_negotiation_discount")
         with c2: st.number_input("Quick-sale discount (%)", min_value=0.0, max_value=30.0, step=1.0, key="na_quick_sale_discount")
         step3_count = count_valid_comparables(st.session_state.get("na_comparables_current", []))
-        step3_missing = [] if step3_count >= 3 else [f"Minimal 3 pembanding unik dengan harga, LT/LB, dan sumber yang dapat ditelusuri (saat ini {step3_count})"]
-        if step3_missing:
-            st.warning("Lengkapi data pembanding: " + "; ".join(step3_missing))
+        if step3_count < 3:
+            st.warning(f"Baru {step3_count} comparable tervalidasi. Anda tetap dapat melanjutkan; hasil valuasi akan memakai sampel yang tersedia atau asumsi ARV Owner dengan label provisional.")
         b3, b3next = st.columns(2)
         with b3:
             st.button("← KEMBALI KE SURVEI", use_container_width=True, on_click=_persist_and_go_analysis_step, args=(2,), key="na_back_step_2")
         with b3next:
             st.button("LANJUT KE BIAYA / RAB →", type="primary", use_container_width=True,
-                      disabled=bool(step3_missing), on_click=_persist_and_go_analysis_step, args=(4,), key="na_go_step_4")
+                      on_click=_persist_and_go_analysis_step, args=(4,), key="na_go_step_4")
 
     if active_step == 4:
         st.subheader("Biaya proyek dan target")
@@ -1667,12 +1686,41 @@ elif page == "New Auction Analysis":
         with c3:
             set_default("na_legal_delay_months", 0.5); st.number_input("Estimasi delay legalitas (bulan)", min_value=0.0, step=0.5, key="na_legal_delay_months")
             set_default("na_marketing_cost", 1_000_000); st.number_input("Biaya marketing (Rp)", min_value=0, step=250_000, key="na_marketing_cost")
+        st.markdown("### Allowance untuk bagian yang belum dapat diakses")
+        st.caption("Item yang tidak terlihat tidak otomatis dianggap nol. Masukkan allowance scope yang belum terukur, cadangan kondisi tersembunyi dalam Rupiah bila diperlukan, serta contingency RAB. Cadangan Rupiah eksplisit akan menggantikan cadangan persentase agar tidak dihitung ganda.")
+        u1, u2, u3 = st.columns(3)
+        with u1:
+            set_default("na_unverified_scope_allowance", 0); st.number_input("Allowance scope belum terukur (Rp)", min_value=0, step=1_000_000, key="na_unverified_scope_allowance")
+        with u2:
+            set_default("na_hidden_condition_reserve_pct", float(rules.get("hidden_condition_reserve_pct", 7.5))); st.number_input("Cadangan kondisi tersembunyi (%)", min_value=0.0, max_value=100.0, step=2.5, key="na_hidden_condition_reserve_pct")
+        with u3:
+            set_default("na_renovation_contingency_pct", float(rules.get("renovation_contingency_pct", 15))); st.number_input("Contingency RAB (%)", min_value=0.0, max_value=100.0, step=2.5, key="na_renovation_contingency_pct")
+        set_default("na_hidden_condition_reserve_amount", 0)
+        st.number_input("Cadangan kondisi tersembunyi eksplisit (Rp, opsional)", min_value=0, step=1_000_000, key="na_hidden_condition_reserve_amount", help="Dipakai bila interior tidak dapat diinspeksi. Jika lebih dari nol, menggantikan perhitungan cadangan persentase.")
+        st.markdown("### Dana tambahan yang mungkin tersedia mendekati lelang")
+        st.caption("Dana rencana yang belum pasti tidak dihitung sebagai kas. Komitmen terkonfirmasi dihitung sebagai proyeksi kas saat tanggal lelang, tetapi tetap ditandai belum cleared sampai benar-benar tersedia. Bila memilih 'Sudah tersedia / terpisah', pastikan nominal tersebut belum termasuk kas siap investasi utama agar tidak dihitung dua kali.")
+        cash1, cash2, cash3 = st.columns(3)
+        with cash1:
+            set_default("na_expected_cash_amount", 0); st.number_input("Dana tambahan (Rp)", min_value=0, step=5_000_000, key="na_expected_cash_amount")
+        with cash2:
+            set_default("na_expected_cash_date", st.session_state.get("na_auction_date", date.today().isoformat())); st.date_input("Tanggal dana tersedia", value=as_date(st.session_state.na_expected_cash_date), key="na_expected_cash_date_picker")
+            st.session_state.na_expected_cash_date = st.session_state.na_expected_cash_date_picker.isoformat()
+        with cash3:
+            set_default("na_expected_cash_status", "Rencana / belum pasti"); st.selectbox("Status dana tambahan", ["Rencana / belum pasti", "Komitmen terkonfirmasi", "Sudah tersedia / terpisah"], key="na_expected_cash_status")
+        set_default("na_expected_cash_source", ""); st.text_input("Sumber dana / catatan konfirmasi", key="na_expected_cash_source")
+        st.markdown("### Parameter skenario tekanan")
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            set_default("na_stress_holding_months", 12.0); st.number_input("Holding period skenario tekanan (bulan)", min_value=3.0, max_value=36.0, step=1.0, key="na_stress_holding_months")
+        with sc2:
+            set_default("na_stress_sale_discount_pct", 10.0); st.number_input("Penurunan harga jual skenario tekanan (%)", min_value=0.0, max_value=50.0, step=1.0, key="na_stress_sale_discount_pct")
+        set_default("na_stress_extra_cost", 0); st.number_input("Biaya tambahan skenario tekanan (contoh: legal/pengosongan) (Rp)", min_value=0, step=5_000_000, key="na_stress_extra_cost")
         renovation_total = renovation_item_total + to_float(st.session_state.na_renovation_extra)
         in_scope_rab_rows = [r for r in renovation_items if rab_item_is_in_scope(r)]
         unpriced_rab_rows = [r for r in in_scope_rab_rows if r.get("quantity") in (None, "") or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") in (None, "")]
         if unpriced_rab_rows:
             st.metric("Subtotal sementara — bukan total RAB", idr(renovation_total))
-            st.error(f"RAB BELUM LENGKAP: {len(unpriced_rab_rows)} item wajib/disarankan dalam lingkup belum memiliki volume atau harga satuan. Angka subtotal tidak boleh digunakan sebagai estimasi total renovasi atau dasar final ROI/bidding.")
+            st.warning(f"RAB belum sepenuhnya terukur: {len(unpriced_rab_rows)} item dalam lingkup belum memiliki volume atau harga satuan. Subtotal di atas hanya komponen yang sudah terukur; masukkan allowance scope dan contingency agar studi tetap dapat dihitung secara indikatif.")
             with st.expander("Lihat pekerjaan yang belum dapat dihitung"):
                 for row in unpriced_rab_rows:
                     st.write(f"• {row.get('work_item', 'Pekerjaan tanpa nama')} — volume: {row.get('quantity') or 'belum diisi'} {row.get('unit') or ''}; harga satuan: {idr(row.get('unit_cost')) if row.get('unit_cost') not in (None, '') else 'belum diisi'}")
@@ -1713,7 +1761,13 @@ elif page == "New Auction Analysis":
             "bpn_legal_rules": {k: rules_for_cost_review.get(k) for k in ["bpn_pnbp_cost", "roya_cost", "other_acquisition_admin", "other_legal_cost", "acquisition_notary_ppat_fee"]},
             "selling_rules": {k: rules_for_cost_review.get(k) for k in ["seller_final_tax_pct", "seller_agent_pct", "seller_ajb_ppat_pct", "seller_misc_fixed"]},
             "contingency_pct": rules_for_cost_review.get("renovation_contingency_pct"),
-            "hidden_condition_reserve_pct": rules_for_cost_review.get("hidden_condition_reserve_pct", 7.5),
+            "hidden_condition_reserve_pct": st.session_state.get("na_hidden_condition_reserve_pct", rules_for_cost_review.get("hidden_condition_reserve_pct", 7.5)),
+            "hidden_condition_reserve_amount": st.session_state.get("na_hidden_condition_reserve_amount", 0),
+            "unverified_scope_allowance": st.session_state.get("na_unverified_scope_allowance", 0),
+            "renovation_contingency_pct": st.session_state.get("na_renovation_contingency_pct", rules_for_cost_review.get("renovation_contingency_pct", 15)),
+            "expected_cash_amount": st.session_state.get("na_expected_cash_amount", 0),
+            "expected_cash_date": st.session_state.get("na_expected_cash_date", ""),
+            "expected_cash_status": st.session_state.get("na_expected_cash_status", "Rencana / belum pasti"),
         }
         cost_signature = hashlib.sha256(safe_json(cost_review_payload).encode("utf-8")).hexdigest()
         sync_review_confirmation(st.session_state, "na_costs_reviewed", "na_costs_reviewed_signature", cost_signature)
@@ -1723,21 +1777,12 @@ elif page == "New Auction Analysis":
 
     analysis_ready = False
     if active_step == 4:
-        final_missing = []
-        if not st.session_state.get("na_risk_reviewed", False):
-            final_missing.append("Konfirmasi review risiko pada Langkah 2")
-        if count_valid_comparables(st.session_state.get("na_comparables_current", [])) < 3:
-            final_missing.append("Minimal 3 pembanding unik dan bersumber")
-        if not st.session_state.get("na_costs_reviewed", False):
-            final_missing.append("Konfirmasi review biaya pada Langkah 4")
-        final_rab_rows = [r for r in st.session_state.get("na_renovation_items_current", []) if rab_item_is_in_scope(r) and str(r.get("work_item") or "").strip()]
-        final_unpriced = [r for r in final_rab_rows if r.get("quantity") in (None, "") or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") in (None, "") or to_float(r.get("unit_cost")) <= 0]
-        if final_unpriced:
-            final_missing.append(f"{len(final_unpriced)} item RAB dalam lingkup belum memiliki volume/harga satuan")
-        if final_missing:
-            st.warning("Analisis belum dapat dijalankan. Selesaikan: " + "; ".join(final_missing))
-        else:
-            analysis_ready = st.button("🚀 ANALISA / UPDATE DATA", type="primary", use_container_width=True, key="na_run_underwriting")
+        draft_comps = count_valid_comparables(st.session_state.get("na_comparables_current", []))
+        if not st.session_state.get("na_risk_reviewed", False) or not st.session_state.get("na_costs_reviewed", False):
+            st.info("Studi tetap dapat dijalankan dengan data draft. Risk Register/RAB yang belum dikonfirmasi akan ditandai sebagai asumsi dan muncul pada checklist kesiapan.")
+        if draft_comps < 3 and not st.session_state.get("na_owner_arv"):
+            st.warning("Comparable se-kondisi masih kurang dan belum ada ARV asumsi Owner. Analisis tetap dapat dijalankan, tetapi profit/ROI/MAO mungkin belum dapat dihitung.")
+        analysis_ready = st.button("🚀 SUSUN FEASIBILITY STUDY", type="primary", use_container_width=True, key="na_run_underwriting")
         st.button("← KEMBALI KE PEMBANDING", use_container_width=True, on_click=_persist_and_go_analysis_step, args=(3,), key="na_back_step_3")
     if analysis_ready:
         property_data = {
@@ -1757,16 +1802,30 @@ elif page == "New Auction Analysis":
             "risk_adjusted_ceiling": st.session_state.na_risk_ceiling, "npoptkp_eligible": st.session_state.na_npoptkp_eligible,
             "fatal_access_or_environment_confirmed": bool(st.session_state.get("na_fatal_access_environment", False)),
         }
-        survey_data = {"survey_status": st.session_state.na_survey_status, "occupancy_status": st.session_state.na_survey_status, "survey_date": st.session_state.na_survey_date, "possession_cost": st.session_state.na_possession_cost, "possession_risk_reserve": st.session_state.na_possession_risk_reserve, "possession_months": st.session_state.na_possession_months, "road_width_m": st.session_state.na_road_width, "access": st.session_state.na_access, "physical_condition": st.session_state.na_physical_condition, "structure_verified_safe": bool(st.session_state.get("na_structure_verified_safe", False)), "interior_inspected": st.session_state.na_interior_inspected, "fatal_security_threat_confirmed": bool(st.session_state.get("na_fatal_security_threat", False)), "possession_plan_confirmed": bool(st.session_state.get("na_possession_plan_confirmed", False)), "facade_description": st.session_state.na_facade_manual, "survey_notes": st.session_state.na_survey_notes}
-        legal_data = {"identity_verified": st.session_state.na_legal_verified, "original_certificate_status": st.session_state.get("na_original_certificate_status", "Belum diverifikasi"), "dispute_detected": st.session_state.na_dispute, "fatal_legal_issue_confirmed": bool(st.session_state.get("na_fatal_legal_confirmed", False)), "tax_rules_verified": st.session_state.na_tax_verified, "tax_region": st.session_state.na_tax_region, "tax_rule_source_url": st.session_state.na_tax_rule_source}
+        survey_data = {"survey_status": st.session_state.na_survey_status, "occupancy_status": st.session_state.na_survey_status, "survey_date": st.session_state.na_survey_date, "possession_cost": st.session_state.na_possession_cost, "possession_risk_reserve": st.session_state.na_possession_risk_reserve, "possession_months": st.session_state.na_possession_months, "road_width_m": st.session_state.na_road_width, "access": st.session_state.na_access, "physical_condition": st.session_state.na_physical_condition, "structure_verified_safe": bool(st.session_state.get("na_structure_verified_safe", False)), "owner_assessed_structure_safe": bool(st.session_state.get("na_owner_assessed_structure_safe", False)), "building_age_years": st.session_state.get("na_building_age_years"), "structure_assessment_notes": st.session_state.get("na_structure_assessment_notes", ""), "interior_inspected": st.session_state.na_interior_inspected, "fatal_security_threat_confirmed": bool(st.session_state.get("na_fatal_security_threat", False)), "possession_plan_confirmed": bool(st.session_state.get("na_possession_plan_confirmed", False)), "facade_description": st.session_state.na_facade_manual, "survey_notes": st.session_state.na_survey_notes}
+        legal_data = {"identity_verified": bool(st.session_state.na_legal_verified or st.session_state.get("na_skpt_verified", False)), "skpt_verified": bool(st.session_state.get("na_skpt_verified", False)), "skpt_notes": st.session_state.get("na_skpt_notes", ""), "original_certificate_status": st.session_state.get("na_original_certificate_status", "Belum diverifikasi"), "dispute_detected": st.session_state.na_dispute, "fatal_legal_issue_confirmed": bool(st.session_state.get("na_fatal_legal_confirmed", False)), "tax_rules_verified": st.session_state.na_tax_verified, "tax_region": st.session_state.na_tax_region, "tax_rule_source_url": st.session_state.na_tax_rule_source}
         renovation_items_data = [r for r in st.session_state.get("na_renovation_items_current", []) if str(r.get("work_item") or "").strip()]
         renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items_data if rab_item_is_in_scope(r))
         renovation_extra_cost = to_float(st.session_state.na_renovation_extra)
-        costs_data = {"renovation_cost": renovation_item_total + renovation_extra_cost, "renovation_items": renovation_items_data, "renovation_ai_estimate": st.session_state.get("na_rab_estimate"), "renovation_extra_cost": renovation_extra_cost, "renovation_category": st.session_state.get("na_renovation_category", "Auto sesuai kondisi umum"), "rab_condition_description": st.session_state.get("na_rab_condition_description", ""), "renovation_months": st.session_state.na_renovation_months, "selling_months": st.session_state.na_selling_months, "legal_delay_months": st.session_state.na_legal_delay_months, "monthly_holding_cost": st.session_state.na_monthly_holding, "marketing_cost": st.session_state.na_marketing_cost, "other_presale_cost": st.session_state.na_other_presale, "cost_estimates_reviewed": bool(st.session_state.na_costs_reviewed)}
+        costs_data = {"renovation_cost": renovation_item_total + renovation_extra_cost, "unverified_scope_allowance": to_float(st.session_state.get("na_unverified_scope_allowance")), "hidden_condition_reserve_amount": to_float(st.session_state.get("na_hidden_condition_reserve_amount")), "hidden_condition_reserve_pct": to_float(st.session_state.get("na_hidden_condition_reserve_pct", rules.get("hidden_condition_reserve_pct", 7.5))), "renovation_contingency_pct": to_float(st.session_state.get("na_renovation_contingency_pct", rules.get("renovation_contingency_pct", 15))), "renovation_items": renovation_items_data, "renovation_ai_estimate": st.session_state.get("na_rab_estimate"), "renovation_extra_cost": renovation_extra_cost, "renovation_category": st.session_state.get("na_renovation_category", "Auto sesuai kondisi umum"), "rab_condition_description": st.session_state.get("na_rab_condition_description", ""), "renovation_months": st.session_state.na_renovation_months, "selling_months": st.session_state.na_selling_months, "legal_delay_months": st.session_state.na_legal_delay_months, "monthly_holding_cost": st.session_state.na_monthly_holding, "marketing_cost": st.session_state.na_marketing_cost, "other_presale_cost": st.session_state.na_other_presale, "cost_estimates_reviewed": bool(st.session_state.na_costs_reviewed)}
         comp_data = st.session_state.get("na_comparables_current", [])
         cash_profile, cash_events, liquidity = get_cash_data()
         if not cash_profile.get("cash_confirmed", False): liquidity["cash_confirmed"] = False
         else: liquidity["cash_confirmed"] = True
+        expected_cash_amount = to_float(st.session_state.get("na_expected_cash_amount"))
+        expected_cash_date = str(st.session_state.get("na_expected_cash_date") or "")[:10]
+        expected_cash_status = str(st.session_state.get("na_expected_cash_status") or "Rencana / belum pasti")
+        auction_date_text = str(st.session_state.get("na_auction_date") or "")[:10]
+        expected_cash_in_time = bool(expected_cash_date and auction_date_text and expected_cash_date <= auction_date_text)
+        expected_cash_included = expected_cash_amount if expected_cash_in_time and expected_cash_status in {"Komitmen terkonfirmasi", "Sudah tersedia / terpisah"} else 0.0
+        expected_cash_after_auction = bool(expected_cash_amount > 0 and expected_cash_date and auction_date_text and expected_cash_date > auction_date_text)
+        liquidity["expected_cash_amount"] = expected_cash_amount
+        liquidity["expected_cash_date"] = expected_cash_date
+        liquidity["expected_cash_status"] = expected_cash_status
+        liquidity["expected_cash_source"] = str(st.session_state.get("na_expected_cash_source") or "")
+        liquidity["cash_available_for_new_project_at_auction"] = to_float(liquidity.get("cash_available_for_new_project")) + expected_cash_included
+        liquidity["expected_cash_is_provisional"] = expected_cash_included > 0 and expected_cash_status == "Komitmen terkonfirmasi"
+        liquidity["expected_cash_after_auction"] = expected_cash_after_auction
         rules = get_rules(); rules["negotiation_discount_pct"] = st.session_state.na_negotiation_discount; rules["quick_sale_discount_pct"] = st.session_state.na_quick_sale_discount
         rules["buyer_auction_fee_pct"] = st.session_state.na_buyer_fee; rules["bphtb_rate_pct"] = st.session_state.na_bphtb_rate; rules["npoptkp"] = st.session_state.na_npoptkp
         risk_data = [r for r in st.session_state.get("na_risk_current", []) if str(r.get("risk_description") or "").strip()]
@@ -1783,45 +1842,62 @@ elif page == "New Auction Analysis":
         market_ai_signature_now = hashlib.sha256(safe_json({"subject": market_ai_subject_now, "comparables": market_ai_rows_now}).encode("utf-8")).hexdigest()
         has_current_ai_review = market_ai_signature_now in {st.session_state.get("na_market_ai_signature"), st.session_state.get("na_market_ai_applied_signature")}
         market_ai_assessment = st.session_state.get("na_market_ai_assessment") if has_current_ai_review else None
-        inputs = {"property": property_data, "survey": survey_data, "legal": legal_data, "costs": costs_data, "comparables": comp_data, "risk_register": risk_data, "risk_reviewed": risk_reviewed, "market_ai_assessment": market_ai_assessment}
+        owner_valuation_data = {"fmv_as_is_estimate": to_float(st.session_state.get("na_owner_fmv_as_is")) or None, "arv_estimate": to_float(st.session_state.get("na_owner_arv")) or None, "basis": st.session_state.get("na_owner_valuation_basis", "")}
+        scenario_settings = {"stress_holding_months": st.session_state.get("na_stress_holding_months", 12), "stress_sale_discount_pct": st.session_state.get("na_stress_sale_discount_pct", 10), "stress_extra_cost": st.session_state.get("na_stress_extra_cost", 0)}
+        inputs = {"property": property_data, "survey": survey_data, "legal": legal_data, "costs": costs_data, "comparables": comp_data, "risk_register": risk_data, "risk_reviewed": risk_reviewed, "market_ai_assessment": market_ai_assessment, "owner_valuation": owner_valuation_data, "scenario_settings": scenario_settings}
         result = run_underwriting(inputs, liquidity, rules)
         property_id = st.session_state.loaded_property_id or new_id("PROP")
         analysis_id = new_id("ANL")
-        snapshot = {"analysis_id": analysis_id, "property_id": property_id, "analyzed_at": iso_now(), "property": property_data, "survey": survey_data, "legal": legal_data, "costs": costs_data, "comparables": comp_data, "risk_reviewed": risk_reviewed, "risk_register": risk_data, "market_ai_assessment": market_ai_assessment, "rules": rules, "liquidity": liquidity, "document_extraction": st.session_state.parse_info or {}, **result}
-        st.session_state.current_analysis = snapshot; st.session_state.current_inputs = inputs; st.session_state.current_property_id = property_id
+        snapshot = {"analysis_id": analysis_id, "property_id": property_id, "analyzed_at": iso_now(), "property": property_data, "survey": survey_data, "legal": legal_data, "costs": costs_data, "comparables": comp_data, "risk_reviewed": risk_reviewed, "risk_register": risk_data, "market_ai_assessment": market_ai_assessment, "owner_valuation": owner_valuation_data, "scenario_settings": scenario_settings, "rules": rules, "liquidity": liquidity, "document_extraction": st.session_state.parse_info or {}, **result}
         st.session_state.ai_review = None
+        st.session_state.ai_feasibility_brief = None
+        st.session_state.ai_feasibility_error = ""
+        st.session_state.owner_decision = "Belum diputuskan"
+        st.session_state.owner_decision_notes = ""
+        # One-click flow: deterministic Python underwriting first, then Gemini
+        # interprets the exact snapshot. If Gemini is unavailable, the numeric
+        # feasibility study still renders and remains usable.
+        if GEMINI_KEY:
+            try:
+                with st.spinner("Gemini Flash sedang menyusun pertimbangan Analis Senior..."):
+                    st.session_state.ai_feasibility_brief = build_ai_feasibility_brief(GEMINI_KEY, GEMINI_MODEL, snapshot)
+            except Exception as exc:
+                st.session_state.ai_feasibility_error = str(exc)
+        snapshot["ai_feasibility_brief"] = st.session_state.ai_feasibility_brief
+        st.session_state.current_analysis = snapshot
+        st.session_state.current_inputs = inputs
+        st.session_state.current_property_id = property_id
     snap = st.session_state.current_analysis
     if snap:
         st.markdown("---")
         decision = snap["decision"]; mkt = snap["market"]; tiers = snap["bidding"]; at = snap["at_limit"]
-        st.subheader("Ringkasan hasil analisis")
+        st.subheader("Ringkasan Feasibility Study — AI Co-Pilot")
         if mkt.get("conservative_exit") is None:
             st.info("ARV belum dapat dihitung karena belum ada listing dengan harga dan luas yang dapat dinormalisasi. Anda tetap dapat menyimpan draft dan memperbaiki data pembanding.")
         else:
             st.info(
-                f"{mkt.get('estimate_label', 'Estimasi pasar indikatif tersedia')}: {mkt.get('valid_count', 0)} pembanding masuk ke perhitungan. "
+                f"{mkt.get('estimate_label', 'Estimasi pasar indikatif tersedia')}: pool valid {mkt.get('comparable_pool_count', mkt.get('valid_count', 0))} listing; {mkt.get('arv_condition_comparable_count', 0)} listing cocok dengan kondisi exit '{mkt.get('arv_condition_bucket', 'Siap Huni')}'; {mkt.get('go_grade_count', 0)} URL listing individual bertanggal. "
                 f"Indikasi dasar {idr(mkt.get('base_exit'))}; konservatif {idr(mkt.get('conservative_exit'))}; "
                 f"rentang model {idr(mkt.get('market_range_low'))}–{idr(mkt.get('market_range_high'))}. "
                 "Ini estimasi underwriting, bukan appraisal resmi atau harga transaksi terverifikasi."
             )
             if mkt.get("status") != "READY":
                 st.warning(
-                    f"Estimasi sudah tersedia, tetapi bukti belum memenuhi gate audit keputusan GO: "
-                    f"{mkt.get('go_grade_count', 0)} dari minimal 5 URL listing individual yang dapat ditelusuri. "
-                    f"Indeks kualitas bukti {mkt.get('confidence', 0)}/100 ({mkt.get('confidence_band', 'Rendah')}); bukan probabilitas harga tercapai. Bukti pasar yang belum mencapai GO-grade dapat menghasilkan CONDITIONAL GO bila dasar indikatif sudah cukup, tetapi Bid Readiness tetap harus READY sebelum bidding."
+                    f"Kualitas bukti pasar belum mencapai standar verifikasi tertinggi: {mkt.get('go_grade_count', 0)} URL listing individual bertanggal. "
+                    f"Indeks kualitas bukti {mkt.get('confidence', 0)}/100 ({mkt.get('confidence_band', 'Rendah')}); bukan probabilitas harga tercapai. Nilai tetap dipakai sebagai indikasi/sensitivitas dengan label provisional dan tidak disamakan dengan appraisal."
                 )
-        if decision["status"] == "GO": st.success("GO — SELURUH GATE UTAMA TERPENUHI")
-        elif decision["status"] == "CONDITIONAL GO": st.warning("CONDITIONAL GO — ADA SYARAT YANG HARUS DIPENUHI")
-        elif decision["status"] == "DO NOT BID": st.error("DO NOT BID / TIDAK LAYAK")
-        else: st.warning("HOLD — DATA / VERIFIKASI BELUM MEMADAI")
+        if decision["status"] == "GO": st.success("GO — MODEL MENUNJUKKAN DAYA TARIK INVESTASI TINGGI")
+        elif decision["status"] == "CONDITIONAL GO": st.warning("CONDITIONAL GO — ADA FRIKSI / ASUMSI YANG PERLU DIBERI HARGA DAN STRATEGI")
+        elif decision["status"] == "DO NOT BID": st.error("DO NOT BID — HARD STOP TERKONFIRMASI / RISIKO STRUKTURAL")
+        else: st.warning("HOLD — DASAR EXIT BELUM MEMADAI ATAU RETURN BELUM MEMENUHI HURDLE")
         st.write(decision["summary"])
         readiness = str(decision.get("bid_readiness") or "NOT READY — DUE DILIGENCE")
         if readiness == "READY":
             st.success("Bid Readiness: READY — seluruh syarat eksekusi bidding terpenuhi.")
         else:
-            st.warning(f"Bid Readiness: {readiness}. Status investasi tidak otomatis menjadi izin untuk bidding.")
+            st.warning(f"Kesiapan eksekusi: {readiness}. Ini menjelaskan apa yang masih perlu disiapkan; Owner tetap pengambil keputusan akhir.")
         if decision.get("conditions"):
-            with st.expander("Syarat CONDITIONAL GO / mitigasi yang harus dijaga", expanded=True):
+            with st.expander("Asumsi, friksi, dan faktor yang memengaruhi rekomendasi model", expanded=True):
                 for condition in decision.get("conditions", []): st.write("•", condition)
         if decision.get("bid_readiness_issues"):
             with st.expander("Checklist kesiapan bidding", expanded=False):
@@ -1830,26 +1906,31 @@ elif page == "New Auction Analysis":
             for item in decision.get("hard_stops", []): st.error(item)
         valuation_cols = st.columns(3)
         fmv_as_is = mkt.get("fmv_as_is") or {}
-        fmv_value = fmv_as_is.get("value")
-        fmv_label = "FMV as-is" if fmv_as_is.get("status") == "INDICATIVE" else "FMV as-is (sampel terbatas)"
+        fmv_value = fmv_as_is.get("value") or fmv_as_is.get("indicative_value")
+        fmv_label = "FMV as-is" if fmv_as_is.get("status") == "VALIDATED" else "FMV as-is indikatif / Owner"
         valuation_cols[0].metric(fmv_label, idr(fmv_value), help=f"Nilai indikatif kondisi saat ini dari {fmv_as_is.get('comparable_count', 0)} comparable bucket '{fmv_as_is.get('condition_bucket') or 'belum diketahui'}'. Status sampel: {fmv_as_is.get('status', 'LOW_SAMPLE')}.")
         arv_summary_display = mkt.get("arv_after_repair") or mkt.get("land_exit_value") or {}
-        arv_metric_value = arv_summary_display.get("value") if arv_summary_display.get("status") == "INDICATIVE" else None
-        valuation_cols[1].metric("ARV setelah renovasi" if mkt.get("arv_after_repair") else "Nilai exit tanah", idr(arv_metric_value), help=f"Estimasi hanya ditampilkan sebagai nilai tervalidasi indikatif bila tersedia minimal 3 comparable kondisi '{mkt.get('arv_condition_bucket')}' dan confidence minimal 45. Status saat ini: {arv_summary_display.get('status', 'LOW_SAMPLE')}.")
+        arv_metric_value = arv_summary_display.get("value") or arv_summary_display.get("indicative_value")
+        arv_metric_label = "ARV setelah renovasi" if mkt.get("arv_after_repair") else "Nilai exit tanah"
+        if arv_summary_display.get("status") != "VALIDATED": arv_metric_label += " (indikatif)"
+        valuation_cols[1].metric(arv_metric_label, idr(arv_metric_value), help=f"Nilai ini berasal dari {arv_summary_display.get('comparable_count', 0)} pembanding se-kondisi atau input Owner. Status: {arv_summary_display.get('status', 'NO_DATA')}; confidence {arv_summary_display.get('confidence', 0)}/100. Nilai provisional membantu simulasi, bukan appraisal atau dasar bidding final.")
         ratio_value = mkt.get("limit_to_fmv_as_is_pct")
         valuation_cols[2].metric("Limit / FMV as-is", f"{ratio_value:.1f}%" if ratio_value is not None else "Belum tersedia", help="Indikator spread harga limit terhadap FMV kondisi saat ini; bukan hard gate dan tidak menggantikan MAO Full Cost.")
         if mkt.get("base_exit"):
-            if arv_summary_display.get("status") == "INDICATIVE":
-                exit_label = "ARV dasar/exit indikatif" if mkt.get("arv_after_repair") else "Nilai pasar tanah indikatif"
-                st.info(f"{exit_label}: {idr(arv_summary_display.get('value'))} · Nilai exit konservatif: {idr(arv_summary_display.get('conservative_value'))} · Rentang model: {idr(mkt.get('market_range_low'))} – {idr(mkt.get('market_range_high'))}. Valuasi memakai pembanding se-kondisi exit; FMV as-is dihitung terpisah. Indeks kualitas data bukan probabilitas harga tercapai.")
+            if arv_summary_display.get("status") == "VALIDATED":
+                exit_label = "ARV dasar" if mkt.get("arv_after_repair") else "Nilai pasar tanah"
+            elif arv_summary_display.get("status") == "OWNER_INPUT":
+                exit_label = "ARV asumsi Owner (belum diverifikasi)" if mkt.get("arv_after_repair") else "Nilai exit tanah asumsi Owner"
             else:
-                st.warning(f"Belum ada minimal 3 comparable dengan kondisi exit '{mkt.get('arv_condition_bucket')}' dan confidence ≥45. Nilai campuran Rp{to_float(mkt.get('base_exit')):,.0f} hanya proxy sementara untuk analisis parsial, bukan ARV yang dapat dipakai untuk MAO atau keputusan bidding.")
+                exit_label = "ARV indikatif sampel terbatas" if mkt.get("arv_after_repair") else "Nilai exit indikatif sampel terbatas"
+            st.info(f"{exit_label}: {idr(arv_summary_display.get('indicative_value'))} · Exit konservatif: {idr(arv_summary_display.get('indicative_conservative_value'))} · Rentang model: {idr(mkt.get('market_range_low'))} – {idr(mkt.get('market_range_high'))}. Sumber: {arv_summary_display.get('source', 'Comparable se-kondisi')}. FMV as-is dihitung terpisah. Indeks kualitas bukti bukan probabilitas harga tercapai.")
             mao_data = snap.get("mao") or {}
             mao_rule = mao_data.get("rule_of_thumb") or {}
             mao_cols = st.columns(3)
-            mao_cols[0].metric(f"MAO rule of thumb ({to_float(mao_rule.get('factor_pct'), 70):.0f}%)", idr(mao_rule.get("mao")), help="Screening cepat dari quick-sale ARV konservatif. Faktor persentase adalah asumsi kebijakan, bukan standar universal.")
-            mao_cols[1].metric("MAO Full Cost — CONDITIONAL", idr(mao_data.get("full_cost")), help="Batas maksimum berbasis ROI minimum CONDITIONAL GO, seluruh biaya proyek, minimum profit dan durasi sampai 365 hari.")
-            mao_cols[2].metric("MAO Full Cost — GO", idr(mao_data.get("go_full_cost")), help="Batas maksimum berbasis minimum ROI GO dan batas durasi GO. Target ROI yang lebih tinggi tersedia pada tangga bidding.")
+            mao_suffix = " (indikatif)" if mao_data.get("is_provisional") else ""
+            mao_cols[0].metric(f"MAO rule of thumb ({to_float(mao_rule.get('factor_pct'), 70):.0f}%)" + mao_suffix, idr(mao_rule.get("mao")), help="Screening cepat dari quick-sale exit konservatif. Gunakan sebagai panduan, bukan instruksi bid.")
+            mao_cols[1].metric("MAO Full Cost — CONDITIONAL" + mao_suffix, idr(mao_data.get("full_cost")), help="Solver Full Cost berbasis ROI minimum, semua biaya yang sudah diinput, profit floor dan holding. Jika dasar ARV provisional, MAO juga provisional.")
+            mao_cols[2].metric("MAO Full Cost — GO" + mao_suffix, idr(mao_data.get("go_full_cost")), help="Batas referensi untuk target GO; hasil provisional bila valuasi/cost masih provisional.")
             if mao_data.get("full_cost") is not None and to_float(snap.get("property", {}).get("auction_limit")) > to_float(mao_data.get("full_cost")):
                 st.warning("Nilai limit berada di atas MAO Full Cost. Jangan bidding pada harga limit; evaluasi peluang relist atau perubahan biaya/valuasi yang dapat dibuktikan.")
         if snap.get("market_ai_assessment"):
@@ -1862,13 +1943,14 @@ elif page == "New Auction Analysis":
         in_scope_rab_missing = tiers.get("in_scope_rab_unpriced", required_rab_missing)
         cost_review_pending = not bool(snap.get("costs", {}).get("cost_estimates_reviewed", False))
         arv_after_repair = mkt.get("arv_after_repair") or {}
-        market_exit_pending = not bool(arv_after_repair.get("status") == "INDICATIVE")
+        market_exit_pending = not bool(arv_after_repair.get("status") == "VALIDATED")
         financial_inputs_partial = bool(in_scope_rab_missing or cost_review_pending or market_exit_pending)
         k1,k2,k3,k4 = st.columns(4)
         exit_summary = mkt.get("arv_after_repair") or mkt.get("land_exit_value") or {}
-        exit_validated = exit_summary.get("status") == "INDICATIVE"
-        k1.metric("Quick-sale ARV konservatif" if mkt.get("arv_after_repair") else "Nilai exit tanah konservatif", idr(exit_summary.get("conservative_value") if exit_validated else None), help="Hanya menggunakan pembanding se-kondisi exit yang dituju dan minimal 3 sampel dengan confidence minimal 45.")
-        k2.metric("ARV dasar / nilai exit tanah", idr(exit_summary.get("value") if exit_validated else None), help="Nilai pasar dasar untuk kondisi exit pasca-renovasi (atau tanah kosong), bukan FMV as-is.")
+        exit_validated = exit_summary.get("status") == "VALIDATED"
+        provisional_label = "" if exit_validated else " (indikatif)"
+        k1.metric(("Quick-sale ARV konservatif" if mkt.get("arv_after_repair") else "Nilai exit tanah konservatif") + provisional_label, idr(exit_summary.get("conservative_value") or exit_summary.get("indicative_conservative_value")), help="Nilai konservatif dari sampel se-kondisi atau asumsi Owner. Bila provisional, rentang ketidakpastian lebih besar dan bukan instruksi bidding.")
+        k2.metric("ARV dasar / nilai exit tanah" + provisional_label, idr(exit_summary.get("value") or exit_summary.get("indicative_value")), help="Nilai pasar dasar untuk kondisi exit pasca-renovasi (atau tanah kosong), bukan FMV as-is.")
         k3.metric("Modal sementara / data terisi" if financial_inputs_partial else "Total modal proyek", idr(at.get("capital_before_sale")), help="Jika RAB dalam lingkup belum lengkap atau biaya belum dikonfirmasi, angka ini hanya total komponen yang sudah terdata; belum merupakan total modal akhir.")
         k4.metric("Profit indikatif" if financial_inputs_partial else "Estimasi profit bersih", idr(at.get("net_profit")))
         roi_cols = st.columns(3)
@@ -1891,6 +1973,7 @@ elif page == "New Auction Analysis":
             (f"MAO Full Cost / Minimum ROI {policy_min_roi:.0f}% (CONDITIONAL GO)", tiers.get("max_bid"), tiers.get("max_economic_ceiling"), tiers.get("max_simulated_ceiling"), tiers.get("max_result"), policy_min_roi, tiers.get("max_limit_feasible", False), policy_conditional_max_days),
         ]
         cash_available_now = to_float(snap.get("liquidity", {}).get("cash_available_for_new_project"))
+        cash_available_at_auction = to_float(snap.get("liquidity", {}).get("cash_available_for_new_project_at_auction", cash_available_now))
         auction_limit_now = to_float(snap["property"].get("auction_limit"))
         for label, bid, economic_ceiling, simulated_ceiling, res, hurdle, feasible, tier_max_days in tier_specs:
             cash_need_tier = res.get("cash_requirement_including_reserve") if res else None
@@ -1898,7 +1981,7 @@ elif page == "New Auction Analysis":
                 tier_status = bid_reference_status(
                     res, policy_min_roi, policy_target_roi, policy_min_profit,
                     policy_target_days, tier_max_days, cash_need_tier,
-                    cash_available_now, bool(tiers.get("provisional")),
+                    cash_available_at_auction, bool(tiers.get("provisional")),
                     bool(snap.get("liquidity", {}).get("cash_confirmed", False)),
                 )
             elif not tiers.get("increment_confirmed"):
@@ -1916,8 +1999,8 @@ elif page == "New Auction Analysis":
                 # as an actionable bid, even if an older snapshot has legacy values.
                 tier_status = "TIDAK VALID — DI BAWAH LIMIT"
                 bid = None
-            elif cash_need_tier is not None and cash_need_tier > cash_available_now:
-                tier_status = "KAS TIDAK CUKUP"
+            elif cash_need_tier is not None and cash_need_tier > cash_available_at_auction:
+                tier_status = "PROYEKSI KAS SAAT LELANG BELUM CUKUP"
             elif not res or to_float(res.get("roi_pct"), -999) < hurdle or to_float(res.get("net_profit"), -999) < policy_min_profit or not (0 < to_float(res.get("projected_holding_days")) <= tier_max_days):
                 tier_status = "GATE ROI, PROFIT MINIMUM, ATAU DURASI TIDAK TERPENUHI"
             elif tiers.get("provisional"):
@@ -1949,7 +2032,7 @@ elif page == "New Auction Analysis":
             "ROI proyek all-in pada referensi": st.column_config.NumberColumn(format="%.1f%%"),
             "ROI tahunan ekuivalen (estimasi)": st.column_config.NumberColumn(format="%.1f%%"),
         })
-        st.caption("Bid legal selalu dimulai dari nilai limit dan mengikuti kelipatan resmi. Quick Sale ARV digunakan sebagai dasar hard-cap konservatif. Semua maximum bid harus memenuhi ROI minimum, profit bersih minimum, dan batas durasi.")
+        st.caption("Bid legal selalu dimulai dari nilai limit dan mengikuti kelipatan resmi. Quick-sale ARV menjadi referensi konservatif untuk MAO/walk-away. Angka ceiling adalah alat negosiasi dan sensitivitas; Owner tetap menentukan strategi dan tidak boleh mengabaikan ketidakpastian yang belum diberi allowance.")
         scenario_caps = [
             {"Skenario ARV": "Quick Sale / konservatif", "ARV": mkt.get("conservative_exit"), "Maximum Bid": tiers.get("max_bid"), "Project ROI target (%)": tiers.get("max_roi_target"), "Profit minimum (Rp)": tiers.get("minimum_net_profit_required")},
             {"Skenario ARV": "Base ARV", "ARV": mkt.get("base_exit"), "Maximum Bid": tiers.get("base_case_max_bid"), "Project ROI target (%)": tiers.get("max_roi_target"), "Profit minimum (Rp)": tiers.get("minimum_net_profit_required")},
@@ -1971,7 +2054,10 @@ elif page == "New Auction Analysis":
         f1, f2, f3 = st.columns(3)
         f1.metric("Uang jaminan", idr(snap["property"].get("deposit_amount")))
         f2.metric("Estimasi kebutuhan kas proyek + cadangan risiko", idr(at.get("cash_requirement_including_reserve")))
-        f3.metric("Kas tersedia investor", idr(snap.get("liquidity", {}).get("cash_available_for_new_project")))
+        f3.metric("Kas siap investasi saat ini", idr(snap.get("liquidity", {}).get("cash_available_for_new_project")))
+        expected_cash_summary = to_float(snap.get("liquidity", {}).get("cash_available_for_new_project_at_auction"))
+        if expected_cash_summary > to_float(snap.get("liquidity", {}).get("cash_available_for_new_project")):
+            st.caption(f"Proyeksi kas pada tanggal lelang: {idr(expected_cash_summary)}. Dana tambahan belum otomatis dianggap cleared; konfirmasi sebelum bidding.")
         risk_summary = snap.get("risk_summary", {})
         st.caption(f"Risk register: {risk_summary.get('count',0)} risiko · Severity maksimum {risk_summary.get('maximum_severity',0)}/25 · Cadangan likuiditas risiko {idr(risk_summary.get('total_cash_reserve',0))}")
         if not tiers.get("increment_confirmed"): st.error("Kelipatan bid belum dikonfirmasi. Tangga bidding belum final.")
@@ -2065,10 +2151,12 @@ elif page == "New Auction Analysis":
             """)
         with st.expander("Arti status keputusan", expanded=False):
             st.markdown("""
-            - **GO:** seluruh hard gate yang ditetapkan sudah terpenuhi. Tetap lakukan pemeriksaan akhir sebelum bidding.
-            - **CONDITIONAL GO:** secara awal layak, tetapi masih ada pemeriksaan penting yang perlu diselesaikan.
-            - **HOLD:** data atau konfirmasi penting belum lengkap. Jangan bidding sebelum blocker diselesaikan.
-            - **DO NOT BID:** batas ekonomi atau risiko utama menunjukkan objek tidak layak dibeli pada nilai limit.
+            - **GO:** skenario dasar menunjukkan daya tarik investasi tinggi dengan asumsi yang relatif terkendali; bukan persetujuan otomatis.
+            - **CONDITIONAL GO:** ekonomi proyek berpotensi menarik tetapi mengandung friksi/ketidakpastian yang perlu diberi harga, strategi, atau toleransi risiko oleh Owner.
+            - **HOLD:** nilai exit belum memiliki dasar yang dapat dipakai, atau return pada asumsi saat ini belum memenuhi hurdle Owner. HOLD adalah opsi menunggu, bukan menolak selamanya.
+            - **DO NOT BID:** hard stop yang telah dikonfirmasi atau kegagalan ekonomi struktural berdasarkan bukti yang cukup kuat.
+            - **Bid Readiness:** terpisah dari daya tarik investasi. Conditional GO bisa tetap NOT READY karena kas, dokumen, survey, atau persiapan teknis belum selesai.
+            - **Keputusan Owner:** final; dapat berbeda dari status model dengan alasan yang dicatat.
             """)
         if decision.get("blockers"):
             st.markdown("### Hal yang harus diselesaikan sebelum bidding")
@@ -2076,18 +2164,84 @@ elif page == "New Auction Analysis":
         if decision.get("warnings"):
             st.markdown("### Catatan kualitas data dan risiko")
             for x in decision["warnings"]: st.warning(x)
-        st.markdown("### Review AI (opsional, menggunakan kuota Gemini)")
-        if st.button("Review asumsi dan risiko dengan Gemini", disabled=not GEMINI_KEY):
+        st.markdown("### Skenario kelayakan — dihitung Python")
+        scenario_rows = []
+        for scenario in snap.get("feasibility_scenarios", []):
+            scenario_rows.append({
+                "Skenario": scenario.get("scenario"),
+                "Harga exit": scenario.get("exit_price"),
+                "Holding (hari)": scenario.get("holding_days"),
+                "Total modal": scenario.get("total_capital"),
+                "Profit bersih": scenario.get("net_profit"),
+                "ROI all-in": (f"{to_float(scenario.get('roi_pct')):.1f}%" if scenario.get("roi_pct") is not None else "Belum tersedia"),
+                "Asumsi": scenario.get("assumption", scenario.get("message", "")),
+            })
+        if scenario_rows:
+            st.dataframe(pd.DataFrame(scenario_rows), use_container_width=True, hide_index=True, column_config={
+                "Harga exit": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Total modal": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Profit bersih": st.column_config.NumberColumn(format="Rp %.0f"),
+            })
+        st.caption("Skenario cepat/moderat/tekanan adalah simulasi deterministik dari input Owner dan hasil pasar yang tersedia. Angka bukan forecast terjamin; ubah asumsi holding, harga exit, allowance, dan biaya untuk menguji sensitivitas.")
+        st.markdown("### AI Feasibility Co-Pilot (Gemini Flash)")
+        st.caption("Gemini menginterpretasikan hasil Python, menyoroti blind spot, membandingkan skenario, dan menyusun opsi Owner. Gemini tidak menjadi sumber angka dan tidak mengambil keputusan akhir.")
+        if st.session_state.get("ai_feasibility_error"):
+            st.warning("Perhitungan Python berhasil, tetapi Gemini belum berhasil menyusun narasi: " + str(st.session_state.ai_feasibility_error))
+        if st.button("Perbarui AI Feasibility Brief", disabled=not GEMINI_KEY, key="na_build_ai_feasibility_brief"):
             try:
-                with st.spinner("Gemini mengkritisi data dan hasil Python..."):
-                    st.session_state.ai_review = review_investment(GEMINI_KEY, GEMINI_MODEL, snap)
-            except Exception as exc: st.error(str(exc))
-        if st.session_state.ai_review:
-            st.json(st.session_state.ai_review)
+                with st.spinner("Gemini menyusun ulang studi kelayakan dari hasil hitung Python..."):
+                    st.session_state.ai_feasibility_brief = build_ai_feasibility_brief(GEMINI_KEY, GEMINI_MODEL, snap)
+                    st.session_state.ai_feasibility_error = ""
+                    snap["ai_feasibility_brief"] = st.session_state.ai_feasibility_brief
+                    st.session_state.current_analysis = snap
+            except Exception as exc:
+                st.session_state.ai_feasibility_error = str(exc)
+                st.error(f"AI Feasibility Brief gagal dibuat: {exc}")
+        brief = st.session_state.get("ai_feasibility_brief")
+        if not GEMINI_KEY:
+            st.info("Gemini belum terhubung. Studi angka dan skenario Python tetap tersedia; isi GEMINI_API_KEY untuk mengaktifkan interpretasi Analis Senior otomatis.")
+        elif not brief and not st.session_state.get("ai_feasibility_error"):
+            st.caption("AI Feasibility Brief belum tersedia. Anda dapat menjalankan pembaruan brief dengan tombol di bawah.")
+        if brief:
+            with st.container(border=True):
+                st.markdown("#### Pertimbangan Analis Senior")
+                st.write(brief.get("executive_summary", ""))
+                st.markdown("**Kelayakan finansial**")
+                st.write(brief.get("financial_assessment", ""))
+                st.markdown("**Pasar dan valuasi**")
+                st.write(brief.get("market_assessment", ""))
+                st.markdown("**Eksekusi dan operasional**")
+                st.write(brief.get("execution_assessment", ""))
+                for label, key in [("Skenario", "scenario_assessment"), ("Kekuatan", "strengths"), ("Penggerak nilai", "value_drivers"), ("Risiko utama", "key_risks"), ("Mitigasi yang disarankan", "mitigations"), ("Asumsi yang perlu dikonfirmasi", "assumptions_to_validate"), ("Pilihan Owner", "owner_options")]:
+                    items = brief.get(key) or []
+                    if items:
+                        st.markdown(f"**{label}**")
+                        for item in items: st.write("•", item)
+                st.markdown("**Rekomendasi referensi AI**")
+                st.write(f"{brief.get('reference_recommendation', 'Belum ada')} — {brief.get('recommendation_rationale', '')}")
+                st.caption(brief.get("owner_decision_authority", "Keputusan akhir berada pada Owner."))
+        st.markdown("### Keputusan Owner")
+        st.caption("Pilihan Owner terpisah dari status model. Anda dapat memilih GO, CONDITIONAL GO, HOLD, atau SKIP setelah mempertimbangkan studi, pengalaman lapangan, jaringan, strategi dan toleransi risiko.")
+        owner_options = ["Belum diputuskan", "GO", "CONDITIONAL GO", "HOLD", "SKIP", "DO NOT BID"]
+        if st.session_state.get("owner_decision") not in owner_options:
+            st.session_state.owner_decision = "Belum diputuskan"
+        st.selectbox("Keputusan akhir Owner", owner_options, key="owner_decision")
+        st.text_area("Alasan/strategi Owner (terutama bila berbeda dari status model)", key="owner_decision_notes", height=90)
+        owner_choice = st.session_state.get("owner_decision", "Belum diputuskan")
+        if owner_choice not in {"Belum diputuskan", decision.get("investment_status", decision.get("status"))} and not str(st.session_state.get("owner_decision_notes") or "").strip():
+            st.info("Keputusan Owner berbeda dari status referensi model. Catat alasan singkat agar histori keputusan dan pembelajaran portofolio tetap dapat ditelusuri.")
+        if decision.get("hard_stops") and owner_choice in {"GO", "CONDITIONAL GO"}:
+            st.error("Owner memilih untuk melanjutkan meskipun terdapat hard stop terkonfirmasi. Ini override keputusan yang sangat berisiko; alasan Owner akan disimpan sebagai catatan, dan sebaiknya minta opini hukum/teknis independen sebelum bertindak.")
         # Portfolio appendix is assembled from the app's cached Sheets reads.
         # It is only embedded in the downloaded report and is not persisted in
         # ANALYSIS_HISTORY, keeping the underwriting snapshot compact.
-        memo_snapshot = {**snap, "portfolio_context": build_memo_portfolio_context(snap.get("property_id", ""))}
+        memo_snapshot = {
+            **snap,
+            "ai_feasibility_brief": st.session_state.get("ai_feasibility_brief"),
+            "owner_decision": st.session_state.get("owner_decision", "Belum diputuskan"),
+            "owner_decision_notes": st.session_state.get("owner_decision_notes", ""),
+            "portfolio_context": build_memo_portfolio_context(snap.get("property_id", "")),
+        }
         report = build_analysis_markdown(memo_snapshot)
         memo_docx = build_analysis_docx(memo_snapshot)
         memo_col1, memo_col2 = st.columns(2)
@@ -2099,7 +2253,7 @@ elif page == "New Auction Analysis":
         if st.button("💾 SIMPAN / UPDATE ANALISIS KE DATABASE", type="primary", use_container_width=True):
             try:
                 propid = snap["property_id"]
-                latest = {**snap, "ai_review": st.session_state.ai_review}
+                latest = {**snap, "ai_review": st.session_state.ai_review, "ai_feasibility_brief": st.session_state.get("ai_feasibility_brief"), "owner_decision": st.session_state.get("owner_decision", "Belum diputuskan"), "owner_decision_notes": st.session_state.get("owner_decision_notes", "")}
                 old = next((p for p in list_properties() if p.get("property_id") == propid), None)
                 lifecycle = old.get("lifecycle_status", "PROSPECT") if old else "PROSPECT"
                 save_property_record(propid, st.session_state.current_inputs, decision["status"], lifecycle, latest)

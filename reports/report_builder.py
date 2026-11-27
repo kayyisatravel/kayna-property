@@ -263,6 +263,11 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
         f"Property ID: {snapshot.get('property_id', '—')}",
         f"Keputusan underwriting: **{decision.get('status', 'HOLD')}**", "",
         "## 1. Ringkasan Eksekutif", str(decision.get("summary") or "Analisis investasi berdasarkan data dan asumsi yang tersedia."), "",
+        f"- Status referensi model: **{decision.get('investment_status', decision.get('status', 'HOLD'))}**",
+        f"- Bid Readiness: **{decision.get('bid_readiness', 'Belum dievaluasi')}**",
+        f"- Keputusan akhir Owner: **{snapshot.get('owner_decision', 'Belum diputuskan')}**",
+        f"- Alasan/strategi Owner: {snapshot.get('owner_decision_notes') or 'Belum dicatat'}", "",
+        "Status model adalah analisis, bukan veto atau persetujuan. Keputusan akhir berada pada Owner; Bid Readiness menjelaskan kesiapan eksekusi secara terpisah.", "",
         "## 2. Identitas dan Jadwal Lelang",
         f"- Alamat: {p.get('address', '—')}", f"- KPKNL: {p.get('auction_office', '—')}",
         f"- Tanggal lelang: {_fmt_short_date(p.get('auction_date'))}", f"- Batas setor jaminan: {_fmt_short_date(p.get('deposit_deadline'))}",
@@ -327,7 +332,15 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     lines += ["", "## 10. Blocker dan Peringatan"]
     lines += [f"- **Blocker:** {x}" for x in decision.get("blockers", [])] or ["- Tidak ada blocker utama yang tercatat."]
     lines += [f"- **Peringatan:** {x}" for x in decision.get("warnings", [])] or ["- Tidak ada peringatan tambahan."]
-
+    brief = snapshot.get("ai_feasibility_brief") if isinstance(snapshot.get("ai_feasibility_brief"), dict) else {}
+    if brief:
+        lines += ["", "## 10. Pertimbangan Analis Senior — AI Feasibility Co-Pilot", str(brief.get("executive_summary") or "")]
+        for label, key in (("Kelayakan finansial", "financial_assessment"), ("Pasar dan valuasi", "market_assessment"), ("Eksekusi", "execution_assessment")):
+            if brief.get(key): lines += [f"### {label}", str(brief[key])]
+        for label, key in (("Skenario", "scenario_assessment"), ("Risiko", "key_risks"), ("Mitigasi", "mitigations"), ("Asumsi yang perlu dikonfirmasi", "assumptions_to_validate"), ("Opsi Owner", "owner_options")):
+            values = brief.get(key) or []
+            if values: lines += [f"### {label}"] + [f"- {value}" for value in values]
+        lines += [f"**Rekomendasi referensi AI:** {brief.get('reference_recommendation', 'Belum tersedia')} — {brief.get('recommendation_rationale', '')}", "Keputusan final tetap pada Owner."]
     _append_portfolio_markdown(lines, snapshot.get("portfolio_context"))
     lines += ["", "## Pengelola Investasi dan Proyek", f"{BRAND} | {BRAND_DESCRIPTOR}.", "", "## Batasan", "Dokumen ini merupakan proposal investasi dan alat bantu underwriting, bukan appraisal resmi, pendapat hukum, jaminan hasil investasi, atau quotation kontraktor. Harga penawaran bukan harga transaksi kecuali terverifikasi. Kondisi fisik, dokumen, jadwal, dan seluruh asumsi harus diperiksa sebelum keputusan investasi."]
     return "\n".join(lines)
@@ -521,6 +534,15 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
 
     doc.add_heading("Ringkasan Eksekutif", level=1)
     doc.add_paragraph(str(decision.get("summary") or "Analisis investasi berdasarkan data dan asumsi yang tersedia."))
+    owner_paragraph = doc.add_paragraph()
+    owner_paragraph.add_run("Status referensi model: ").bold = True
+    owner_paragraph.add_run(str(decision.get("investment_status", decision.get("status", "HOLD"))))
+    owner_paragraph.add_run("  |  Bid Readiness: ").bold = True
+    owner_paragraph.add_run(str(decision.get("bid_readiness", "Belum dievaluasi")))
+    owner_paragraph.add_run("  |  Keputusan Owner: ").bold = True
+    owner_paragraph.add_run(str(snapshot.get("owner_decision", "Belum diputuskan")))
+    doc.add_paragraph("Alasan/strategi Owner: " + str(snapshot.get("owner_decision_notes") or "Belum dicatat"))
+    doc.add_paragraph("Status model adalah analisis, bukan veto atau persetujuan. Keputusan akhir berada pada Owner; Bid Readiness menjelaskan kesiapan eksekusi secara terpisah.")
     decision_table = doc.add_table(rows=1, cols=2); decision_table.style = "Light Shading Accent 1"; decision_table.alignment = WD_TABLE_ALIGNMENT.CENTER
     decision_table.cell(0, 0).text = "KEPUTUSAN UNDERWRITING"
     decision_table.cell(0, 1).text = str(decision.get("status", "HOLD"))
@@ -647,6 +669,21 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     if risk_items:
         add_table(["Risiko", "Probabilitas / Dampak", "Cadangan", "Mitigasi"], [[str(r.get("risk_description") or "Risiko"), f"{r.get('probability_1_5', '—')} / {r.get('impact_1_5', '—')}", idr(r.get("cost_reserve")), str(r.get("mitigation") or "—")] for r in risk_items[:20]], widths=[2.05, 1.0, 1.15, 2.6])
 
+    brief = snapshot.get("ai_feasibility_brief") if isinstance(snapshot.get("ai_feasibility_brief"), dict) else {}
+    if brief:
+        doc.add_heading("10. Pertimbangan Analis Senior — AI Feasibility Co-Pilot", level=1)
+        if brief.get("executive_summary"): doc.add_paragraph(str(brief["executive_summary"]))
+        for label, key in (("Kelayakan finansial", "financial_assessment"), ("Pasar dan valuasi", "market_assessment"), ("Eksekusi", "execution_assessment")):
+            if brief.get(key):
+                doc.add_heading(label, level=2); doc.add_paragraph(str(brief[key]))
+        for label, key in (("Skenario", "scenario_assessment"), ("Kekuatan", "strengths"), ("Penggerak nilai", "value_drivers"), ("Risiko utama", "key_risks"), ("Mitigasi", "mitigations"), ("Asumsi yang perlu dikonfirmasi", "assumptions_to_validate"), ("Opsi Owner", "owner_options")):
+            values = brief.get(key) or []
+            if values:
+                doc.add_heading(label, level=2)
+                for value in values: doc.add_paragraph(str(value), style="List Bullet")
+        if brief.get("reference_recommendation"):
+            doc.add_paragraph(f"Rekomendasi referensi AI: {brief.get('reference_recommendation')} — {brief.get('recommendation_rationale', '')}")
+        doc.add_paragraph("Keputusan akhir tetap berada pada Owner. Gemini menginterpretasikan hasil hitung dan data yang diberikan; angka finansial berasal dari Python.")
     _portfolio_sections(doc, snapshot.get("portfolio_context"), add_table)
     doc.add_heading("Pengelola Investasi dan Proyek", level=1)
     doc.add_paragraph(f"{BRAND} menjalankan fungsi property investment dan project management: analisis peluang, perencanaan akuisisi, pengendalian anggaran, koordinasi renovasi, serta persiapan pemasaran aset. Ruang lingkup pelaksanaan mengikuti persetujuan dan perjanjian proyek masing-masing.")

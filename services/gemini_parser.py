@@ -789,6 +789,135 @@ def review_investment(api_key: str, model: str, snapshot: dict[str, Any]) -> dic
     except Exception as exc: raise RuntimeError(f"Review AI tidak valid: {exc}") from exc
 
 
+
+def build_ai_feasibility_brief(api_key: str, model: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Create a senior-analyst style feasibility brief from Python-calculated facts.
+
+    Gemini interprets, challenges and explains the supplied evidence. It must not
+    invent or recompute financial figures and does not make the Owner's decision.
+    """
+    market = snapshot.get("market", {}) or {}
+    at_limit = snapshot.get("at_limit", {}) or {}
+    decision = snapshot.get("decision", {}) or {}
+    # Give Gemini the small, auditable evidence set, not just market aggregates.
+    # URLs and listing labels are user-provided inputs and are not independently
+    # verified by the language model.
+    comparable_rows = []
+    for row in list(market.get("valid") or [])[:15]:
+        comparable_rows.append({key: row.get(key) for key in (
+            "name", "address", "price", "negotiated_price", "price_type",
+            "land_area", "building_area", "condition", "source_platforms",
+            "source_url", "source_url_scope", "date_found", "listing_date",
+            "distance_km", "similarity_score", "proximity_score",
+            "market_segment", "missing_quality_fields",
+        ) if row.get(key) not in (None, "", [])})
+    liquidity = snapshot.get("liquidity", {}) or {}
+    compact = {
+        "property": snapshot.get("property", {}),
+        "survey": snapshot.get("survey", {}),
+        "legal": snapshot.get("legal", {}),
+        "owner_valuation": snapshot.get("owner_valuation", {}),
+        "market": {
+            "base_exit": market.get("base_exit"),
+            "conservative_exit": market.get("conservative_exit"),
+            "market_range_low": market.get("market_range_low"),
+            "market_range_high": market.get("market_range_high"),
+            "fmv_as_is": market.get("fmv_as_is"),
+            "arv_after_repair": market.get("arv_after_repair"),
+            "matched_comparables": market.get("arv_condition_comparable_count"),
+            "comparable_pool_count": market.get("comparable_pool_count"),
+            "confidence_index": market.get("confidence"),
+            "confidence_is_not_probability": True,
+            "valuation_is_provisional": market.get("valuation_is_provisional"),
+            "exit_value_source": market.get("exit_value_source"),
+            "quality_notes": market.get("quality_notes", []),
+            "comparable_observations_for_review": comparable_rows,
+        },
+        "costs": snapshot.get("costs", {}),
+        "at_limit_python_result": at_limit,
+        "scenario_results_python": snapshot.get("feasibility_scenarios", []),
+        "mao": snapshot.get("mao", {}),
+        "risk_register": snapshot.get("risk_register", []),
+        "risk_summary_python": snapshot.get("risk_summary", {}),
+        "funding": snapshot.get("funding", {}),
+        "cash_timing": {
+            "cash_available_now": liquidity.get("cash_available_for_new_project"),
+            "cash_available_at_auction": liquidity.get("cash_available_for_new_project_at_auction"),
+            "expected_cash_amount": liquidity.get("expected_cash_amount"),
+            "expected_cash_date": liquidity.get("expected_cash_date"),
+            "expected_cash_status": liquidity.get("expected_cash_status"),
+            "expected_cash_is_provisional": liquidity.get("expected_cash_is_provisional"),
+            "expected_cash_after_auction": liquidity.get("expected_cash_after_auction"),
+        },
+        "decision_engine_reference": decision,
+    }
+    prompt = (
+        "Anda adalah Analis Senior investasi properti lelang Indonesia yang bekerja sebagai AI Feasibility Co-Pilot. "
+        "Pemilik/Owner adalah pengambil keputusan akhir; jangan bertindak sebagai hakim, polisi, atau veto otomatis. "
+        "Susun feasibility brief strategis dari data JSON. Telaah listing comparable satu per satu sebelum menerima agregat; "
+        "bedakan listing asking price dari transaksi terkonfirmasi dan sebutkan keterbatasan URL/tanggal/similarity. "
+        "Bedakan FAKTA INPUT, ASUMSI OWNER, HASIL HITUNG PYTHON, INFERENSI ANALITIS, dan DATA YANG BELUM TERSEDIA. "
+        "Jangan mengarang data pasar, transaksi, kondisi legal/fisik, "
+        "atau angka. Jangan menghitung ulang angka keuangan; gunakan nilai Python apa adanya. Bila angka tidak ada, tulis "
+        "'belum tersedia'. Analisis kelebihan, friksi yang bisa diberi harga, risiko yang tidak dapat dimitigasi, skenario "
+        "cepat/moderat/tekanan, sensitivitas, strategi MAO/walk-away, dan pilihan Owner: GO, CONDITIONAL GO, HOLD, SKIP. "
+        "Jelaskan bahwa status referensi sistem bukan keputusan Owner dan Bid Readiness berbeda dari daya tarik investasi. "
+        "Jika SKPT/KPKNL ditandai sudah diperiksa, perlakukan sebagai verifikasi yang dinyatakan Owner, namun jangan "
+        "menyimpulkan jaminan absolut tidak ada gugatan. Jangan mendorong bidding jika hard stop yang telah dikonfirmasi. "
+        "Bahasa Indonesia yang jelas, ringkas tetapi bernas, seperti memo analis senior.\n\nDATA JSON:\n"
+        + json.dumps(compact, ensure_ascii=False, default=str)
+    )
+    from pydantic import BaseModel, Field
+    class FeasibilityBrief(BaseModel):
+        executive_summary: str
+        financial_assessment: str
+        market_assessment: str
+        execution_assessment: str
+        scenario_assessment: list[str] = Field(default_factory=list)
+        strengths: list[str] = Field(default_factory=list)
+        value_drivers: list[str] = Field(default_factory=list)
+        key_risks: list[str] = Field(default_factory=list)
+        mitigations: list[str] = Field(default_factory=list)
+        assumptions_to_validate: list[str] = Field(default_factory=list)
+        owner_options: list[str] = Field(default_factory=list)
+        reference_recommendation: str
+        recommendation_rationale: str
+        owner_decision_authority: str = "Keputusan akhir berada pada Owner."
+    raw = _client_call(api_key, model or DEFAULT_MODEL, prompt, schema=FeasibilityBrief, max_output_tokens=2800)
+    try:
+        result = FeasibilityBrief.model_validate_json(raw).model_dump()
+    except Exception as exc:
+        raise RuntimeError(f"AI Feasibility Brief tidak valid: {exc}") from exc
+
+    # Keep the narrative model's recommendation coherent with confirmed facts
+    # and Python safety signals. This remains a reference recommendation; the
+    # Owner's separately recorded decision is not changed here.
+    allowed = {"GO", "CONDITIONAL GO", "HOLD", "DO NOT BID", "SKIP", "REVIEW"}
+    recommendation = str(result.get("reference_recommendation") or "REVIEW").strip().upper()
+    if recommendation not in allowed:
+        recommendation = "REVIEW"
+        result["recommendation_rationale"] = (
+            str(result.get("recommendation_rationale") or "")
+            + " Rekomendasi AI dinormalisasi menjadi REVIEW karena label di luar pilihan yang didukung."
+        ).strip()
+    hard_stops = list(decision.get("hard_stops") or [])
+    python_profit = at_limit.get("net_profit")
+    python_roi = at_limit.get("roi_pct")
+    if hard_stops and recommendation not in {"DO NOT BID", "SKIP"}:
+        recommendation = "DO NOT BID"
+        result["recommendation_rationale"] = (
+            "Python mencatat hard stop terkonfirmasi. AI tidak boleh merekomendasikan bidding selama hard stop tersebut belum diselesaikan. "
+            + str(result.get("recommendation_rationale") or "")
+        ).strip()
+    elif (python_profit is None or python_roi is None) and recommendation in {"GO", "CONDITIONAL GO"}:
+        recommendation = "HOLD"
+        result["recommendation_rationale"] = (
+            "Profit/ROI belum dapat dihitung dari data Python, sehingga rekomendasi investasi belum dapat dinaikkan menjadi GO. "
+            + str(result.get("recommendation_rationale") or "")
+        ).strip()
+    result["reference_recommendation"] = recommendation
+    return result
+
 def review_portfolio(api_key: str, model: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
     prompt = "Anda reviewer portofolio. Pilih maksimal satu property_id atau HOLD_ALL. Dilarang mengubah status hard-stop Python. Utamakan perlindungan modal, kecukupan kas, kualitas bukti pasar dan risiko aktif. eligibility_index bukan probabilitas. JSON kandidat: " + json.dumps(candidates[:8], ensure_ascii=False, default=str)
     from pydantic import BaseModel, ConfigDict, Field

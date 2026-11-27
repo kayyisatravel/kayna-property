@@ -169,4 +169,5 @@ def test_required_rab_zero_quantity_is_a_blocker_until_marked_not_needed():
     market = {"valid_count":5, "go_grade_count":5, "confidence":85, "status":"READY"}
     result = evaluate_decision(inputs, market, {"increment_confirmed":True,"max_bid":150}, {"roi_pct":35,"net_profit":35,"capital_before_sale":100})
     assert result["status"] == "HOLD"
-    assert any("volume/harga konservatif" in x.lower() for x in result["blockers"])
+    assert any("item rab yang belum dapat diukur/harga" in x.lower() for x in result["conditions"])
+    assert any(x["category"] == "COST" for x in result["bid_readiness_issues"])

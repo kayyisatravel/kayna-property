@@ -1,3 +1,26 @@
+## [1.0.25.2] - 2026-11-27
+
+### Changed
+- Reframe the underwriting flow as an AI Feasibility Co-Pilot: deterministic Python calculations, Gemini Flash senior-analyst interpretation, and explicit Owner decision authority.
+- Separate model reference classification, bid readiness and Owner's final choice/rationale in the analysis screen and memorandum.
+- Allow Owner FMV as-is / ARV assumptions with a written basis when comparable listings are unavailable; retain small-sample market values as provisional and keep as-is and post-renovation condition cohorts separate.
+- Add a priced hidden-condition reserve for uninspected interiors and building-age / visual assessment notes; uncertainty is represented in the model rather than converted automatically into HOLD.
+- Add allowance for renovation scope that cannot yet be accessed, measured or quoted; include the allowance in renovation cost and apply contingency to the modeled scope.
+- Model additional cash by amount, source, expected date and status. Planned/unconfirmed funds and funds arriving after the auction are not counted as cleared bid-day liquidity; confirmed commitments remain provisional until received.
+- Record Owner confirmation that SKPT/KPKNL announcement and property identity have been checked. Original certificate handover is tracked as an administrative/post-award follow-up rather than a duplicate pre-bid legal veto.
+- Add deterministic Fast / Moderate / Stress feasibility scenarios and include the AI brief and Owner decision in downloadable investment memoranda and the existing analysis payload.
+- Reserve DO NOT BID for explicit confirmed fatal legal/security/access/environmental hard stops or strongly evidenced structural economic failure. Incomplete but priceable friction generally becomes a condition / scenario / readiness item rather than an automatic investment HOLD.
+
+### Compatibility
+- No Google Sheets tab/header/schema migration. New inputs and outputs are stored in the existing analysis JSON payload/history.
+- Preserve the V1.0.25 ranking, existing sequential workflow and user custom UI. V1.0.26 lifecycle and V1.0.27 same-property / relist detection are not included.
+- `.streamlit/secrets.toml` is not included or overwritten.
+
+### Verification
+- Regression suite: **280 passed**.
+- Python compilation / AST and release ZIP integrity checks: recorded in the V1.0.25.2 release notes after packaging.
+- Live Streamlit Cloud, Google Sheets and Gemini API integration was not performed in this environment.
+
 ## [1.0.25.1] - 2026-11-27
 
 ### Changed

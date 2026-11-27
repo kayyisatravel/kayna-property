@@ -6,6 +6,7 @@ from .maximum_bid import build_bid_tiers, calculate_rule_of_thumb_mao
 from .decision_engine import evaluate_decision
 from .liquidity import evaluate_funding
 from .risk_engine import summarize_risks
+from .feasibility import build_feasibility_scenarios
 from .renovation_engine import rab_item_is_in_scope
 from .utils import to_float
 
@@ -25,21 +26,28 @@ def _subject_condition_bucket(physical_condition: Any, property_type: Any = "") 
     return None
 
 
-def _market_estimate_summary(result: dict[str, Any], condition_bucket: str | None) -> dict[str, Any]:
+def _market_estimate_summary(result: dict[str, Any], condition_bucket: str | None, owner_value: float | None = None) -> dict[str, Any]:
     count = int(to_float(result.get("valuation_comparable_count")))
     confidence = to_float(result.get("confidence"))
-    enough_evidence = count >= 3 and confidence >= 45
+    sample_value = result.get("base_exit")
+    sample_conservative = result.get("conservative_exit")
+    has_owner_value = owner_value is not None and to_float(owner_value) > 0
+    indicative_value = sample_value if sample_value is not None else (to_float(owner_value) if has_owner_value else None)
+    indicative_conservative = sample_conservative if sample_conservative is not None else (to_float(owner_value) * 0.95 if has_owner_value else None)
+    validated = count >= 3 and confidence >= 45 and not has_owner_value
     return {
         "condition_bucket": condition_bucket,
-        "value": result.get("base_exit") if enough_evidence else None,
-        "indicative_value": result.get("base_exit"),
-        "conservative_value": result.get("conservative_exit") if enough_evidence else None,
-        "indicative_conservative_value": result.get("conservative_exit"),
+        "value": indicative_value if validated else None,
+        "indicative_value": indicative_value,
+        "conservative_value": indicative_conservative if validated else None,
+        "indicative_conservative_value": indicative_conservative,
         "comparable_count": count,
         "go_grade_count": int(to_float(result.get("go_grade_count"))),
         "confidence": confidence,
-        "status": "INDICATIVE" if enough_evidence else "LOW_SAMPLE",
+        "status": "VALIDATED" if validated else "OWNER_INPUT" if has_owner_value and count == 0 else "PROVISIONAL" if count > 0 or has_owner_value else "NO_DATA",
         "valuation_mode": result.get("valuation_mode"),
+        "source": "Owner estimate" if has_owner_value and count == 0 else "Condition-matched comparables",
+        "sample_is_sufficient_for_conditional": count >= 3 and confidence >= 45,
     }
 
 
@@ -68,15 +76,39 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
         "physical_condition": "Hitung tanah" if is_land_only else "Siap huni",
     }
     market_condition_matched = assess_comparables(exit_comparables, market_subject_exit, *market_kwargs)
-    if market_condition_matched.get("valuation_comparable_count", 0) >= 3:
-        market = market_condition_matched
+    mixed_pool_diagnostic = assess_comparables(comparables, market_subject_exit, *market_kwargs) if comparables else None
+    owner_valuation = data.get("owner_valuation", {}) or {}
+    owner_arv = to_float(owner_valuation.get("arv_estimate")) or None
+    owner_fmv = to_float(owner_valuation.get("fmv_as_is_estimate")) or None
+    # Never silently mix unlike condition buckets into the post-renovation exit.
+    # A small matched sample remains visible as provisional; if none exists, an
+    # explicit Owner estimate may be used and is clearly labelled as such.
+    if int(to_float(market_condition_matched.get("valuation_comparable_count"))) > 0:
+        market = dict(market_condition_matched)
+        exit_value_source = "condition_matched_comparables"
+    elif owner_arv:
+        market = dict(market_condition_matched)
+        market.update({
+            "base_exit": round(owner_arv),
+            "conservative_exit": round(owner_arv * (1 - to_float(rules.get("quick_sale_discount_pct", 5)) / 100)),
+            "optimistic_exit": round(owner_arv * 1.05),
+            "market_range_low": round(owner_arv * 0.80),
+            "market_range_high": round(owner_arv * 1.10),
+            "confidence": min(35.0, to_float(market_condition_matched.get("confidence"))),
+            "estimate_label": "Estimasi ARV dari Owner — belum diverifikasi pembanding",
+        })
+        exit_value_source = "owner_estimate"
     else:
-        # Keep the historical partial-market diagnostic available (e.g. one
-        # unclassified listing) but never present it as condition-matched ARV.
-        market = assess_comparables(comparables, market_subject_exit, *market_kwargs)
-        market["quality_notes"].append(
-            "Pembanding kondisi exit yang terklasifikasi belum mencapai 3 listing; nilai campuran di bawah hanya proxy sementara dan tidak boleh diperlakukan sebagai ARV terverifikasi."
-        )
+        market = dict(market_condition_matched)
+        exit_value_source = "unavailable"
+    if mixed_pool_diagnostic:
+        market["mixed_pool_diagnostic"] = {
+            "base_exit": mixed_pool_diagnostic.get("base_exit"),
+            "conservative_exit": mixed_pool_diagnostic.get("conservative_exit"),
+            "valid_count": mixed_pool_diagnostic.get("valuation_comparable_count"),
+            "confidence": mixed_pool_diagnostic.get("confidence"),
+            "note": "Diagnostik gabungan seluruh bucket saja; tidak digunakan sebagai ARV/MAO karena kondisi exit tidak seragam.",
+        }
 
     as_is_comparables = [
         row for row in comparables
@@ -106,14 +138,31 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
     market["arv_condition_comparable_count"] = int(to_float(market_condition_matched.get("valuation_comparable_count")))
     market["arv_condition_confidence"] = to_float(market_condition_matched.get("confidence"))
     market["arv_after_repair"] = (
-        None if is_land_only else _market_estimate_summary(market_condition_matched, exit_condition)
+        None if is_land_only else _market_estimate_summary(
+            market_condition_matched, exit_condition,
+            owner_arv if int(to_float(market_condition_matched.get("valuation_comparable_count"))) == 0 else None,
+        )
     )
     market["land_exit_value"] = (
-        _market_estimate_summary(market_condition_matched, exit_condition) if is_land_only else None
+        _market_estimate_summary(
+            market_condition_matched, exit_condition,
+            owner_arv if int(to_float(market_condition_matched.get("valuation_comparable_count"))) == 0 else None,
+        ) if is_land_only else None
     )
-    market["fmv_as_is"] = _market_estimate_summary(market_as_is, current_condition)
+    market["fmv_as_is"] = _market_estimate_summary(
+        market_as_is, current_condition,
+        owner_fmv if int(to_float(market_as_is.get("valuation_comparable_count"))) == 0 else None,
+    )
+    market["exit_value_source"] = exit_value_source
+    market["owner_arv_estimate"] = owner_arv
+    market["valuation_is_provisional"] = (
+        int(to_float(market_condition_matched.get("valuation_comparable_count"))) < 3
+        or to_float(market_condition_matched.get("confidence")) < 45
+        or exit_value_source == "owner_estimate"
+    )
     market["limit_to_fmv_as_is_pct"] = None
-    fmv_as_is_value = to_float((market.get("fmv_as_is") or {}).get("value"))
+    fmv_summary = market.get("fmv_as_is") or {}
+    fmv_as_is_value = to_float(fmv_summary.get("value") or fmv_summary.get("indicative_value"))
     auction_limit = to_float(prop.get("auction_limit"))
     if fmv_as_is_value > 0 and auction_limit > 0:
         market["limit_to_fmv_as_is_pct"] = round(auction_limit / fmv_as_is_value * 100, 1)
@@ -162,14 +211,17 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
         go_minimum_roi_pct=to_float(rules.get("go_minimum_roi_pct", 25)),
     )
     funding = evaluate_funding(to_float(at_limit.get("cash_requirement_including_reserve")), to_float(prop.get("deposit_amount")), liquidity)
-    market_exit_valid = (
+    market_exit_valid = bool(conservative_exit and to_float(conservative_exit) > 0) and (
+        int(to_float(market.get("arv_condition_comparable_count"))) >= 1 or exit_value_source == "owner_estimate"
+    )
+    market_exit_strong = (
         int(to_float(market.get("arv_condition_comparable_count"))) >= 3
         and to_float(market.get("arv_condition_confidence")) >= 45
     )
     # Do not classify an opportunity as structurally uneconomic from a
     # mixed-condition/low-sample proxy. Zero-bid economics are a hard stop only
     # when the exit valuation itself has adequate condition-matched evidence.
-    no_bid_case = calculate_project(0.0, conservative_exit, calculation_inputs) if conservative_exit and market_exit_valid else {}
+    no_bid_case = calculate_project(0.0, conservative_exit, calculation_inputs) if conservative_exit and market_exit_strong else {}
     # Pass the exact rules snapshot into the decision engine. Previously these
     # thresholds silently fell back to defaults because `rules` was omitted.
     decision_inputs = {
@@ -182,13 +234,9 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
     arv_summary = market.get("arv_after_repair") or {}
     if is_land_only:
         # Land-only exits use the condition-matched land valuation, not a house ARV.
-        quick_sale_value_for_mao = (
-            conservative_exit
-            if market.get("arv_condition_comparable_count", 0) >= 3 and market.get("arv_condition_confidence", 0) >= 45
-            else None
-        )
+        quick_sale_value_for_mao = conservative_exit if market_exit_valid else None
     else:
-        quick_sale_value_for_mao = arv_summary.get("conservative_value")
+        quick_sale_value_for_mao = arv_summary.get("indicative_conservative_value")
     mao_rule_of_thumb = calculate_rule_of_thumb_mao(
         to_float(quick_sale_value_for_mao), calculation_inputs,
         to_float(rules.get("mao_rule_of_thumb_pct", 70.0)),
@@ -242,22 +290,23 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
     index = round(0.25 * financial_score + 0.15 * market_score + 0.15 * legal_score + 0.10 * survey_score + 0.20 * funding_score + 0.15 * risk_score_pct, 1)
     mao_full_cost = tiers.get("max_bid") if market_exit_valid else None
     if mao_full_cost is None and market_exit_valid:
-        mao_full_cost = tiers.get("max_simulated_ceiling")
-    if mao_full_cost is None and market_exit_valid:
-        mao_full_cost = tiers.get("max_economic_ceiling")
+        mao_full_cost = tiers.get("max_simulated_ceiling") or tiers.get("max_economic_ceiling")
     mao_go_full_cost = tiers.get("go_bid") if market_exit_valid else None
     if mao_go_full_cost is None and market_exit_valid:
-        mao_go_full_cost = tiers.get("go_simulated_ceiling")
-    if mao_go_full_cost is None and market_exit_valid:
-        mao_go_full_cost = tiers.get("go_economic_ceiling")
+        mao_go_full_cost = tiers.get("go_simulated_ceiling") or tiers.get("go_economic_ceiling")
     mao_target_roi_bid = tiers.get("mid_bid") if market_exit_valid else None
     if mao_target_roi_bid is None and market_exit_valid:
-        mao_target_roi_bid = tiers.get("mid_simulated_ceiling")
-    if mao_target_roi_bid is None and market_exit_valid:
-        mao_target_roi_bid = tiers.get("mid_economic_ceiling")
+        mao_target_roi_bid = tiers.get("mid_simulated_ceiling") or tiers.get("mid_economic_ceiling")
     decision["mao_full_cost"] = mao_full_cost
     decision["mao_go_full_cost"] = mao_go_full_cost
     decision["mao_rule_of_thumb"] = mao_rule_of_thumb.get("mao")
+    scenario_settings = data.get("scenario_settings", {}) or {}
+    feasibility_scenarios = build_feasibility_scenarios(
+        limit, conservative_exit, base_exit, calculation_inputs,
+        stress_holding_months=to_float(scenario_settings.get("stress_holding_months", 12), 12),
+        stress_sale_discount_pct=to_float(scenario_settings.get("stress_sale_discount_pct", 10), 10),
+        stress_extra_cost=to_float(scenario_settings.get("stress_extra_cost", 0)),
+    )
     return {
         "market": market,
         "at_limit": at_limit,
@@ -268,8 +317,10 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
         "decision": decision,
         "eligibility_index_pct": index,
         "calculation_inputs": calculation_inputs,
+        "feasibility_scenarios": feasibility_scenarios,
         "mao": {
             "rule_of_thumb": mao_rule_of_thumb,
+            "is_provisional": bool(market.get("valuation_is_provisional") or not costs.get("cost_estimates_reviewed", False)),
             "full_cost": mao_full_cost,
             "go_full_cost": mao_go_full_cost,
             "target_roi_bid": mao_target_roi_bid,

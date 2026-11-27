@@ -104,7 +104,8 @@ def test_unpriced_mandatory_renovation_row_blocks_go():
     at_limit = {"roi_pct":40, "net_profit":10_000_000, "cash_requirement_including_reserve":100_000_000}
     result = evaluate_decision(inputs, market, tiers, at_limit)
     assert result["status"] == "HOLD"
-    assert any("RAB masih memiliki pekerjaan wajib" in x for x in result["blockers"])
+    assert any("item RAB yang belum dapat diukur" in x for x in result["conditions"])
+    assert any(x["category"] == "COST" for x in result["bid_readiness_issues"])
 
 
 def test_missing_mandatory_ai_rab_scope_is_added_as_unpriced_placeholder(monkeypatch):

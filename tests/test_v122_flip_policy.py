@@ -106,16 +106,17 @@ def test_holding_91_days_warns_and_181_days_is_conditional_window():
     assert any("melewati target GO 180 hari" in item for item in over_limit["conditions"])
     beyond_conditional = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _decision_at_limit(days=366))
     assert beyond_conditional["status"] == "HOLD"
-    assert any("melebihi batas bersyarat 365 hari" in item for item in beyond_conditional["hold_reasons"])
+    assert any("melampaui asumsi maksimum 365 hari" in item for item in beyond_conditional["hold_reasons"])
 
 
-def test_missing_project_duration_holds_instead_of_assuming_zero_day_project():
+def test_missing_project_duration_is_a_condition_not_an_automatic_veto():
     inputs = _complete_decision_input()
     at_limit = _decision_at_limit()
     at_limit.pop("projected_holding_days")
     result = evaluate_decision(inputs, _market_ready(), _tiers_ready(), at_limit)
-    assert result["status"] == "HOLD"
+    assert result["status"] == "CONDITIONAL GO"
     assert result["duration_missing"] is True
+    assert any(item["category"] == "TIME" for item in result["bid_readiness_issues"])
 
 
 def test_maximum_bid_obeys_roi_profit_and_duration_at_the_same_time():
@@ -266,17 +267,17 @@ def test_limit_reference_status_reports_all_in_profit_duration_and_cash_gates():
     below_profit = bid_reference_status(
         {**result, "net_profit": 49_000_000}, 20, 30, 50_000_000, 90, 180
     )
-    assert "PROFIT BERSIH" in below_profit and "JANGAN BID" in below_profit
+    assert "PROFIT BERSIH" in below_profit and "REVIEW MAO" in below_profit
 
     too_long = bid_reference_status(
         {**result, "projected_holding_days": 181}, 20, 30, 50_000_000, 90, 180
     )
-    assert "MELEWATI BATAS" in too_long and "JANGAN BID" in too_long
+    assert "MELEWATI" in too_long and "UJI SKENARIO" in too_long
 
     no_duration = bid_reference_status(
         {"roi_pct": 25, "net_profit": 60_000_000}, 20, 30, 50_000_000, 90, 180
     )
-    assert "BELUM TERSEDIA" in no_duration and "HOLD" in no_duration
+    assert "BELUM TERSEDIA" in no_duration and "ASUMSI HOLDING" in no_duration
 
 
 def test_roi_above_target_is_never_capped_or_penalized():
@@ -296,4 +297,4 @@ def test_limit_reference_status_requires_confirmed_investor_cash():
         cash_need=200_000_000, cash_available=500_000_000,
         cash_confirmed=False,
     )
-    assert "BELUM DIKONFIRMASI" in status and "HOLD" in status
+    assert "BELUM DIKONFIRMASI" in status and "KEPUTUSAN BID" in status

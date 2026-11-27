@@ -73,7 +73,7 @@ def test_analysis_page_uses_sequential_steps_and_defers_analysis_to_final_step()
     assert "if active_step == 2:" in source
     assert "if active_step == 3:" in source
     assert "if active_step == 4:" in source
-    assert 'st.button("🚀 ANALISA / UPDATE DATA"' in source
+    assert 'st.button("🚀 SUSUN FEASIBILITY STUDY"' in source
     assert "st.tabs([\"1 · Data lelang" not in source
     assert "_persist_and_go_analysis_step" in source
 
@@ -118,7 +118,7 @@ def test_step_navigation_clamps_step_number_to_valid_range():
 
 def test_release_version_is_1024_and_column_layouts_do_not_exceed_four():
     config_text = Path("config.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.0.25.1"' in config_text
+    assert 'APP_VERSION = "1.0.25.2"' in config_text
     tree = ast.parse(_app_source())
     oversized = []
     for node in ast.walk(tree):

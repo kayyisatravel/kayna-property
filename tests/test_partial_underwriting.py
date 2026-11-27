@@ -29,7 +29,7 @@ def test_partial_market_can_still_indicate_hold_and_walk_away_below_limit():
         "legal": {"identity_verified":True, "tax_rules_verified":True},
         "costs": {"renovation_cost":20_000_000, "renovation_months":1, "selling_months":3, "monthly_holding_cost":1_000_000, "cost_estimates_reviewed":True},
         "comparables": [
-            {"name":"Listing A","address":"Alam Mutiara","price":300_000_000,"land_area":100,"building_area":80,"source_platforms":"Rumah123","date_found":"2026-11-13","price_type":"Asking aktif"}
+            {"name":"Listing A","address":"Alam Mutiara","price":300_000_000,"land_area":100,"building_area":80,"source_platforms":"Rumah123","date_found":"2026-11-13","price_type":"Asking aktif","condition":"Siap Huni"}
         ],
         "risk_register": [], "risk_reviewed": True,
     }
@@ -52,7 +52,7 @@ def test_partial_kpknl_data_returns_hold_while_due_diligence_is_incomplete():
         "survey": {"survey_status": "Belum Survei", "possession_cost": 25_000_000, "possession_months": 6},
         "legal": {},
         "costs": {"renovation_cost": 20_000_000, "renovation_months": 1, "selling_months": 3, "monthly_holding_cost": 1_000_000},
-        "comparables": [{"name":"Listing A", "address":"Alam Mutiara", "price":300_000_000, "land_area":100, "source_platforms":"Rumah123", "date_found":"2026-11-13", "price_type":"Asking aktif"}],
+        "comparables": [{"name":"Listing A", "address":"Alam Mutiara", "price":300_000_000, "land_area":100, "source_platforms":"Rumah123", "date_found":"2026-11-13", "price_type":"Asking aktif", "condition":"Siap Huni"}],
         "risk_register": [], "risk_reviewed": False,
     }
     liquidity = {"real_cash":1_000_000_000, "cash_available_for_new_project":800_000_000, "cash_confirmed":True}

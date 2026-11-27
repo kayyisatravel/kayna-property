@@ -80,7 +80,7 @@ def test_auction_analysis_has_sequential_navigation_and_no_tabs():
         "LANJUT KE SURVEI",
         "LANJUT KE PEMBANDING",
         "LANJUT KE BIAYA / RAB",
-        "ANALISA / UPDATE DATA",
+        "SUSUN FEASIBILITY STUDY",
     ):
         assert label in app_source
     assert "_na_persisted_form_state" in app_source

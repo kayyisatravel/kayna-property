@@ -1,8 +1,10 @@
-# PFMS V1.0.25.1 — Underwriting Decision & MAO Correction
+# PFMS V1.0.25.2 — AI Feasibility Co-Pilot
 
-V1.0.25.1 memisahkan status kelayakan investasi dari kesiapan bidding, menetapkan kembali GO/CONDITIONAL GO/HOLD/DO NOT BID, menghitung FMV as-is dan ARV pascarenovasi dari pembanding dengan bucket kondisi yang sesuai, serta memisahkan MAO screening 70%, MAO Full Cost GO, MAO Full Cost CONDITIONAL GO dan target bid. Lihat `docs/KAYNA_FLIP_UNDERWRITING_POLICY_V1.0.25.1.md`.
+PFMS menyusun studi kelayakan properti lelang dengan tiga peran: Python menghitung biaya/ROI/MAO/skenario secara deterministik; Gemini Flash bertindak sebagai Analis Senior yang menafsirkan trade-off, risiko, blind spot dan opsi; Owner tetap mengambil keputusan final. Status referensi model, Bid Readiness, dan keputusan Owner ditampilkan terpisah.
 
-Source mempertahankan alur analisis empat langkah V1.0.24, patch automatic ranking V1.0.25, histori analisis dan skema Google Sheets. Bid Readiness harus READY sebelum bidding; CONDITIONAL GO tidak otomatis memberi izin memasukkan penawaran.
+Data pasar yang terbatas, akses interior yang belum tersedia, RAB yang belum terukur, atau dana yang baru akan tersedia dapat dimasukkan sebagai asumsi/allowance dan diuji melalui skenario. Angka provisional diberi label; data tidak disamarkan menjadi fakta terverifikasi. Tanpa dasar exit value yang defensible, sistem tidak akan mengarang ROI/MAO. Lihat `docs/AI_FEASIBILITY_COPILOT_V1.0.25.2.md` dan `docs/KAYNA_FLIP_UNDERWRITING_POLICY_V1.0.25.2.md`.
+
+Source mempertahankan alur analisis berurutan, automatic ranking V1.0.25, histori dan skema Google Sheets. V1.0.26 Auction Lifecycle dan V1.0.27 deteksi objek sama/Lot Code berbeda belum termasuk.
 
 # PFMS V1.0.24 — Runtime Stability & Sequential Auction Analysis
 
