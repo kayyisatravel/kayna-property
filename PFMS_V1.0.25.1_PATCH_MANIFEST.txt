@@ -1,0 +1,26 @@
+PFMS V1.0.25.1 — UPGRADE PATCH MANIFEST
+Base version: V1.0.25
+Target version: V1.0.25.1
+
+Overlay these files onto the repository root, preserving relative paths:
+- app.py
+- config.py
+- CHANGELOG.md
+- README.md
+- PFMS_V1.0.25.1_PATCH_NOTES.md
+- PFMS_V1.0.25.1_RELEASE_GUIDE.md
+- PFMS_V1.0.25.1_PATCH_MANIFEST.txt
+- docs/KAYNA_FLIP_UNDERWRITING_POLICY_V1.0.25.1.md
+- core/decision_engine.py
+- core/form_state.py
+- core/maximum_bid.py
+- core/underwriting.py
+- tests/test_decision_lifecycle.py
+- tests/test_logic_audit_fixes.py
+- tests/test_partial_underwriting.py
+- tests/test_v122_flip_policy.py
+- tests/test_v124_static_app_safety.py
+- tests/test_v1251_underwriting_policy.py
+
+No Google Sheets tab/header migration is required.
+Do not replace .streamlit/secrets.toml.

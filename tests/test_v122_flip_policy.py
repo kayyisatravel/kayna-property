@@ -11,8 +11,8 @@ from core.maximum_bid import build_bid_tiers, find_maximum_bid
 def _complete_decision_input():
     return {
         "property": {"lot_code": "KAYNA-01", "address": "Grabagan, Tulangan, Sidoarjo", "auction_limit": 150_000_000, "land_area": 90, "building_area": 40},
-        "survey": {"survey_status": "Sudah Survei - Kosong/Tidak Dihuni", "interior_inspected": True},
-        "legal": {"identity_verified": True, "dispute_detected": False, "tax_rules_verified": True},
+        "survey": {"survey_status": "Sudah Survei - Kosong/Tidak Dihuni", "physical_condition": "Siap huni", "interior_inspected": True, "structure_verified_safe":True},
+        "legal": {"identity_verified": True, "original_certificate_status":"Asli di bank/kreditur dan siap diserahkan", "dispute_detected": False, "tax_rules_verified": True},
         "rules": dict(DEFAULT_RULES),
         "costs": {"cost_estimates_reviewed": True, "renovation_items": []},
         "finance": {"cash_confirmed": True, "cash_available_for_new_project": 1_000_000_000},
@@ -31,7 +31,7 @@ def _decision_at_limit(*, roi=25, profit=60_000_000, days=90):
 
 
 def _market_ready():
-    return {"valid_count": 5, "go_grade_count": 5, "confidence": 75}
+    return {"valid_count": 5, "go_grade_count": 5, "confidence": 75, "status": "READY"}
 
 
 def _tiers_ready():
@@ -60,10 +60,13 @@ def _comparable(name, price, segment, **overrides):
     return row
 
 
-def test_kayna_flip_policy_defaults_are_minimum_20_target_30_profit_50m_and_90_180_days():
-    assert MIN_ROI_PCT == 20
+def test_kayna_flip_policy_defaults_are_minimum_15_target_30_profit_50m_and_90_180_365_days():
+    assert MIN_ROI_PCT == 15
     assert MID_ROI_PCT == 30
-    assert DEFAULT_RULES["minimum_roi_pct"] == 20
+    assert DEFAULT_RULES["minimum_roi_pct"] == 15
+    assert DEFAULT_RULES["conditional_minimum_roi_pct"] == 15
+    assert DEFAULT_RULES["go_minimum_roi_pct"] == 25
+    assert DEFAULT_RULES["conditional_maximum_holding_days"] == 365
     assert DEFAULT_RULES["mid_roi_pct"] == 30
     assert MINIMUM_NET_PROFIT == 50_000_000
     assert DEFAULT_RULES["minimum_net_profit"] == 50_000_000
@@ -71,33 +74,39 @@ def test_kayna_flip_policy_defaults_are_minimum_20_target_30_profit_50m_and_90_1
     assert MAX_HOLDING_DAYS == 180
 
 
-def test_decision_requires_both_minimum_roi_and_minimum_net_profit():
+def test_roi_and_profit_below_investment_floor_are_hold_not_fatal_risk():
     inputs = _complete_decision_input()
     below_profit = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _decision_at_limit(roi=25, profit=49_999_999))
     below_roi = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _decision_at_limit(roi=19.99, profit=60_000_000))
-    assert below_profit["status"] == "DO NOT BID"
-    assert any("belum mencapai minimum" in item.lower() for item in below_profit["blockers"])
-    assert below_roi["status"] == "DO NOT BID"
-    assert any("di bawah minimum 20.0%" in item.lower() for item in below_roi["blockers"])
+    assert below_profit["status"] == "HOLD"
+    assert any("minimum" in item.lower() for item in below_profit["hold_reasons"])
+    assert below_roi["status"] == "CONDITIONAL GO"
+    assert any("ROI" in item for item in below_roi["conditions"])
+    assert below_roi["bid_readiness"] == "READY"
 
 
-def test_20_to_below_30_roi_can_pass_minimum_but_receives_target_warning():
+def test_25_roi_is_go_floor_under_new_investment_policy():
     inputs = _complete_decision_input()
     result = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _decision_at_limit(roi=25, profit=60_000_000, days=90))
     assert result["status"] == "GO"
-    assert result["minimum_roi_pct"] == 20
+    assert result["minimum_roi_pct"] == 15
+    assert result["conditional_minimum_roi_pct"] == 15
+    assert result["go_minimum_roi_pct"] == 25
     assert result["target_roi_pct"] == 30
     assert any("belum mencapai target 30.0%" in item for item in result["warnings"])
 
 
-def test_91_days_is_warning_but_181_days_is_hard_no_bid():
+def test_holding_91_days_warns_and_181_days_is_conditional_window():
     inputs = _complete_decision_input()
     in_review_window = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _decision_at_limit(days=91))
     over_limit = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _decision_at_limit(days=181))
     assert in_review_window["status"] == "GO"
     assert any("di atas target ideal 90 hari" in item for item in in_review_window["warnings"])
-    assert over_limit["status"] == "DO NOT BID"
-    assert any("melewati batas maksimum 180 hari" in item for item in over_limit["blockers"])
+    assert over_limit["status"] == "CONDITIONAL GO"
+    assert any("melewati target GO 180 hari" in item for item in over_limit["conditions"])
+    beyond_conditional = evaluate_decision(inputs, _market_ready(), _tiers_ready(), _decision_at_limit(days=366))
+    assert beyond_conditional["status"] == "HOLD"
+    assert any("melebihi batas bersyarat 365 hari" in item for item in beyond_conditional["hold_reasons"])
 
 
 def test_missing_project_duration_holds_instead_of_assuming_zero_day_project():
@@ -112,7 +121,7 @@ def test_missing_project_duration_holds_instead_of_assuming_zero_day_project():
 def test_maximum_bid_obeys_roi_profit_and_duration_at_the_same_time():
     inputs = {
         "property": {"njop": 0, "npoptkp_eligible": False},
-        "survey": {"possession_cost": 5_000_000, "possession_months": 0.5, "interior_inspected": True},
+        "survey": {"possession_cost": 5_000_000, "possession_months": 0.5, "interior_inspected": True, "structure_verified_safe":True},
         "costs": {"renovation_cost": 30_000_000, "renovation_months": 1, "selling_months": 1.5,
                    "legal_delay_months": 0.5, "monthly_holding_cost": 1_000_000, "marketing_cost": 2_000_000},
         "rules": dict(DEFAULT_RULES),

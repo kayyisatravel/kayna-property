@@ -1,3 +1,9 @@
+# PFMS V1.0.25.1 — Underwriting Decision & MAO Correction
+
+V1.0.25.1 memisahkan status kelayakan investasi dari kesiapan bidding, menetapkan kembali GO/CONDITIONAL GO/HOLD/DO NOT BID, menghitung FMV as-is dan ARV pascarenovasi dari pembanding dengan bucket kondisi yang sesuai, serta memisahkan MAO screening 70%, MAO Full Cost GO, MAO Full Cost CONDITIONAL GO dan target bid. Lihat `docs/KAYNA_FLIP_UNDERWRITING_POLICY_V1.0.25.1.md`.
+
+Source mempertahankan alur analisis empat langkah V1.0.24, patch automatic ranking V1.0.25, histori analisis dan skema Google Sheets. Bid Readiness harus READY sebelum bidding; CONDITIONAL GO tidak otomatis memberi izin memasukkan penawaran.
+
 # PFMS V1.0.24 — Runtime Stability & Sequential Auction Analysis
 
 V1.0.24 memperbaiki deklarasi helper date picker agar tersedia sebelum authentication/page routing, menambahkan static scan untuk global reference yang belum didefinisikan/diimpor, serta memperkuat perpindahan langkah Analisis Objek Lelang. Pengguna mengisi 4 langkah berurutan (Data Lelang & Legal → Survei & Risiko → Pembanding → Biaya & RAB); tombol Analisa/Update Data hanya tampil pada langkah terakhir ketika data wajib sudah lengkap.

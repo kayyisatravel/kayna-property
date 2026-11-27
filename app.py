@@ -214,7 +214,7 @@ def calculate_recommendation_score(
     target_roi = to_float(rules.get("mid_roi_pct"), 30.0)
     minimum_profit = max(0.0, to_float(rules.get("minimum_net_profit"), 50_000_000.0))
     target_days = max(1.0, to_float(rules.get("target_holding_days"), 90.0))
-    maximum_days = max(target_days, to_float(rules.get("maximum_holding_days"), 180.0))
+    maximum_days = max(target_days, to_float(rules.get("conditional_maximum_holding_days", 365.0)))
 
     roi = to_float(at_limit.get("roi_pct"), -999.0)
     profit = to_float(at_limit.get("net_profit"), -1.0)
@@ -320,7 +320,7 @@ RISK_PRESETS = {
     "Akses jalan/parkir membatasi pembeli": {"category":"Pasar/Lokasi", "risk_description":"Akses jalan atau parkir membatasi segmen calon pembeli", "probability_1_5":3, "impact_1_5":3, "cost_reserve":5_000_000, "critical":False, "mitigation":"Ukur lebar jalan dan uji akses kendaraan; sesuaikan comparable serta strategi/harga jual.", "status":"Open"},
     "Biaya renovasi berpotensi membengkak": {"category":"Fisik/Renovasi", "risk_description":"RAB masih indikatif dan berpotensi membengkak setelah pekerjaan dibuka", "probability_1_5":4, "impact_1_5":4, "cost_reserve":20_000_000, "critical":False, "mitigation":"Rinci volume pekerjaan; minta minimal dua penawaran; gunakan contingency terpisah dan approval sebelum pekerjaan tambah.", "status":"Open"},
     "Keterlambatan legalitas/penguasaan": {"category":"Waktu/Holding", "risk_description":"Pengurusan legalitas atau penguasaan berpotensi lebih lama dari rencana", "probability_1_5":3, "impact_1_5":4, "cost_reserve":15_000_000, "critical":False, "mitigation":"Buat checklist dokumen dan milestone; sediakan jadwal buffer; hitung ulang holding cost jika terlambat.", "status":"Open"},
-    "Harga pasar/comparable kurang kuat": {"category":"Pasar/Likuiditas", "risk_description":"Comparable belum cukup setara atau harga masih berupa asking price", "probability_1_5":4, "impact_1_5":4, "cost_reserve":0, "critical":True, "mitigation":"Tambah listing yang setara, verifikasi status dan tanggal, cari bukti transaksi atau konfirmasi agen.", "status":"Open"},
+    "Harga pasar/comparable kurang kuat": {"category":"Pasar/Likuiditas", "risk_description":"Comparable belum cukup setara atau harga masih berupa asking price", "probability_1_5":4, "impact_1_5":4, "cost_reserve":0, "critical":False, "hard_stop_confirmed":False, "mitigation":"Tambah listing yang setara, verifikasi status dan tanggal, cari bukti transaksi atau konfirmasi agen.", "status":"Open"},
     "Tunggakan utilitas/PBB/IPL": {"category":"Biaya/Administrasi", "risk_description":"Tunggakan listrik, air, PBB, IPL atau kewajiban lingkungan belum diketahui", "probability_1_5":3, "impact_1_5":3, "cost_reserve":10_000_000, "critical":False, "mitigation":"Minta informasi pengelola/instansi; cek rekening, PBB dan bukti pembayaran; masukkan tunggakan aktual.", "status":"Open"},
 }
 
@@ -453,18 +453,34 @@ def get_rules() -> dict[str, Any]:
                 rules.update(value)
             elif row.get("rule_key"): rules[row["rule_key"]] = value
         except Exception: pass
-    # One-time migration: only untouched V1.0.21 defaults (25% / 35%) are
-    # moved to the newly agreed Kayna flip policy (20% / 30%). Custom values
-    # are preserved. New profit/time gates are additive and user-editable.
-    if stored_global_rules.get("investment_policy_version") != "KAYNA_FLIP_POLICY_V1":
-        if to_float(rules.get("minimum_roi_pct"), 20) == 25 and to_float(rules.get("mid_roi_pct"), 30) == 35:
-            rules["minimum_roi_pct"] = 20.0
-            rules["mid_roi_pct"] = 30.0
+    # V1.0.25.1 policy migration: keep legacy bid ROI hurdle and user tax
+    # assumptions intact; add separate investment-classification thresholds.
+    if stored_global_rules.get("investment_policy_version") != "KAYNA_FLIP_POLICY_V2":
+        policy_defaults = {
+            "conditional_minimum_roi_pct": 15.0,
+            "go_minimum_roi_pct": 25.0,
+            "conditional_maximum_holding_days": 365,
+            "conditional_min_comparables": 3,
+            "go_min_comparables": 5,
+            "conditional_market_confidence_pct": 45.0,
+            "go_market_confidence_pct": 55.0,
+            "renovation_contingency_min_pct": 15.0,
+            "heavy_renovation_contingency_min_pct": 20.0,
+            "mao_rule_of_thumb_pct": 70.0,
+        }
+        for key, default_value in policy_defaults.items():
+            rules.setdefault(key, default_value)
+        # V1.0.25 legacy default was 20%; policy V2 uses 15% as the
+        # conditional-investment / Full-Cost MAO floor. Preserve non-default
+        # user-configured values, but migrate the untouched legacy default.
+        if to_float(rules.get("minimum_roi_pct"), 20.0) == 20.0:
+            rules["minimum_roi_pct"] = 15.0
         rules.setdefault("minimum_net_profit", 50_000_000)
         rules.setdefault("target_holding_days", 90)
         rules.setdefault("maximum_holding_days", 180)
-        rules["investment_policy_version"] = "KAYNA_FLIP_POLICY_V1"
-        st.session_state.rules_local.update({k: rules[k] for k in ["minimum_roi_pct", "mid_roi_pct", "minimum_net_profit", "target_holding_days", "maximum_holding_days", "investment_policy_version"]})
+        rules["conditional_minimum_roi_pct"] = to_float(rules.get("minimum_roi_pct"), 15.0)
+        rules["investment_policy_version"] = "KAYNA_FLIP_POLICY_V2"
+        st.session_state.rules_local.update({**{k: rules[k] for k in policy_defaults}, "minimum_roi_pct": rules["minimum_roi_pct"], "conditional_minimum_roi_pct": rules["conditional_minimum_roi_pct"], "investment_policy_version": rules["investment_policy_version"]})
     return rules
 
 
@@ -828,7 +844,7 @@ elif page == "New Auction Analysis":
             st.session_state.na_last_occupancy = mapping.get("na_survey_status", "Belum Survei")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", latest_saved.get("risk_reviewed", False)))
             comparable_columns = ["name", "address", "latitude", "longitude", "distance_m", "market_segment", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
-            risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "mitigation", "status"]
+            risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "hard_stop_confirmed", "mitigation", "status"]
             loaded_comps = data.get("comparables", [])
             loaded_risks = data.get("risk_register", [])
             if loaded_comps:
@@ -1014,9 +1030,19 @@ elif page == "New Auction Analysis":
         st.selectbox("Tipe properti", property_type_options, key="na_property_type")
         set_default("na_floor_count", 1); st.number_input("Jumlah lantai bangunan", min_value=1, max_value=5, step=1, key="na_floor_count", help="Digunakan untuk memperkirakan tapak atap dari luas bangunan total. Periksa bila luas tiap lantai berbeda.")
         set_default("na_building_footprint", None); st.number_input("Luas tapak lantai dasar (m², opsional)", min_value=0.0, step=1.0, value=st.session_state.na_building_footprint, key="na_building_footprint", help="Isi jika diketahui dari site plan/pengukuran. Lebih akurat untuk luas atap daripada LB dibagi jumlah lantai.")
-        st.markdown("**Verifikasi legal (checkbox harus berdasarkan pemeriksaan pengguna)**")
+        st.markdown("**Verifikasi legal (berdasarkan dokumen/keterangan resmi yang dapat ditelusuri)**")
         set_default("na_legal_verified", False); st.checkbox("Identitas objek dan dokumen hak sudah saya cocokkan", key="na_legal_verified")
-        set_default("na_dispute", False); st.checkbox("Terdapat indikasi sengketa/ketidaksesuaian kritis", key="na_dispute")
+        original_document_options = [
+            "Belum diverifikasi",
+            "Asli di bank/kreditur dan siap diserahkan",
+            "Asli di bank/kreditur tetapi mekanisme serah terima belum dikonfirmasi",
+            "Lokasi dokumen asli belum diketahui",
+        ]
+        set_default("na_original_certificate_status", "Belum diverifikasi")
+        st.selectbox("Status dokumen asli sertifikat", original_document_options, key="na_original_certificate_status", help="Untuk GO/CONDITIONAL GO, konfirmasi tertulis/tertelusur bahwa dokumen asli berada pada bank/kreditur dan siap diserahkan setelah pelunasan sesuai prosedur.")
+        set_default("na_dispute", False); st.checkbox("Ada indikasi sengketa/ketidaksesuaian yang masih perlu diklarifikasi", key="na_dispute")
+        set_default("na_fatal_legal_confirmed", False); st.checkbox("Gugatan/klaim material atau cacat hak telah diverifikasi dan dinilai tidak dapat dimitigasi (HARD STOP)", key="na_fatal_legal_confirmed")
+        set_default("na_fatal_access_environment", False); st.checkbox("Tidak ada akses jalan legal atau objek berada di zona bahaya permanen yang telah diverifikasi dan tidak dapat dimitigasi (HARD STOP)", key="na_fatal_access_environment")
         set_default("na_npoptkp_eligible", False); st.checkbox("Objek memenuhi syarat NPOPTKP/perolehan pertama (sudah diverifikasi)", key="na_npoptkp_eligible", help="Jika belum dapat diverifikasi, biarkan tidak dicentang agar estimasi BPHTB konservatif.")
         st.markdown("**Aturan pajak & biaya untuk wilayah objek**")
         current_rules_for_object = get_rules()
@@ -1060,6 +1086,17 @@ elif page == "New Auction Analysis":
             set_default("na_possession_months", float(defaults["months"])); st.number_input("Waktu penguasaan (bulan)", min_value=0.0, step=0.5, key="na_possession_months")
         with c3:
             set_default("na_possession_risk_reserve", defaults["risk_reserve"]); st.number_input("Cadangan risiko penguasaan (Rp)", min_value=0, step=1_000_000, key="na_possession_risk_reserve")
+        occupancy_text = str(st.session_state.na_survey_status or "").lower()
+        is_currently_occupied = "dihuni" in occupancy_text and "tidak dihuni" not in occupancy_text and "kosong" not in occupancy_text
+        set_default("na_possession_plan_confirmed", False)
+        if is_currently_occupied:
+            st.checkbox(
+                "Rencana pengosongan/cash-for-keys, jadwal, dan pembiayaannya sudah dibicarakan serta didokumentasikan",
+                key="na_possession_plan_confirmed",
+                help="Ini bukan jaminan penghuni pasti keluar. Centang hanya bila ada komunikasi dan rencana yang dapat ditunjukkan kembali.",
+            )
+        else:
+            st.caption("Konfirmasi rencana pengosongan hanya diperlukan untuk objek yang masih berpenghuni.")
         set_default("na_survey_date", date.today().isoformat())
         survey_date_value = st.date_input("Tanggal survei", value=as_date(st.session_state.na_survey_date), disabled=st.session_state.na_survey_status == "Belum Survei", key="na_survey_date_picker")
         st.session_state.na_survey_date = "" if st.session_state.na_survey_status == "Belum Survei" else survey_date_value.isoformat()
@@ -1069,12 +1106,14 @@ elif page == "New Auction Analysis":
         physical_options = ["Belum diketahui", "Siap huni", "Renovasi kosmetik", "Renovasi ringan", "Renovasi sedang", "Renovasi berat", "Hitung tanah"]
         if st.session_state.na_physical_condition and st.session_state.na_physical_condition not in physical_options: physical_options.append(st.session_state.na_physical_condition)
         st.selectbox("Kondisi fisik umum", physical_options, key="na_physical_condition")
+        set_default("na_structure_verified_safe", False); st.checkbox("Struktur utama/pondasi/dinding penopang sudah diperiksa dan tidak ditemukan indikasi kerusakan struktural fatal", key="na_structure_verified_safe", help="Centang hanya setelah pemeriksaan yang memadai. Kerusakan yang masih dapat diperbaiki tetap harus masuk RAB dan contingency.")
         set_default("na_interior_inspected", False); st.checkbox("Interior sudah diperiksa", key="na_interior_inspected")
         set_default("na_facade_manual", st.session_state.get("na_facade_ai", "")); st.text_area("Deskripsi fasad (hasil AI dapat diedit)", key="na_facade_manual", height=90)
         set_default("na_survey_notes", ""); st.text_area("Catatan survei, penghuni, RT/tetangga, utilitas, banjir, struktur", key="na_survey_notes", height=100)
+        set_default("na_fatal_security_threat", False); st.checkbox("Ada ancaman keamanan/perlawanan fisik yang telah diverifikasi dan tidak dapat diterima (HARD STOP)", key="na_fatal_security_threat")
         st.markdown("### Risk register dan mitigasi")
         st.caption("Pilih risiko yang relevan; sistem mengisi deskripsi, skor awal, mitigasi dan cadangan indikatif. Anda tetap dapat mengubah seluruh nilai. Cadangan risiko menambah kebutuhan kas, bukan biaya profit sampai benar-benar terpakai.")
-        risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "mitigation", "status"]
+        risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "hard_stop_confirmed", "mitigation", "status"]
         if "na_risk_editor" not in st.session_state:
             st.session_state.na_risk_editor = pd.DataFrame(columns=risk_columns)
         with st.container(border=True):
@@ -1105,14 +1144,15 @@ elif page == "New Auction Analysis":
             "probability_1_5": st.column_config.NumberColumn("Kemungkinan (1–5)", min_value=1, max_value=5, step=1),
             "impact_1_5": st.column_config.NumberColumn("Dampak (1–5)", min_value=1, max_value=5, step=1),
             "cost_reserve": st.column_config.NumberColumn("Cadangan kas (Rp)", min_value=0, format="Rp %.0f"),
-            "critical": st.column_config.CheckboxColumn("Kritis?"),
+            "critical": st.column_config.CheckboxColumn("Risiko kritis?"),
+            "hard_stop_confirmed": st.column_config.CheckboxColumn("Hard stop terverifikasi?", help="Centang hanya untuk risiko fatal yang tidak dapat diterima/tidak dapat dimitigasi, bukan sekadar risiko yang masih perlu ditangani."),
             "mitigation": st.column_config.TextColumn("Mitigasi / tindakan"),
             "status": st.column_config.SelectboxColumn("Status", options=["Open", "Mitigated", "Resolved"]),
         })
         st.session_state.na_risk_current = risk_edited.to_dict(orient="records")
         st.session_state.na_risk_editor = risk_edited.copy()
         if len(risk_edited):
-            st.caption("Skor risiko dihitung otomatis: kemungkinan × dampak. Skor 20–25 ditandai sangat tinggi. Risiko kritis yang masih terbuka akan menahan keputusan GO.")
+            st.caption("Skor risiko dihitung otomatis: kemungkinan × dampak. Risiko kritis yang masih dapat dimitigasi dapat menghasilkan CONDITIONAL GO; hard stop hanya berlaku jika secara eksplisit diverifikasi dan dicentang.")
         risk_signature = hashlib.sha256(safe_json(st.session_state.na_risk_current).encode("utf-8")).hexdigest()
         sync_review_confirmation(st.session_state, "na_risk_reviewed", "na_risk_reviewed_signature", risk_signature)
         st.checkbox("Saya sudah meninjau risiko yang relevan dan mitigasinya; saya memahami bahwa risiko yang belum terselesaikan dapat menahan keputusan GO.", key="na_risk_reviewed")
@@ -1640,13 +1680,17 @@ elif page == "New Auction Analysis":
             st.metric("TOTAL RAB RENOVASI (seluruh item dalam lingkup sudah terisi)", idr(renovation_total), help="Total volume × harga satuan seluruh item dalam lingkup + tambahan di luar daftar.")
         c1,c2 = st.columns(2)
         with c1:
-            set_default("na_other_presale", 0); st.number_input("Biaya lain sebelum penjualan (Rp)", min_value=0, step=500_000, key="na_other_presale")
+            set_default("na_other_presale", 0); st.number_input(
+                "Tunggakan & kewajiban lain sebelum penjualan (Rp)", min_value=0,
+                step=500_000, key="na_other_presale",
+                help="Masukkan kewajiban yang sudah diketahui/harus ditanggung pembeli, seperti tunggakan PBB, listrik, PDAM, IPL, keamanan, dan biaya administrasi lokal. Biaya marketing diinput terpisah. Nilai ini masuk ke kalkulasi Full Cost dan MAO 70%."
+            )
         with c2:
             set_default("na_risk_ceiling", None); st.number_input("Hard ceiling bid tambahan (opsional, Rp)", min_value=0, step=1_000_000, value=st.session_state.na_risk_ceiling, key="na_risk_ceiling")
         st.caption("Contingency renovasi dihitung otomatis oleh Python berdasarkan persentase Settings & Rules.")
         policy_rules = get_rules()
-        st.metric("ROI minimum / target", f"{policy_rules.get('minimum_roi_pct', 20):.0f}% / {policy_rules.get('mid_roi_pct', 30):.0f}%", help="Project ROI minimum sebagai gate GO; target ROI adalah sasaran negosiasi/bid. Tidak ada batas maksimum keuntungan.")
-        st.caption(f"Kebijakan Kayna: profit bersih minimum {idr(policy_rules.get('minimum_net_profit', 50_000_000))} · ROI all-in minimum/target {policy_rules.get('minimum_roi_pct', 20):.0f}%/{policy_rules.get('mid_roi_pct', 30):.0f}% · durasi ideal/maksimum {policy_rules.get('target_holding_days', 90)}/{policy_rules.get('maximum_holding_days', 180)} hari. ROI di atas target tidak dibatasi.")
+        st.metric("ROI MAO minimum / target", f"{policy_rules.get('minimum_roi_pct', 20):.0f}% / {policy_rules.get('mid_roi_pct', 30):.0f}%", help="ROI minimum untuk solver MAO Full Cost dan target ROI negosiasi/bid. Klasifikasi investasi memiliki ambang tersendiri.")
+        st.caption(f"Kebijakan klasifikasi: CONDITIONAL GO mulai {policy_rules.get('conditional_minimum_roi_pct', 15):.0f}% ROI; GO mulai {policy_rules.get('go_minimum_roi_pct', 25):.0f}%. Profit bersih minimum {idr(policy_rules.get('minimum_net_profit', 50_000_000))}. Durasi GO ≤{policy_rules.get('maximum_holding_days', 180)} hari; CONDITIONAL GO hingga {policy_rules.get('conditional_maximum_holding_days', 365)} hari. MAO rule-of-thumb {policy_rules.get('mao_rule_of_thumb_pct', 70):.0f}% ARV konservatif; MAO Full Cost tetap menjadi batas bidding yang lebih rinci.")
         rules_for_cost_review = get_rules()
         cost_review_payload = {
             "renovation_items": st.session_state.get("na_renovation_items_current", []),
@@ -1711,9 +1755,10 @@ elif page == "New Auction Analysis":
             "land_area": st.session_state.na_land, "building_area": st.session_state.na_building, "building_footprint_m2": st.session_state.get("na_building_footprint"), "njop": st.session_state.na_njop,
             "latitude": st.session_state.get("na_latitude"), "longitude": st.session_state.get("na_longitude"), "bedrooms": st.session_state.get("na_bedrooms"), "bathrooms": st.session_state.get("na_bathrooms"), "property_type": st.session_state.get("na_property_type", ""), "floor_count": st.session_state.get("na_floor_count", 1), "rights_expiry": st.session_state.get("na_rights_expiry", ""),
             "risk_adjusted_ceiling": st.session_state.na_risk_ceiling, "npoptkp_eligible": st.session_state.na_npoptkp_eligible,
+            "fatal_access_or_environment_confirmed": bool(st.session_state.get("na_fatal_access_environment", False)),
         }
-        survey_data = {"survey_status": st.session_state.na_survey_status, "occupancy_status": st.session_state.na_survey_status, "survey_date": st.session_state.na_survey_date, "possession_cost": st.session_state.na_possession_cost, "possession_risk_reserve": st.session_state.na_possession_risk_reserve, "possession_months": st.session_state.na_possession_months, "road_width_m": st.session_state.na_road_width, "access": st.session_state.na_access, "physical_condition": st.session_state.na_physical_condition, "interior_inspected": st.session_state.na_interior_inspected, "facade_description": st.session_state.na_facade_manual, "survey_notes": st.session_state.na_survey_notes}
-        legal_data = {"identity_verified": st.session_state.na_legal_verified, "dispute_detected": st.session_state.na_dispute, "tax_rules_verified": st.session_state.na_tax_verified, "tax_region": st.session_state.na_tax_region, "tax_rule_source_url": st.session_state.na_tax_rule_source}
+        survey_data = {"survey_status": st.session_state.na_survey_status, "occupancy_status": st.session_state.na_survey_status, "survey_date": st.session_state.na_survey_date, "possession_cost": st.session_state.na_possession_cost, "possession_risk_reserve": st.session_state.na_possession_risk_reserve, "possession_months": st.session_state.na_possession_months, "road_width_m": st.session_state.na_road_width, "access": st.session_state.na_access, "physical_condition": st.session_state.na_physical_condition, "structure_verified_safe": bool(st.session_state.get("na_structure_verified_safe", False)), "interior_inspected": st.session_state.na_interior_inspected, "fatal_security_threat_confirmed": bool(st.session_state.get("na_fatal_security_threat", False)), "possession_plan_confirmed": bool(st.session_state.get("na_possession_plan_confirmed", False)), "facade_description": st.session_state.na_facade_manual, "survey_notes": st.session_state.na_survey_notes}
+        legal_data = {"identity_verified": st.session_state.na_legal_verified, "original_certificate_status": st.session_state.get("na_original_certificate_status", "Belum diverifikasi"), "dispute_detected": st.session_state.na_dispute, "fatal_legal_issue_confirmed": bool(st.session_state.get("na_fatal_legal_confirmed", False)), "tax_rules_verified": st.session_state.na_tax_verified, "tax_region": st.session_state.na_tax_region, "tax_rule_source_url": st.session_state.na_tax_rule_source}
         renovation_items_data = [r for r in st.session_state.get("na_renovation_items_current", []) if str(r.get("work_item") or "").strip()]
         renovation_item_total = sum(max(0, to_float(r.get("quantity"))) * max(0, to_float(r.get("unit_cost"))) for r in renovation_items_data if rab_item_is_in_scope(r))
         renovation_extra_cost = to_float(st.session_state.na_renovation_extra)
@@ -1763,15 +1808,50 @@ elif page == "New Auction Analysis":
                 st.warning(
                     f"Estimasi sudah tersedia, tetapi bukti belum memenuhi gate audit keputusan GO: "
                     f"{mkt.get('go_grade_count', 0)} dari minimal 5 URL listing individual yang dapat ditelusuri. "
-                    f"Indeks kualitas bukti {mkt.get('confidence', 0)}/100 ({mkt.get('confidence_band', 'Rendah')}); bukan probabilitas harga tercapai. Status HOLD pada tahap ini membatasi keputusan bidding final, bukan menghapus hasil estimasi harga pasar."
+                    f"Indeks kualitas bukti {mkt.get('confidence', 0)}/100 ({mkt.get('confidence_band', 'Rendah')}); bukan probabilitas harga tercapai. Bukti pasar yang belum mencapai GO-grade dapat menghasilkan CONDITIONAL GO bila dasar indikatif sudah cukup, tetapi Bid Readiness tetap harus READY sebelum bidding."
                 )
         if decision["status"] == "GO": st.success("GO — SELURUH GATE UTAMA TERPENUHI")
         elif decision["status"] == "CONDITIONAL GO": st.warning("CONDITIONAL GO — ADA SYARAT YANG HARUS DIPENUHI")
         elif decision["status"] == "DO NOT BID": st.error("DO NOT BID / TIDAK LAYAK")
         else: st.warning("HOLD — DATA / VERIFIKASI BELUM MEMADAI")
         st.write(decision["summary"])
+        readiness = str(decision.get("bid_readiness") or "NOT READY — DUE DILIGENCE")
+        if readiness == "READY":
+            st.success("Bid Readiness: READY — seluruh syarat eksekusi bidding terpenuhi.")
+        else:
+            st.warning(f"Bid Readiness: {readiness}. Status investasi tidak otomatis menjadi izin untuk bidding.")
+        if decision.get("conditions"):
+            with st.expander("Syarat CONDITIONAL GO / mitigasi yang harus dijaga", expanded=True):
+                for condition in decision.get("conditions", []): st.write("•", condition)
+        if decision.get("bid_readiness_issues"):
+            with st.expander("Checklist kesiapan bidding", expanded=False):
+                for issue in decision.get("bid_readiness_issues", []): st.write(f"• [{issue.get('category')}] {issue.get('message')}")
+        if decision.get("hard_stops"):
+            for item in decision.get("hard_stops", []): st.error(item)
+        valuation_cols = st.columns(3)
+        fmv_as_is = mkt.get("fmv_as_is") or {}
+        fmv_value = fmv_as_is.get("value")
+        fmv_label = "FMV as-is" if fmv_as_is.get("status") == "INDICATIVE" else "FMV as-is (sampel terbatas)"
+        valuation_cols[0].metric(fmv_label, idr(fmv_value), help=f"Nilai indikatif kondisi saat ini dari {fmv_as_is.get('comparable_count', 0)} comparable bucket '{fmv_as_is.get('condition_bucket') or 'belum diketahui'}'. Status sampel: {fmv_as_is.get('status', 'LOW_SAMPLE')}.")
+        arv_summary_display = mkt.get("arv_after_repair") or mkt.get("land_exit_value") or {}
+        arv_metric_value = arv_summary_display.get("value") if arv_summary_display.get("status") == "INDICATIVE" else None
+        valuation_cols[1].metric("ARV setelah renovasi" if mkt.get("arv_after_repair") else "Nilai exit tanah", idr(arv_metric_value), help=f"Estimasi hanya ditampilkan sebagai nilai tervalidasi indikatif bila tersedia minimal 3 comparable kondisi '{mkt.get('arv_condition_bucket')}' dan confidence minimal 45. Status saat ini: {arv_summary_display.get('status', 'LOW_SAMPLE')}.")
+        ratio_value = mkt.get("limit_to_fmv_as_is_pct")
+        valuation_cols[2].metric("Limit / FMV as-is", f"{ratio_value:.1f}%" if ratio_value is not None else "Belum tersedia", help="Indikator spread harga limit terhadap FMV kondisi saat ini; bukan hard gate dan tidak menggantikan MAO Full Cost.")
         if mkt.get("base_exit"):
-            st.info(f"ARV Dasar indikatif: {idr(mkt.get('base_exit'))} · ARV Konservatif: {idr(mkt.get('conservative_exit'))} · Rentang model: {idr(mkt.get('market_range_low'))} – {idr(mkt.get('market_range_high'))}. Haircut ketidakpastian data: {mkt.get('conservative_discount_used_pct', '—')}%. Indeks kualitas data bukan probabilitas harga tercapai.")
+            if arv_summary_display.get("status") == "INDICATIVE":
+                exit_label = "ARV dasar/exit indikatif" if mkt.get("arv_after_repair") else "Nilai pasar tanah indikatif"
+                st.info(f"{exit_label}: {idr(arv_summary_display.get('value'))} · Nilai exit konservatif: {idr(arv_summary_display.get('conservative_value'))} · Rentang model: {idr(mkt.get('market_range_low'))} – {idr(mkt.get('market_range_high'))}. Valuasi memakai pembanding se-kondisi exit; FMV as-is dihitung terpisah. Indeks kualitas data bukan probabilitas harga tercapai.")
+            else:
+                st.warning(f"Belum ada minimal 3 comparable dengan kondisi exit '{mkt.get('arv_condition_bucket')}' dan confidence ≥45. Nilai campuran Rp{to_float(mkt.get('base_exit')):,.0f} hanya proxy sementara untuk analisis parsial, bukan ARV yang dapat dipakai untuk MAO atau keputusan bidding.")
+            mao_data = snap.get("mao") or {}
+            mao_rule = mao_data.get("rule_of_thumb") or {}
+            mao_cols = st.columns(3)
+            mao_cols[0].metric(f"MAO rule of thumb ({to_float(mao_rule.get('factor_pct'), 70):.0f}%)", idr(mao_rule.get("mao")), help="Screening cepat dari quick-sale ARV konservatif. Faktor persentase adalah asumsi kebijakan, bukan standar universal.")
+            mao_cols[1].metric("MAO Full Cost — CONDITIONAL", idr(mao_data.get("full_cost")), help="Batas maksimum berbasis ROI minimum CONDITIONAL GO, seluruh biaya proyek, minimum profit dan durasi sampai 365 hari.")
+            mao_cols[2].metric("MAO Full Cost — GO", idr(mao_data.get("go_full_cost")), help="Batas maksimum berbasis minimum ROI GO dan batas durasi GO. Target ROI yang lebih tinggi tersedia pada tangga bidding.")
+            if mao_data.get("full_cost") is not None and to_float(snap.get("property", {}).get("auction_limit")) > to_float(mao_data.get("full_cost")):
+                st.warning("Nilai limit berada di atas MAO Full Cost. Jangan bidding pada harga limit; evaluasi peluang relist atau perubahan biaya/valuasi yang dapat dibuktikan.")
         if snap.get("market_ai_assessment"):
             with st.expander("Catatan evaluasi listing oleh Gemini", expanded=False):
                 st.write(snap["market_ai_assessment"].get("overall_assessment", ""))
@@ -1781,10 +1861,14 @@ elif page == "New Auction Analysis":
         required_rab_missing = tiers.get("required_rab_unpriced", [])
         in_scope_rab_missing = tiers.get("in_scope_rab_unpriced", required_rab_missing)
         cost_review_pending = not bool(snap.get("costs", {}).get("cost_estimates_reviewed", False))
-        financial_inputs_partial = bool(in_scope_rab_missing or cost_review_pending)
+        arv_after_repair = mkt.get("arv_after_repair") or {}
+        market_exit_pending = not bool(arv_after_repair.get("status") == "INDICATIVE")
+        financial_inputs_partial = bool(in_scope_rab_missing or cost_review_pending or market_exit_pending)
         k1,k2,k3,k4 = st.columns(4)
-        k1.metric("ARV konservatif", idr(mkt.get("conservative_exit")), help="Estimasi harga keluar konservatif setelah quick-sale discount.")
-        k2.metric("ARV dasar", idr(mkt.get("base_exit")), help="Estimasi nilai pasar dasar dari comparable dan, bila tersedia, referensi NJOP terkalibrasi.")
+        exit_summary = mkt.get("arv_after_repair") or mkt.get("land_exit_value") or {}
+        exit_validated = exit_summary.get("status") == "INDICATIVE"
+        k1.metric("Quick-sale ARV konservatif" if mkt.get("arv_after_repair") else "Nilai exit tanah konservatif", idr(exit_summary.get("conservative_value") if exit_validated else None), help="Hanya menggunakan pembanding se-kondisi exit yang dituju dan minimal 3 sampel dengan confidence minimal 45.")
+        k2.metric("ARV dasar / nilai exit tanah", idr(exit_summary.get("value") if exit_validated else None), help="Nilai pasar dasar untuk kondisi exit pasca-renovasi (atau tanah kosong), bukan FMV as-is.")
         k3.metric("Modal sementara / data terisi" if financial_inputs_partial else "Total modal proyek", idr(at.get("capital_before_sale")), help="Jika RAB dalam lingkup belum lengkap atau biaya belum dikonfirmasi, angka ini hanya total komponen yang sudah terdata; belum merupakan total modal akhir.")
         k4.metric("Profit indikatif" if financial_inputs_partial else "Estimasi profit bersih", idr(at.get("net_profit")))
         roi_cols = st.columns(3)
@@ -1795,29 +1879,37 @@ elif page == "New Auction Analysis":
         tier_rows = []
         policy_min_roi = to_float(snap.get("rules", {}).get("minimum_roi_pct", 20))
         policy_target_roi = to_float(snap.get("rules", {}).get("mid_roi_pct", 30))
+        policy_go_roi = to_float(snap.get("rules", {}).get("go_minimum_roi_pct", 25))
         policy_min_profit = to_float(snap.get("rules", {}).get("minimum_net_profit", 50_000_000))
         policy_target_days = to_float(snap.get("rules", {}).get("target_holding_days", 90))
-        policy_max_days = to_float(snap.get("rules", {}).get("maximum_holding_days", 180))
+        policy_go_max_days = to_float(snap.get("rules", {}).get("maximum_holding_days", 180))
+        policy_conditional_max_days = to_float(snap.get("rules", {}).get("conditional_maximum_holding_days", 365))
         tier_specs = [
-            ("Nilai limit (patokan awal)", tiers.get("min_bid"), None, None, at, "LIMIT_REFERENCE", True),
-            (f"Target ROI {policy_target_roi:.0f}%", tiers.get("mid_bid"), tiers.get("mid_economic_ceiling"), tiers.get("mid_simulated_ceiling"), tiers.get("mid_result"), policy_target_roi, tiers.get("mid_limit_feasible", False)),
-            (f"Maximum bid / ROI minimum {policy_min_roi:.0f}%", tiers.get("max_bid"), tiers.get("max_economic_ceiling"), tiers.get("max_simulated_ceiling"), tiers.get("max_result"), policy_min_roi, tiers.get("max_limit_feasible", False)),
+            ("Nilai limit (patokan awal)", tiers.get("min_bid"), None, None, at, "LIMIT_REFERENCE", True, policy_conditional_max_days),
+            (f"GO minimum ROI {policy_go_roi:.0f}%", tiers.get("go_bid"), tiers.get("go_economic_ceiling"), tiers.get("go_simulated_ceiling"), tiers.get("go_result"), policy_go_roi, tiers.get("go_limit_feasible", False), policy_go_max_days),
+            (f"Target ROI {policy_target_roi:.0f}% (GO target)", tiers.get("mid_bid"), tiers.get("mid_economic_ceiling"), tiers.get("mid_simulated_ceiling"), tiers.get("mid_result"), policy_target_roi, tiers.get("mid_limit_feasible", False), policy_go_max_days),
+            (f"MAO Full Cost / Minimum ROI {policy_min_roi:.0f}% (CONDITIONAL GO)", tiers.get("max_bid"), tiers.get("max_economic_ceiling"), tiers.get("max_simulated_ceiling"), tiers.get("max_result"), policy_min_roi, tiers.get("max_limit_feasible", False), policy_conditional_max_days),
         ]
         cash_available_now = to_float(snap.get("liquidity", {}).get("cash_available_for_new_project"))
         auction_limit_now = to_float(snap["property"].get("auction_limit"))
-        for label, bid, economic_ceiling, simulated_ceiling, res, hurdle, feasible in tier_specs:
+        for label, bid, economic_ceiling, simulated_ceiling, res, hurdle, feasible, tier_max_days in tier_specs:
             cash_need_tier = res.get("cash_requirement_including_reserve") if res else None
             if hurdle == "LIMIT_REFERENCE":
                 tier_status = bid_reference_status(
                     res, policy_min_roi, policy_target_roi, policy_min_profit,
-                    policy_target_days, policy_max_days, cash_need_tier,
+                    policy_target_days, tier_max_days, cash_need_tier,
                     cash_available_now, bool(tiers.get("provisional")),
                     bool(snap.get("liquidity", {}).get("cash_confirmed", False)),
                 )
             elif not tiers.get("increment_confirmed"):
                 tier_status = "INCREMENT RESMI BELUM DIKONFIRMASI — BELUM ADA BID LEGAL"
             elif bid is None or not feasible:
-                reason_key = "mid_reason" if hurdle == policy_target_roi else "max_reason"
+                if hurdle == policy_go_roi:
+                    reason_key = "go_reason"
+                elif hurdle == policy_target_roi:
+                    reason_key = "mid_reason"
+                else:
+                    reason_key = "max_reason"
                 tier_status = str(tiers.get(reason_key) or f"TIDAK ADA BID LEGAL YANG MEMENUHI ROI {hurdle:.0f}%")
             elif bid < auction_limit_now:
                 # Defensive guard: an impossible sub-limit price must never be shown
@@ -1826,7 +1918,7 @@ elif page == "New Auction Analysis":
                 bid = None
             elif cash_need_tier is not None and cash_need_tier > cash_available_now:
                 tier_status = "KAS TIDAK CUKUP"
-            elif not res or to_float(res.get("roi_pct"), -999) < hurdle or to_float(res.get("net_profit"), -999) < policy_min_profit or not (0 < to_float(res.get("projected_holding_days")) <= policy_max_days):
+            elif not res or to_float(res.get("roi_pct"), -999) < hurdle or to_float(res.get("net_profit"), -999) < policy_min_profit or not (0 < to_float(res.get("projected_holding_days")) <= tier_max_days):
                 tier_status = "GATE ROI, PROFIT MINIMUM, ATAU DURASI TIDAK TERPENUHI"
             elif tiers.get("provisional"):
                 tier_status = "SIMULASI INDIKATIF — DATA PENDUKUNG BELUM FINAL"
@@ -1867,10 +1959,11 @@ elif page == "New Auction Analysis":
         st.dataframe(pd.DataFrame(scenario_caps), use_container_width=True, hide_index=True, column_config={"ARV": st.column_config.NumberColumn(format="Rp %.0f"), "Maximum Bid": st.column_config.NumberColumn(format="Rp %.0f"), "Profit minimum (Rp)": st.column_config.NumberColumn(format="Rp %.0f"), "Project ROI target (%)": st.column_config.NumberColumn(format="%.1f%%")})
         duration_days = to_float(at.get("projected_holding_days"))
         target_days = to_float(snap.get("rules", {}).get("target_holding_days", 90))
-        max_days = to_float(snap.get("rules", {}).get("maximum_holding_days", 180))
+        go_max_days = to_float(snap.get("rules", {}).get("maximum_holding_days", 180))
+        conditional_max_days = to_float(snap.get("rules", {}).get("conditional_maximum_holding_days", 365))
         if duration_days > 0:
-            status_duration = "On target" if duration_days <= target_days else ("Perlu evaluasi" if duration_days <= max_days else "Melewati batas maksimum")
-            st.caption(f"Estimasi durasi pasca-menang/pelunasan sampai closing: {duration_days} hari · target {target_days:.0f} hari · maksimum {max_days:.0f} hari · status: {status_duration}.")
+            status_duration = "On target" if duration_days <= target_days else ("Dalam jendela GO" if duration_days <= go_max_days else ("Dalam jendela CONDITIONAL GO" if duration_days <= conditional_max_days else "Melewati batas bersyarat"))
+            st.caption(f"Estimasi durasi pasca-menang/pelunasan sampai closing: {duration_days} hari · target {target_days:.0f} hari · batas GO {go_max_days:.0f} hari · batas CONDITIONAL GO {conditional_max_days:.0f} hari · status: {status_duration}.")
         if tiers.get("walk_away_from") is not None:
             st.metric("WALK-AWAY — bid berikutnya yang harus dihindari", idr(tiers.get("walk_away_from")))
         else:
@@ -2340,10 +2433,25 @@ elif page == "Portfolio Comparison":
                 "risk_reviewed": snap.get("risk_reviewed", False),
                 "market_ai_assessment": snap.get("market_ai_assessment"),
             }
-            snapshot_rules = snap.get("rules") if isinstance(snap.get("rules"), dict) and snap.get("rules") else current_rules
+            snapshot_rules = dict(snap.get("rules")) if isinstance(snap.get("rules"), dict) and snap.get("rules") else dict(current_rules)
+            # Re-evaluate historic property inputs under current global decision
+            # thresholds. Per-object auction/tax/cost assumptions remain frozen
+            # in its analysis snapshot so old records are not silently rewritten.
+            current_policy_keys = (
+                "minimum_roi_pct", "mid_roi_pct", "conditional_minimum_roi_pct",
+                "go_minimum_roi_pct", "minimum_net_profit", "target_holding_days",
+                "maximum_holding_days", "conditional_maximum_holding_days",
+                "conditional_min_comparables", "go_min_comparables",
+                "conditional_market_confidence_pct", "go_market_confidence_pct",
+                "renovation_contingency_min_pct", "heavy_renovation_contingency_min_pct",
+                "mao_rule_of_thumb_pct", "investment_policy_version",
+            )
+            for policy_key in current_policy_keys:
+                if policy_key in current_rules:
+                    snapshot_rules[policy_key] = current_rules[policy_key]
             try:
-                # Re-underwrite against the latest confirmed cash position;
-                # saved property/comparable/cost inputs remain the historical source.
+                # Re-underwrite against current global policy and confirmed
+                # cash; saved physical/legal/market/cost inputs remain historical.
                 new_result = run_underwriting(data, liquidity, snapshot_rules)
                 decision = new_result.get("decision") or {}
                 decision_status = str(decision.get("status") or "HOLD").upper()
@@ -2370,11 +2478,20 @@ elif page == "Portfolio Comparison":
                     "eligible": is_eligible,
                     "eligibility_reason": eligibility_reason or ("GO: seluruh hard gate underwriting terpenuhi." if decision_status == "GO" else "CONDITIONAL GO: selesaikan seluruh syarat/blocker sebelum bidding."),
                     "decision_status": decision_status,
+                    "bid_readiness": decision.get("bid_readiness", "NOT READY — DUE DILIGENCE"),
+                    "bid_readiness_issues": decision.get("bid_readiness_issues", []),
+                    "conditions": decision.get("conditions", []),
+                    "mao_rule_of_thumb": (new_result.get("mao") or {}).get("rule_of_thumb", {}).get("mao"),
+                    "mao_full_cost": (new_result.get("mao") or {}).get("full_cost"),
+                    "mao_go_full_cost": (new_result.get("mao") or {}).get("go_full_cost"),
                     "recommendation_score": score_data["score"],
                     "score_components": score_data["components"],
                     "cash_coverage_pct": score_data["cash_coverage_pct"],
                     "market_confidence_pct": score_data["market_confidence_pct"],
                     "eligibility_index_pct": new_result.get("eligibility_index_pct"),
+                    "fmv_as_is": (market.get("fmv_as_is") or {}).get("value"),
+                    "limit_to_fmv_as_is_pct": market.get("limit_to_fmv_as_is_pct"),
+                    "arv_after_repair": (market.get("arv_after_repair") or {}).get("value") if market.get("arv_after_repair") else None,
                     "conservative_arv": market.get("conservative_exit"),
                     "roi_at_limit_pct": at_limit.get("roi_pct"),
                     "net_profit_at_limit": at_limit.get("net_profit"),
@@ -2437,11 +2554,11 @@ elif page == "Portfolio Comparison":
         | Kualitas bukti pasar | 10 | Menggunakan confidence dari market engine; bukan probabilitas harga tercapai. |
         | Durasi proyek | 10 | Nilai penuh pada/di bawah target holding; menurun hingga nol pada batas maksimum. |
 
-        Hanya status **GO** dan **CONDITIONAL GO** dengan tanggal lelang hari ini atau setelahnya yang masuk daftar eligible. CONDITIONAL GO tetap memerlukan penyelesaian syarat sebelum bidding. Objek tanpa tanggal lelang atau dengan tanggal yang telah lewat ditampilkan terpisah.
+        Status **GO** dan **CONDITIONAL GO** dengan tanggal lelang hari ini atau setelahnya masuk shortlist investasi. Kolom **Bid Readiness** menunjukkan apakah objek benar-benar siap ditawar. Kekurangan kas, increment resmi, bukti pasar GO-grade, atau mitigasi yang belum selesai tetap mengunci kesiapan bidding tanpa otomatis menghilangkan potensi investasi. Objek tanpa tanggal lelang atau dengan tanggal yang telah lewat ditampilkan terpisah.
         """)
 
     if eligible_rows:
-        st.subheader("Ranking peluang yang masih eligible")
+        st.subheader("Ranking peluang investasi (bukan izin otomatis untuk bidding)")
         ranking_table = []
         for row in eligible_rows:
             ranking_table.append({
@@ -2449,7 +2566,14 @@ elif page == "Portfolio Comparison":
                 "Nama objek": row.get("name"),
                 "Lot Code": row.get("lot_code"),
                 "Tanggal lelang": row.get("auction_date"),
-                "Status": row.get("decision_status"),
+                "Status investasi": row.get("decision_status"),
+                "Bid Readiness": row.get("bid_readiness"),
+                "MAO 70%": row.get("mao_rule_of_thumb"),
+                "MAO Full Cost — Conditional": row.get("mao_full_cost"),
+                "MAO Full Cost — GO": row.get("mao_go_full_cost"),
+                "FMV as-is": row.get("fmv_as_is"),
+                "Limit / FMV (%)": row.get("limit_to_fmv_as_is_pct"),
+                "ARV setelah renovasi": row.get("arv_after_repair"),
                 "Recommendation Score": row.get("recommendation_score"),
                 "ROI @ limit (%)": row.get("roi_at_limit_pct"),
                 "Profit @ limit": row.get("net_profit_at_limit"),
@@ -2465,6 +2589,12 @@ elif page == "Portfolio Comparison":
             hide_index=True,
             column_config={
                 "Recommendation Score": st.column_config.NumberColumn(format="%.1f"),
+                "MAO 70%": st.column_config.NumberColumn(format="Rp %.0f"),
+                "MAO Full Cost — Conditional": st.column_config.NumberColumn(format="Rp %.0f"),
+                "MAO Full Cost — GO": st.column_config.NumberColumn(format="Rp %.0f"),
+                "FMV as-is": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Limit / FMV (%)": st.column_config.NumberColumn(format="%.1f"),
+                "ARV setelah renovasi": st.column_config.NumberColumn(format="Rp %.0f"),
                 "ROI @ limit (%)": st.column_config.NumberColumn(format="%.1f"),
                 "Profit @ limit": st.column_config.NumberColumn(format="Rp %.0f"),
                 "Kebutuhan kas + cadangan": st.column_config.NumberColumn(format="Rp %.0f"),
@@ -2501,6 +2631,11 @@ elif page == "Portfolio Comparison":
             rank_label = f"#{row.get('rank')}" if row.get("rank") else "Eligible"
             with st.expander(f"{rank_label} · {row.get('name')} · Score {to_float(row.get('recommendation_score')):.1f} · {row.get('decision_status')}"):
                 st.write(row.get("eligibility_reason"))
+                st.info(f"Bid Readiness: {row.get('bid_readiness') or 'Belum dihitung'} — shortlist investasi bukan izin otomatis untuk bidding.")
+                for condition in row.get("conditions", []):
+                    st.write("• Syarat: " + str(condition))
+                for issue in row.get("bid_readiness_issues", []):
+                    st.warning(f"[{issue.get('category')}] {issue.get('message')}")
                 score_rows = [{"Komponen": key, "Nilai": value} for key, value in (row.get("score_components") or {}).items()]
                 if score_rows:
                     st.dataframe(pd.DataFrame(score_rows), use_container_width=True, hide_index=True)
@@ -3459,9 +3594,15 @@ elif page == "Settings & Rules":
         with c3: negotiation = st.number_input("Negotiation discount (%)", min_value=0.0, max_value=50.0, value=to_float(rules["negotiation_discount_pct"]))
         c1,c2,c3,c4 = st.columns(4)
         with c1: quick_sale = st.number_input("Quick-sale discount (%)", min_value=0.0, max_value=50.0, value=to_float(rules["quick_sale_discount_pct"]))
-        with c2: min_roi = st.number_input("Minimum Project ROI (%)", min_value=0.0, max_value=200.0, value=to_float(rules["minimum_roi_pct"]), help="Batas minimum dihitung dari profit bersih dibagi total biaya all-in, termasuk biaya penjualan. Ini bukan batas maksimum keuntungan.")
+        with c2: min_roi = st.number_input("Minimum Project ROI untuk MAO / CONDITIONAL GO (%)", min_value=0.0, max_value=100.0, value=to_float(rules["minimum_roi_pct"]), help="Lantai ROI yang wajib dicapai agar MAO Full Cost dapat dipakai untuk bidding bersyarat. GO memiliki ambang ROI tersendiri yang lebih tinggi.")
         with c3: mid_roi = st.number_input("Target Project ROI (%)", min_value=0.0, max_value=300.0, value=to_float(rules["mid_roi_pct"]))
         with c4: min_profit = st.number_input("Profit bersih minimum (Rp)", min_value=0, step=5_000_000, value=safe_int(rules.get("minimum_net_profit", 50_000_000)))
+        c1,c2,c3 = st.columns(3)
+        conditional_min_roi = min_roi
+        with c1: go_min_roi = st.number_input("Minimum ROI GO (%)", min_value=0.0, max_value=150.0, value=to_float(rules.get("go_minimum_roi_pct", 25.0)))
+        with c2: mao_factor = st.number_input("MAO rule-of-thumb (% ARV konservatif)", min_value=40.0, max_value=90.0, value=to_float(rules.get("mao_rule_of_thumb_pct", 70.0)))
+        c1,c2,c3 = st.columns(3)
+        with c1: conditional_max_days = st.number_input("Batas durasi CONDITIONAL GO (hari)", min_value=180, max_value=540, step=15, value=int(to_float(rules.get("conditional_maximum_holding_days", 365))))
         c1,c2,c3 = st.columns(3)
         with c1: target_days = st.number_input("Target durasi ideal (hari)", min_value=30, max_value=180, step=15, value=int(to_float(rules.get("target_holding_days", 90))))
         with c2: max_days = st.number_input("Batas maksimum durasi (hari)", min_value=90, max_value=365, step=15, value=int(to_float(rules.get("maximum_holding_days", 180))))
@@ -3470,12 +3611,18 @@ elif page == "Settings & Rules":
         save_rules = st.form_submit_button("Simpan asumsi", use_container_width=True)
     if save_rules:
         if mid_roi < min_roi:
-            st.error("Target Project ROI tidak boleh lebih rendah dari minimum Project ROI.")
+            st.error("Target Project ROI tidak boleh lebih rendah dari minimum Project ROI MAO.")
+            st.stop()
+        if conditional_min_roi >= go_min_roi:
+            st.error("Minimum ROI CONDITIONAL GO harus lebih rendah daripada minimum ROI GO.")
+            st.stop()
+        if mid_roi < go_min_roi:
+            st.error("Target Project ROI sebaiknya tidak lebih rendah dari minimum ROI GO.")
             st.stop()
         if max_days < target_days:
             st.error("Batas maksimum durasi tidak boleh lebih pendek dari target ideal.")
             st.stop()
-        updated = {"buyer_auction_fee_pct":buyer_fee,"bphtb_rate_pct":bphtb_rate,"npoptkp":npoptkp,"bphtb_basis_mode":basis_mode,"bpn_pnbp_cost":bpn,"roya_cost":roya,"other_acquisition_admin":other_admin,"acquisition_notary_ppat_fee":notary_buy,"seller_final_tax_pct":pph,"seller_agent_pct":agent,"seller_ajb_ppat_pct":ajb,"seller_misc_fixed":misc,"monthly_holding_cost":holding,"renovation_contingency_pct":contingency,"hidden_condition_reserve_pct":hidden_reserve,"negotiation_discount_pct":negotiation,"quick_sale_discount_pct":quick_sale,"minimum_roi_pct":min_roi,"mid_roi_pct":mid_roi,"minimum_net_profit":min_profit,"target_holding_days":target_days,"maximum_holding_days":max_days,"investment_policy_version":"KAYNA_FLIP_POLICY_V1","njop_market_weight_pct":njop_market_weight}
+        updated = {"buyer_auction_fee_pct":buyer_fee,"bphtb_rate_pct":bphtb_rate,"npoptkp":npoptkp,"bphtb_basis_mode":basis_mode,"bpn_pnbp_cost":bpn,"roya_cost":roya,"other_acquisition_admin":other_admin,"acquisition_notary_ppat_fee":notary_buy,"seller_final_tax_pct":pph,"seller_agent_pct":agent,"seller_ajb_ppat_pct":ajb,"seller_misc_fixed":misc,"monthly_holding_cost":holding,"renovation_contingency_pct":contingency,"hidden_condition_reserve_pct":hidden_reserve,"negotiation_discount_pct":negotiation,"quick_sale_discount_pct":quick_sale,"minimum_roi_pct":min_roi,"mid_roi_pct":mid_roi,"conditional_minimum_roi_pct":conditional_min_roi,"go_minimum_roi_pct":go_min_roi,"mao_rule_of_thumb_pct":mao_factor,"conditional_maximum_holding_days":conditional_max_days,"minimum_net_profit":min_profit,"target_holding_days":target_days,"maximum_holding_days":max_days,"conditional_min_comparables":int(to_float(rules.get("conditional_min_comparables", 3))),"go_min_comparables":int(to_float(rules.get("go_min_comparables", 5))),"conditional_market_confidence_pct":to_float(rules.get("conditional_market_confidence_pct",45)),"go_market_confidence_pct":to_float(rules.get("go_market_confidence_pct",55)),"renovation_contingency_min_pct":to_float(rules.get("renovation_contingency_min_pct",15)),"heavy_renovation_contingency_min_pct":to_float(rules.get("heavy_renovation_contingency_min_pct",20)),"investment_policy_version":"KAYNA_FLIP_POLICY_V2","njop_market_weight_pct":njop_market_weight}
         st.session_state.rules_local.update(updated)
         upsert_record("RULES_CONFIG", "rule_key", {"rule_key":"GLOBAL","value":updated,"updated_at":iso_now(),"source_note":"User-configured assumptions; verify by property jurisdiction/transaction."})
         log_event("RULES", "GLOBAL", "UPDATED", updated); st.success("Rules tersimpan."); st.rerun()

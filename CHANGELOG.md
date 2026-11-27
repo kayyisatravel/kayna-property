@@ -1,3 +1,24 @@
+## [1.0.25.1] - 2026-11-27
+
+### Changed
+- Separate investment classification (GO / CONDITIONAL GO / HOLD / DO NOT BID) from bid readiness; cash shortage or missing official increment blocks bidding readiness without automatically removing the property's investment potential.
+- Rework decision thresholds to default CONDITIONAL GO Project ROI ≥15%, GO ≥25%, target ROI 30%, minimum net profit Rp50 million, GO holding ≤180 days and CONDITIONAL GO ≤365 days.
+- Add condition-matched FMV as-is and ARV-after-repair valuation cohorts. House exit values use ready-to-move comparables; as-is FMV uses current-condition comparables. Land-only exit uses land comparables.
+- Keep mixed-condition estimates as provisional diagnostics only when matched exit evidence is insufficient; hold final valuation/MAO gates until at least 3 matched comparables and confidence ≥45 are available.
+- Add 70% quick MAO screening, Full Cost MAO for CONDITIONAL GO, separate GO Full Cost ceiling, and 30% target bid reference.
+- Pass current rules into the decision engine, repair explicit vacant-status parsing, and add explicit hard-stop flags for verified fatal legal, security and access/environment issues.
+- Re-underwrite saved portfolio snapshots with current global policy thresholds while preserving historic property-specific inputs.
+
+### Compatibility
+- No Google Sheets tab/header/schema migration. New decision and market fields are stored inside existing analysis JSON payloads.
+- Historical snapshots remain intact; no V1.0.26 lifecycle or V1.0.27 same-property/Lot-Code matching changes are included.
+- `.streamlit/secrets.toml` is not included or changed.
+
+### Verification
+- Python compile check passed.
+- Regression suite: **257 passed**.
+- Live Streamlit Cloud / Google Sheets / Gemini integration was not tested in this environment.
+
 ## [1.0.24] - 2026-11-27
 
 ### Fixed

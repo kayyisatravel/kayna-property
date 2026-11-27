@@ -20,7 +20,7 @@ def test_partial_kpknl_data_still_calculates_costs_and_returns_hold_without_arv(
     assert result["decision"]["status"] == "HOLD"
 
 
-def test_partial_market_can_still_indicate_walk_away_below_limit():
+def test_partial_market_can_still_indicate_hold_and_walk_away_below_limit():
     # The engine should expose an economic ceiling below the auction limit even
     # though fewer than five comparables means final GO is prohibited.
     data = {
@@ -39,10 +39,11 @@ def test_partial_market_can_still_indicate_walk_away_below_limit():
     assert result["bidding"]["max_bid"] is None
     assert result["bidding"]["max_economic_ceiling"] is not None
     assert result["bidding"]["max_economic_ceiling"] < 500_000_000
-    assert result["decision"]["status"] == "DO NOT BID"
+    assert result["decision"]["status"] == "HOLD"
+    assert result["decision"]["bid_readiness"] != "READY"
 
 
-def test_partial_kpknl_data_can_still_return_preliminary_do_not_bid():
+def test_partial_kpknl_data_returns_hold_while_due_diligence_is_incomplete():
     # Minimal auction data: the limit and subject LT are known; LB, lot code,
     # address, survey and legal verification are not. With one indicative market
     # reference the engine can still expose a ceiling below limit (never GO).
@@ -58,9 +59,12 @@ def test_partial_kpknl_data_can_still_return_preliminary_do_not_bid():
     result = run_underwriting(data, liquidity, dict(DEFAULT_RULES))
     assert result["at_limit"]["capital_before_sale"] > 500_000_000
     assert result["bidding"]["max_bid"] is None
-    assert result["bidding"]["max_economic_ceiling"] is None
-    assert "durasi melewati 180 hari" in result["bidding"]["max_reason"].lower() or "durasi melewati 180 hari" in result["bidding"]["walk_away_reason"].lower()
-    assert result["decision"]["status"] == "DO NOT BID"
+    assert result["bidding"]["max_economic_ceiling"] is not None
+    assert result["bidding"]["max_economic_ceiling"] < data["property"]["auction_limit"]
+    assert result["bidding"]["maximum_holding_days_allowed"] == 365
+    assert result["bidding"]["go_maximum_holding_days_allowed"] == 180
+    assert result["decision"]["status"] == "HOLD"
+    assert result["decision"]["bid_readiness"] != "READY"
 
 
 def test_partial_required_rab_marks_bid_tiers_provisional_and_keeps_known_costs_visible():

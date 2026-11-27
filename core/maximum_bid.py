@@ -11,6 +11,75 @@ from .calculator import calculate_project
 from .utils import to_float
 
 
+def calculate_rule_of_thumb_mao(
+    arv: float,
+    inputs: dict[str, Any],
+    factor_pct: float = 70.0,
+    rounding_step: float = 1_000.0,
+) -> dict[str, Any]:
+    """Solve the 70%-rule MAO while accounting for bid-dependent buyer taxes.
+
+    MAO = factor * conservative ARV - buyer auction fee - BPHTB - fixed legal/
+    transfer costs - possession/evacuation - renovation and its contingency.
+    Holding, selling costs and investor profit remain inside the residual
+    (100%-factor) buffer, matching the rule-of-thumb's intended use as a quick
+    screen. The separate full-cost MAO is calculated by the ROI solver.
+    """
+    arv = max(0.0, to_float(arv))
+    factor_pct = max(0.0, min(100.0, to_float(factor_pct, 70.0)))
+    step = max(1.0, to_float(rounding_step, 1_000.0))
+    budget_ceiling = arv * factor_pct / 100.0
+    if arv <= 0 or budget_ceiling <= 0:
+        return {"mao": None, "factor_pct": factor_pct, "arv_basis": arv, "status": "NO_ARV"}
+
+    def fits(bid: float) -> tuple[bool, dict[str, Any]]:
+        calc = calculate_project(bid, arv, inputs)
+        cost_components = {
+            "buyer_auction_fee": to_float(calc.get("buyer_auction_fee")),
+            "bphtb": to_float(calc.get("bphtb")),
+            "legal_transfer": to_float(calc.get("legal_bpn_cost")),
+            # Known property-borne arrears/obligations (e.g. PBB, utilities,
+            # IPL) are entered in other_presale_cost and must reduce the quick
+            # MAO budget rather than being hidden inside the residual buffer.
+            "known_other_presale_obligations": to_float(inputs.get("costs", {}).get("other_presale_cost")),
+            "possession_evacuation": to_float(calc.get("possession_cost")),
+            "renovation": to_float(calc.get("renovation_cost")),
+            "renovation_contingency": to_float(calc.get("renovation_contingency")),
+            "hidden_condition_reserve": to_float(calc.get("hidden_condition_reserve")),
+            "possession_risk_reserve": to_float(calc.get("possession_risk_reserve")),
+            "general_risk_reserve": to_float(calc.get("general_risk_reserve")),
+        }
+        used = bid + sum(cost_components.values())
+        return used <= budget_ceiling + 1e-6, {"used_budget": used, "budget_ceiling": budget_ceiling, "cost_components": cost_components}
+
+    ok_zero, zero_detail = fits(0.0)
+    if not ok_zero:
+        return {
+            "mao": None, "factor_pct": factor_pct, "arv_basis": arv,
+            "status": "COSTS_EXCEED_RULE_OF_THUMB_BUDGET", **zero_detail,
+        }
+
+    # Integer bisection, then floor to a user-friendly increment to ensure the
+    # displayed screening MAO never exceeds the 70%-rule budget.
+    low, high = 0.0, budget_ceiling
+    for _ in range(64):
+        mid = (low + high) / 2.0
+        ok, _ = fits(mid)
+        if ok:
+            low = mid
+        else:
+            high = mid
+    mao = max(0.0, (low // step) * step)
+    _, detail = fits(mao)
+    return {
+        "mao": round(mao),
+        "factor_pct": factor_pct,
+        "arv_basis": arv,
+        "status": "CALCULATED",
+        **detail,
+    }
+
+
 def _meets(
     bid: float,
     exit_price: float,
@@ -194,13 +263,15 @@ def build_bid_tiers(
     base_exit: float,
     inputs: dict[str, Any],
     cash_available: float | None,
-    minimum_roi_pct: float = 20.0,
+    minimum_roi_pct: float = 15.0,
     mid_roi_pct: float = 30.0,
     risk_ceiling: float | None = None,
     simulation_step: float = 1_000.0,
     optimistic_exit: float | None = None,
     minimum_net_profit: float | None = None,
     maximum_holding_days: float | None = None,
+    conditional_maximum_holding_days: float | None = None,
+    go_minimum_roi_pct: float | None = None,
 ) -> dict[str, Any]:
     rules = inputs.get("rules", {}) if isinstance(inputs, dict) else {}
     if minimum_net_profit is None:
@@ -208,6 +279,13 @@ def build_bid_tiers(
     if maximum_holding_days is None:
         configured_max_days = rules.get("maximum_holding_days")
         maximum_holding_days = to_float(configured_max_days) if configured_max_days not in (None, "") else None
+    if conditional_maximum_holding_days is None:
+        configured_conditional_days = rules.get("conditional_maximum_holding_days")
+        conditional_maximum_holding_days = (
+            to_float(configured_conditional_days)
+            if configured_conditional_days not in (None, "")
+            else maximum_holding_days
+        )
     if to_float(conservative_exit) <= 0 or to_float(auction_limit) <= 0:
         return {
             "increment_confirmed": bool(increment and increment > 0),
@@ -223,20 +301,26 @@ def build_bid_tiers(
     step = to_float(increment) if increment_confirmed else max(1.0, to_float(simulation_step, 1_000.0))
     # Cash adequacy is a separate funding gate. The ceiling is economic; the
     # available-cash gate is presented independently in the underwriting view.
+    go_hurdle = max(to_float(minimum_roi_pct), to_float(go_minimum_roi_pct if go_minimum_roi_pct is not None else rules.get("go_minimum_roi_pct", 25.0)))
+    go = find_maximum_bid(conservative_exit, inputs, auction_limit, step, go_hurdle, None, risk_ceiling,
+                          minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days)
     mid = find_maximum_bid(conservative_exit, inputs, auction_limit, step, mid_roi_pct, None, risk_ceiling,
                            minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days)
     maximum = find_maximum_bid(conservative_exit, inputs, auction_limit, step, minimum_roi_pct, None, risk_ceiling,
-                               minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days)
+                               minimum_net_profit=minimum_net_profit, maximum_holding_days=conditional_maximum_holding_days)
     base = find_maximum_bid(base_exit, inputs, auction_limit, step, minimum_roi_pct, None, risk_ceiling,
-                            minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days) if to_float(base_exit) > 0 else {}
+                            minimum_net_profit=minimum_net_profit, maximum_holding_days=conditional_maximum_holding_days) if to_float(base_exit) > 0 else {}
     upper_exit = to_float(optimistic_exit) if optimistic_exit not in (None, "") else 0.0
     upper = find_maximum_bid(upper_exit, inputs, auction_limit, step, minimum_roi_pct, None, risk_ceiling,
-                             minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days) if upper_exit > 0 else {}
+                             minimum_net_profit=minimum_net_profit, maximum_holding_days=conditional_maximum_holding_days) if upper_exit > 0 else {}
 
     max_value = maximum.get("maximum_bid")
     mid_value = mid.get("maximum_bid")
+    go_value = go.get("maximum_bid")
+    go_simulated_ceiling = go_value if not increment_confirmed and go.get("limit_feasible") else None
     mid_simulated_ceiling = mid_value if not increment_confirmed and mid.get("limit_feasible") else None
     max_simulated_ceiling = max_value if not increment_confirmed and maximum.get("limit_feasible") else None
+    actionable_go = go_value if increment_confirmed else None
     actionable_mid = mid_value if increment_confirmed else None
     actionable_max = max_value if increment_confirmed else None
     walk_away = round(actionable_max + step, 2) if actionable_max is not None else None
@@ -251,7 +335,7 @@ def build_bid_tiers(
         else:
             walk_away_reason = (
                 f"JANGAN BID: limit tidak memenuhi ROI minimum {minimum_roi_pct:.1f}%, "
-                f"profit minimum Rp{minimum_net_profit:,.0f}, atau durasi maksimum {maximum_holding_days or 0:.0f} hari. "
+                f"profit minimum Rp{minimum_net_profit:,.0f}, atau durasi maksimum {conditional_maximum_holding_days or 0:.0f} hari. "
                 "Increment resmi juga belum dikonfirmasi."
             )
     elif not increment_confirmed:
@@ -269,6 +353,13 @@ def build_bid_tiers(
         "increment_used_for_simulation": step,
         "increment_note": "Increment resmi/terverifikasi" if increment_confirmed else f"Simulasi menggunakan langkah komputasi Rp{step:,.0f}; bukan increment resmi. Konfirmasi pengumuman lelang sebelum bidding.",
         "min_bid": auction_limit,
+        "go_bid": actionable_go,
+        "go_economic_ceiling": go.get("economic_ceiling") if not go.get("limit_feasible") else None,
+        "go_simulated_ceiling": go_simulated_ceiling,
+        "go_result": go.get("at_maximum") if go_value is not None else go.get("at_economic_ceiling") or go.get("at_limit"),
+        "go_limit_feasible": bool(go.get("limit_feasible")),
+        "go_roi_target": go_hurdle,
+        "go_reason": go.get("reason"),
         "mid_bid": actionable_mid,
         "mid_economic_ceiling": mid.get("economic_ceiling") if not mid.get("limit_feasible") else None,
         "mid_simulated_ceiling": mid_simulated_ceiling,
@@ -283,7 +374,8 @@ def build_bid_tiers(
         "max_limit_feasible": bool(maximum.get("limit_feasible")),
         "max_roi_target": minimum_roi_pct,
         "minimum_net_profit_required": minimum_net_profit,
-        "maximum_holding_days_allowed": maximum_holding_days,
+        "maximum_holding_days_allowed": conditional_maximum_holding_days,
+        "go_maximum_holding_days_allowed": maximum_holding_days,
         "base_case_max_bid": base.get("maximum_bid") if increment_confirmed else None,
         "base_case_simulated_ceiling": base.get("maximum_bid") if not increment_confirmed and base.get("limit_feasible") else None,
         "base_case_economic_ceiling": base.get("economic_ceiling") if not base.get("limit_feasible") else None,

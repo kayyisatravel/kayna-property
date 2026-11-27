@@ -1,8 +1,8 @@
 """Central application defaults. Tax/legal rates are editable assumptions, not legal advice."""
 APP_NAME = "KAYNA PROPERTY MANAGEMENT SYSTEM"
-APP_VERSION = "1.0.24"
+APP_VERSION = "1.0.25.1"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
-MIN_ROI_PCT = 20.0
+MIN_ROI_PCT = 15.0
 MID_ROI_PCT = 30.0
 MINIMUM_NET_PROFIT = 50_000_000
 TARGET_HOLDING_DAYS = 90
@@ -31,12 +31,24 @@ DEFAULT_RULES = {
     "renovation_contingency_pct": 15.0,
     # Additional reserve for unseen interior/MEP/roof conditions when full access is unavailable.
     "hidden_condition_reserve_pct": 7.5,
+    # minimum_roi_pct is the actionable-bid / CONDITIONAL GO floor.
+    # GO classification uses its separate higher threshold and shorter duration.
     "minimum_roi_pct": MIN_ROI_PCT,
     "mid_roi_pct": MID_ROI_PCT,
+    "conditional_minimum_roi_pct": MIN_ROI_PCT,
+    "go_minimum_roi_pct": 25.0,
     "minimum_net_profit": MINIMUM_NET_PROFIT,
     "target_holding_days": TARGET_HOLDING_DAYS,
     "maximum_holding_days": MAX_HOLDING_DAYS,
-    "investment_policy_version": "KAYNA_FLIP_POLICY_V1",
+    "conditional_maximum_holding_days": 365,
+    "conditional_min_comparables": 3,
+    "go_min_comparables": MIN_VALID_COMPARABLES_FOR_GO,
+    "conditional_market_confidence_pct": 45.0,
+    "go_market_confidence_pct": 55.0,
+    "renovation_contingency_min_pct": 15.0,
+    "heavy_renovation_contingency_min_pct": 20.0,
+    "mao_rule_of_thumb_pct": 70.0,
+    "investment_policy_version": "KAYNA_FLIP_POLICY_V2",
     "negotiation_discount_pct": DEFAULT_NEGOTIATION_DISCOUNT_PCT,
     "quick_sale_discount_pct": DEFAULT_QUICK_SALE_DISCOUNT_PCT,
     # Used only when >=3 comparable properties also have paired NJOP values.

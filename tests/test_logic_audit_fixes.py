@@ -223,8 +223,8 @@ def test_unpriced_recommended_rab_item_blocks_final_go_until_priced_or_excluded(
     from core.decision_engine import evaluate_decision
     inputs = {
         "property": {"lot_code":"L1", "address":"Alamat", "auction_limit":100, "land_area":90, "building_area":70},
-        "survey": {"survey_status":"Sudah Survei - Kosong/Tidak Dihuni", "interior_inspected":True},
-        "legal": {"identity_verified":True, "dispute_detected":False, "tax_rules_verified":True},
+        "survey": {"survey_status":"Sudah Survei - Kosong/Tidak Dihuni", "physical_condition":"Siap huni", "interior_inspected":True, "structure_verified_safe":True},
+        "legal": {"identity_verified":True, "original_certificate_status":"Asli di bank/kreditur dan siap diserahkan", "dispute_detected":False, "tax_rules_verified":True},
         "rules": {"minimum_roi_pct":25},
         "costs": {"cost_estimates_reviewed":True, "renovation_items":[
             {"work_item":"Inspeksi plafon", "priority":"Disarankan", "quantity":1, "unit_cost":None}
@@ -233,7 +233,7 @@ def test_unpriced_recommended_rab_item_blocks_final_go_until_priced_or_excluded(
         "risk_reviewed":True,
     }
     result = evaluate_decision(
-        inputs, {"valid_count":5,"go_grade_count":5,"confidence":85},
+        inputs, {"valid_count":5,"go_grade_count":5,"confidence":85,"status":"READY"},
         {"increment_confirmed":True,"max_bid":150},
         {"roi_pct":35,"net_profit":60_000_000,"capital_before_sale":100,"cash_requirement_including_reserve":100,"projected_holding_days":90},
     )
@@ -245,8 +245,8 @@ def test_conditional_or_not_required_rab_rows_do_not_block_final_go():
     from core.decision_engine import evaluate_decision
     inputs = {
         "property": {"lot_code":"L1", "address":"Alamat", "auction_limit":100, "land_area":90, "building_area":70},
-        "survey": {"survey_status":"Sudah Survei - Kosong/Tidak Dihuni", "interior_inspected":True},
-        "legal": {"identity_verified":True, "dispute_detected":False, "tax_rules_verified":True},
+        "survey": {"survey_status":"Sudah Survei - Kosong/Tidak Dihuni", "physical_condition":"Siap huni", "interior_inspected":True, "structure_verified_safe":True},
+        "legal": {"identity_verified":True, "original_certificate_status":"Asli di bank/kreditur dan siap diserahkan", "dispute_detected":False, "tax_rules_verified":True},
         "rules": {"minimum_roi_pct":25},
         "costs": {"cost_estimates_reviewed":True, "renovation_items":[
             {"work_item":"Rangka kanopi diperiksa kemudian", "priority":"Bersyarat", "quantity":None, "unit_cost":None},
@@ -256,7 +256,7 @@ def test_conditional_or_not_required_rab_rows_do_not_block_final_go():
         "risk_reviewed":True,
     }
     result = evaluate_decision(
-        inputs, {"valid_count":5,"go_grade_count":5,"confidence":85},
+        inputs, {"valid_count":5,"go_grade_count":5,"confidence":85,"status":"READY"},
         {"increment_confirmed":True,"max_bid":150},
         {"roi_pct":35,"net_profit":60_000_000,"capital_before_sale":100,"cash_requirement_including_reserve":100,"projected_holding_days":90},
     )

@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any
 from .market_engine import assess_comparables
 from .calculator import calculate_project
-from .maximum_bid import build_bid_tiers
+from .maximum_bid import build_bid_tiers, calculate_rule_of_thumb_mao
 from .decision_engine import evaluate_decision
 from .liquidity import evaluate_funding
 from .risk_engine import summarize_risks
@@ -10,15 +10,133 @@ from .renovation_engine import rab_item_is_in_scope
 from .utils import to_float
 
 
+def _subject_condition_bucket(physical_condition: Any, property_type: Any = "") -> str | None:
+    """Map survey wording to the comparable-engine's controlled condition buckets."""
+    text = str(physical_condition or "").strip().lower()
+    property_kind = str(property_type or "").strip().lower()
+    if "tanah kosong" in property_kind or "hitung tanah" in text:
+        return "Hitung Tanah"
+    if "siap huni" in text or "kosmetik" in text:
+        # Cosmetic-only work is grouped with ready-to-move stock for market
+        # matching; medium/heavy/light renovation remains in the renovation bucket.
+        return "Siap Huni"
+    if any(token in text for token in ("renovasi", "butuh perbaikan", "perlu perbaikan")):
+        return "Butuh Renovasi"
+    return None
+
+
+def _market_estimate_summary(result: dict[str, Any], condition_bucket: str | None) -> dict[str, Any]:
+    count = int(to_float(result.get("valuation_comparable_count")))
+    confidence = to_float(result.get("confidence"))
+    enough_evidence = count >= 3 and confidence >= 45
+    return {
+        "condition_bucket": condition_bucket,
+        "value": result.get("base_exit") if enough_evidence else None,
+        "indicative_value": result.get("base_exit"),
+        "conservative_value": result.get("conservative_exit") if enough_evidence else None,
+        "indicative_conservative_value": result.get("conservative_exit"),
+        "comparable_count": count,
+        "go_grade_count": int(to_float(result.get("go_grade_count"))),
+        "confidence": confidence,
+        "status": "INDICATIVE" if enough_evidence else "LOW_SAMPLE",
+        "valuation_mode": result.get("valuation_mode"),
+    }
+
+
 def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:
     prop = data.get("property", {}); survey = data.get("survey", {}); legal = data.get("legal", {}); costs = data.get("costs", {})
-    market_subject = {**prop, "access": survey.get("access"), "physical_condition": survey.get("physical_condition")}
-    market = assess_comparables(
-        data.get("comparables", []), market_subject,
+    comparables = list(data.get("comparables", []) or [])
+    current_condition = _subject_condition_bucket(survey.get("physical_condition"), prop.get("property_type"))
+    is_land_only = current_condition == "Hitung Tanah" or str(prop.get("property_type") or "").strip().lower() == "tanah kosong"
+    exit_condition = "Hitung Tanah" if is_land_only else "Siap Huni"
+    market_kwargs = (
         to_float(rules.get("negotiation_discount_pct", 10)),
         to_float(rules.get("quick_sale_discount_pct", 5)),
         to_float(rules.get("njop_market_weight_pct", 10)),
     )
+
+    # The financial exit model is based on comparable properties in the intended
+    # post-renovation condition (normally Siap Huni). Current/as-is value is
+    # calculated separately from comparables matching the surveyed condition.
+    exit_comparables = [
+        row for row in comparables
+        if str(row.get("condition") or "").strip().lower() == exit_condition.lower()
+    ]
+    market_subject_exit = {
+        **prop,
+        "access": survey.get("access"),
+        "physical_condition": "Hitung tanah" if is_land_only else "Siap huni",
+    }
+    market_condition_matched = assess_comparables(exit_comparables, market_subject_exit, *market_kwargs)
+    if market_condition_matched.get("valuation_comparable_count", 0) >= 3:
+        market = market_condition_matched
+    else:
+        # Keep the historical partial-market diagnostic available (e.g. one
+        # unclassified listing) but never present it as condition-matched ARV.
+        market = assess_comparables(comparables, market_subject_exit, *market_kwargs)
+        market["quality_notes"].append(
+            "Pembanding kondisi exit yang terklasifikasi belum mencapai 3 listing; nilai campuran di bawah hanya proxy sementara dan tidak boleh diperlakukan sebagai ARV terverifikasi."
+        )
+
+    as_is_comparables = [
+        row for row in comparables
+        if current_condition and str(row.get("condition") or "").strip().lower() == current_condition.lower()
+    ]
+    if current_condition == exit_condition:
+        # Use the explicit condition-matched assessment, not `market`, which
+        # may be a mixed-condition fallback used only for partial diagnostics.
+        market_as_is = market_condition_matched
+    elif current_condition:
+        market_subject_as_is = {
+            **prop,
+            "access": survey.get("access"),
+            "physical_condition": current_condition,
+        }
+        market_as_is = assess_comparables(as_is_comparables, market_subject_as_is, *market_kwargs)
+    else:
+        market_as_is = {
+            "base_exit": None, "conservative_exit": None,
+            "valuation_comparable_count": 0, "go_grade_count": 0,
+            "confidence": 0, "status": "INSUFFICIENT_DATA",
+            "valuation_mode": None,
+        }
+
+    market["comparable_pool_count"] = len(comparables)
+    market["arv_condition_bucket"] = exit_condition
+    market["arv_condition_comparable_count"] = int(to_float(market_condition_matched.get("valuation_comparable_count")))
+    market["arv_condition_confidence"] = to_float(market_condition_matched.get("confidence"))
+    market["arv_after_repair"] = (
+        None if is_land_only else _market_estimate_summary(market_condition_matched, exit_condition)
+    )
+    market["land_exit_value"] = (
+        _market_estimate_summary(market_condition_matched, exit_condition) if is_land_only else None
+    )
+    market["fmv_as_is"] = _market_estimate_summary(market_as_is, current_condition)
+    market["limit_to_fmv_as_is_pct"] = None
+    fmv_as_is_value = to_float((market.get("fmv_as_is") or {}).get("value"))
+    auction_limit = to_float(prop.get("auction_limit"))
+    if fmv_as_is_value > 0 and auction_limit > 0:
+        market["limit_to_fmv_as_is_pct"] = round(auction_limit / fmv_as_is_value * 100, 1)
+    # Final GO-grade status is based only on condition-matched exit comparables.
+    matched_go_grade = int(to_float(market_condition_matched.get("go_grade_count")))
+    matched_confidence = to_float(market_condition_matched.get("confidence"))
+    market["go_grade_count"] = matched_go_grade
+    market["confidence"] = matched_confidence
+    market["confidence_band"] = "Baik" if matched_confidence >= 70 else "Cukup" if matched_confidence >= 55 else "Rendah"
+    market["status"] = (
+        "READY"
+        if market["arv_condition_comparable_count"] >= 5 and matched_go_grade >= 5 and matched_confidence >= 55
+        else "PRELIMINARY"
+    )
+    condition_note = (
+        f"ARV exit memakai {len(exit_comparables)} listing dengan kondisi '{exit_condition}'. "
+        f"FMV as-is memakai {len(as_is_comparables)} listing dengan kondisi '{current_condition or 'belum terklasifikasi'}'."
+    )
+    market.setdefault("quality_notes", []).append(condition_note)
+    if len(exit_comparables) != len(comparables):
+        market["quality_notes"].append(
+            f"{len(comparables) - len(exit_comparables)} listing di luar bucket kondisi exit tidak dicampurkan ke ARV setelah renovasi."
+        )
     risk_summary = summarize_risks(data.get("risk_register", []))
     survey_for_calculation = {**survey, "general_risk_reserve": risk_summary["total_cash_reserve"]}
     calculation_inputs = {"property": prop, "survey": survey_for_calculation, "legal": legal, "costs": costs, "rules": rules, "finance": liquidity}
@@ -40,10 +158,41 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
         optimistic_exit=market.get("optimistic_exit"),
         minimum_net_profit=to_float(rules.get("minimum_net_profit", 50_000_000)),
         maximum_holding_days=to_float(rules.get("maximum_holding_days", 180)),
+        conditional_maximum_holding_days=to_float(rules.get("conditional_maximum_holding_days", 365)),
+        go_minimum_roi_pct=to_float(rules.get("go_minimum_roi_pct", 25)),
     )
     funding = evaluate_funding(to_float(at_limit.get("cash_requirement_including_reserve")), to_float(prop.get("deposit_amount")), liquidity)
-    decision_inputs = {**data, "risk_summary": risk_summary, "finance": {**liquidity, "cash_confirmed": bool(liquidity.get("cash_confirmed"))}}
-    decision = evaluate_decision(decision_inputs, market, tiers, at_limit)
+    market_exit_valid = (
+        int(to_float(market.get("arv_condition_comparable_count"))) >= 3
+        and to_float(market.get("arv_condition_confidence")) >= 45
+    )
+    # Do not classify an opportunity as structurally uneconomic from a
+    # mixed-condition/low-sample proxy. Zero-bid economics are a hard stop only
+    # when the exit valuation itself has adequate condition-matched evidence.
+    no_bid_case = calculate_project(0.0, conservative_exit, calculation_inputs) if conservative_exit and market_exit_valid else {}
+    # Pass the exact rules snapshot into the decision engine. Previously these
+    # thresholds silently fell back to defaults because `rules` was omitted.
+    decision_inputs = {
+        **data,
+        "rules": rules,
+        "risk_summary": risk_summary,
+        "finance": {**liquidity, "cash_confirmed": bool(liquidity.get("cash_confirmed"))},
+    }
+    decision = evaluate_decision(decision_inputs, market, tiers, at_limit, no_bid_case=no_bid_case)
+    arv_summary = market.get("arv_after_repair") or {}
+    if is_land_only:
+        # Land-only exits use the condition-matched land valuation, not a house ARV.
+        quick_sale_value_for_mao = (
+            conservative_exit
+            if market.get("arv_condition_comparable_count", 0) >= 3 and market.get("arv_condition_confidence", 0) >= 45
+            else None
+        )
+    else:
+        quick_sale_value_for_mao = arv_summary.get("conservative_value")
+    mao_rule_of_thumb = calculate_rule_of_thumb_mao(
+        to_float(quick_sale_value_for_mao), calculation_inputs,
+        to_float(rules.get("mao_rule_of_thumb_pct", 70.0)),
+    )
     # Keep calculated ceilings visible for screening, but explicitly mark them
     # provisional whenever core evidence/costs have not been reviewed. A partial
     # RAB can understate capital and overstate ROI even though the decision gate
@@ -91,4 +240,41 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
     funding_score = 100 if funding.get("full_project_funded") else max(0, min(100, cash_available / max(1, to_float(at_limit.get("capital_before_sale"))) * 100))
     risk_score_pct = max(0.0, 100.0 - 4.0 * to_float(risk_summary.get("maximum_severity")))
     index = round(0.25 * financial_score + 0.15 * market_score + 0.15 * legal_score + 0.10 * survey_score + 0.20 * funding_score + 0.15 * risk_score_pct, 1)
-    return {"market": market, "at_limit": at_limit, "bidding": tiers, "funding": funding, "risk_summary": risk_summary, "risk_register": risk_summary["items"], "decision": decision, "eligibility_index_pct": index, "calculation_inputs": calculation_inputs}
+    mao_full_cost = tiers.get("max_bid") if market_exit_valid else None
+    if mao_full_cost is None and market_exit_valid:
+        mao_full_cost = tiers.get("max_simulated_ceiling")
+    if mao_full_cost is None and market_exit_valid:
+        mao_full_cost = tiers.get("max_economic_ceiling")
+    mao_go_full_cost = tiers.get("go_bid") if market_exit_valid else None
+    if mao_go_full_cost is None and market_exit_valid:
+        mao_go_full_cost = tiers.get("go_simulated_ceiling")
+    if mao_go_full_cost is None and market_exit_valid:
+        mao_go_full_cost = tiers.get("go_economic_ceiling")
+    mao_target_roi_bid = tiers.get("mid_bid") if market_exit_valid else None
+    if mao_target_roi_bid is None and market_exit_valid:
+        mao_target_roi_bid = tiers.get("mid_simulated_ceiling")
+    if mao_target_roi_bid is None and market_exit_valid:
+        mao_target_roi_bid = tiers.get("mid_economic_ceiling")
+    decision["mao_full_cost"] = mao_full_cost
+    decision["mao_go_full_cost"] = mao_go_full_cost
+    decision["mao_rule_of_thumb"] = mao_rule_of_thumb.get("mao")
+    return {
+        "market": market,
+        "at_limit": at_limit,
+        "bidding": tiers,
+        "funding": funding,
+        "risk_summary": risk_summary,
+        "risk_register": risk_summary["items"],
+        "decision": decision,
+        "eligibility_index_pct": index,
+        "calculation_inputs": calculation_inputs,
+        "mao": {
+            "rule_of_thumb": mao_rule_of_thumb,
+            "full_cost": mao_full_cost,
+            "go_full_cost": mao_go_full_cost,
+            "target_roi_bid": mao_target_roi_bid,
+            "full_cost_roi_floor_pct": to_float(rules.get("minimum_roi_pct", 15.0)),
+            "go_roi_floor_pct": to_float(rules.get("go_minimum_roi_pct", 25.0)),
+            "full_cost_minimum_profit": to_float(rules.get("minimum_net_profit", 50_000_000.0)),
+        },
+    }

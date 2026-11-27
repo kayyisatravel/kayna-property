@@ -118,7 +118,7 @@ def test_step_navigation_clamps_step_number_to_valid_range():
 
 def test_release_version_is_1024_and_column_layouts_do_not_exceed_four():
     config_text = Path("config.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.0.24"' in config_text
+    assert 'APP_VERSION = "1.0.25.1"' in config_text
     tree = ast.parse(_app_source())
     oversized = []
     for node in ast.walk(tree):
