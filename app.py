@@ -182,6 +182,109 @@ def record_payload(row: dict[str, Any]) -> dict[str, Any]:
     return row.get("payload") if isinstance(row.get("payload"), dict) else parse_json(row.get("payload_json"), {})
 
 
+def _optional_auction_date(value: Any) -> date | None:
+    """Parse an auction date without silently replacing a missing date with today."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for candidate in (raw[:10], raw):
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(candidate, fmt).date()
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def calculate_recommendation_score(
+    result: dict[str, Any],
+    decision_status: str,
+    rules: dict[str, Any],
+    liquidity: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a transparent 0-100 prioritisation score; it is not a profit probability."""
+    at_limit = result.get("at_limit") or {}
+    market = result.get("market") or {}
+
+    minimum_roi = to_float(rules.get("minimum_roi_pct"), 20.0)
+    target_roi = to_float(rules.get("mid_roi_pct"), 30.0)
+    minimum_profit = max(0.0, to_float(rules.get("minimum_net_profit"), 50_000_000.0))
+    target_days = max(1.0, to_float(rules.get("target_holding_days"), 90.0))
+    maximum_days = max(target_days, to_float(rules.get("maximum_holding_days"), 180.0))
+
+    roi = to_float(at_limit.get("roi_pct"), -999.0)
+    profit = to_float(at_limit.get("net_profit"), -1.0)
+    cash_need = to_float(at_limit.get("cash_requirement_including_reserve"), -1.0)
+    cash_available = max(0.0, to_float(liquidity.get("cash_available_for_new_project")))
+    cash_confirmed = bool(liquidity.get("cash_confirmed", False))
+    holding_days = to_float(at_limit.get("projected_holding_days"), -1.0)
+
+    def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
+        return max(lower, min(upper, value))
+
+    # 25 points: reward ROI from the Kayna minimum hurdle toward the target;
+    # an ROI at the minimum earns half credit and performance above target is not capped negatively.
+    if roi < minimum_roi:
+        roi_score = 0.0
+    elif target_roi > minimum_roi:
+        roi_progress = clamp((roi - minimum_roi) / (target_roi - minimum_roi))
+        roi_score = 25.0 * (0.5 + 0.5 * roi_progress)
+    else:
+        roi_score = 25.0 if roi >= minimum_roi else 0.0
+
+    # 15 points: profit is measured against the minimum and up to twice that threshold.
+    if minimum_profit > 0:
+        profit_score = 15.0 * clamp(profit / (2.0 * minimum_profit))
+    else:
+        profit_score = 15.0 if profit > 0 else 0.0
+
+    # 20 points: the cash position must be confirmed; full credit requires a 25% buffer.
+    if cash_confirmed and cash_need > 0:
+        liquidity_coverage = cash_available / cash_need
+        liquidity_score = 20.0 * clamp(liquidity_coverage / 1.25)
+    else:
+        liquidity_coverage = None
+        liquidity_score = 0.0
+
+    # 20 points: the underwriting gate remains authoritative.
+    decision_score = 20.0 if decision_status == "GO" else 12.0 if decision_status == "CONDITIONAL GO" else 0.0
+
+    # 10 points: use the market-evidence confidence already produced by underwriting.
+    confidence = to_float(market.get("confidence"), -1.0)
+    if confidence < 0:
+        go_grade_count = max(0.0, to_float(market.get("go_grade_count")))
+        confidence = min(100.0, go_grade_count / 5.0 * 100.0)
+    evidence_score = 10.0 * clamp(confidence / 100.0)
+
+    # 10 points: ideal at/below target holding days, tapering to zero at the maximum.
+    if 0 < holding_days <= target_days:
+        holding_score = 10.0
+    elif target_days < holding_days <= maximum_days and maximum_days > target_days:
+        holding_score = 10.0 * clamp((maximum_days - holding_days) / (maximum_days - target_days))
+    else:
+        holding_score = 0.0
+
+    components = {
+        "ROI terhadap minimum/target (25)": round(roi_score, 2),
+        "Profit bersih pada limit (15)": round(profit_score, 2),
+        "Kecukupan kas (20)": round(liquidity_score, 2),
+        "Status underwriting (20)": round(decision_score, 2),
+        "Kualitas bukti pasar (10)": round(evidence_score, 2),
+        "Durasi proyek (10)": round(holding_score, 2),
+    }
+    total = round(sum(components.values()), 2)
+    return {
+        "score": total,
+        "components": components,
+        "cash_coverage_pct": round(liquidity_coverage * 100.0, 1) if liquidity_coverage is not None else None,
+        "market_confidence_pct": round(confidence, 1),
+    }
+
+
 def budget_actual_table(estimate: dict[str, Any], actual_rows: list[dict[str, Any]]) -> pd.DataFrame:
     actual = {}
     for row in actual_rows:
@@ -529,7 +632,7 @@ def comparable_date_to_iso(value: Any) -> str | None:
 
 # ------------------------------- Sidebar -----------------------------------
 st.sidebar.markdown("<div class='kayna-sidebar-brand'><span class='kp-mark'>KP</span><strong>KAYNA PROPERTY MANAGEMENT SYSTEM</strong><small>INVESTMENT · AUCTION · PROJECT CONTROL</small></div>", unsafe_allow_html=True)
-st.sidebar.caption(f"Version {APP_VERSION}")
+st.sidebar.caption("Version 1.0.25")
 if repo: st.sidebar.success("Database terhubung")
 else: st.sidebar.warning("Mode sementara · database belum terhubung" if not db_error else db_error[:180])
 GEMINI_KEY = str(secret("GEMINI_API_KEY", "") or "")
@@ -2153,45 +2256,287 @@ elif page == "Investor Cashflow":
 
 # ======================== PAGE 4: PORTFOLIO COMPARISON =====================
 elif page == "Portfolio Comparison":
-    st.markdown("<div class='hero'><h1>Bandingkan Peluang Investasi</h1><p>Bandingkan beberapa objek berdasarkan estimasi profit, ROI, risiko, dan kemampuan kas secara bersamaan.</p></div>", unsafe_allow_html=True)
-    props = list_properties(); analyses = list_analyses(); _,_,liquidity = get_cash_data(); rules = get_rules()
-    latest_by_pid = {}
-    for a in analyses:
-        pid = str(a.get("property_id"))
-        if pid not in latest_by_pid or str(a.get("analyzed_at")) > str(latest_by_pid[pid].get("analyzed_at")): latest_by_pid[pid] = a
-    prospect_props = [p for p in props if p.get("lifecycle_status") not in {"WON", "ACTIVE", "SOLD"} and p.get("property_id") in latest_by_pid]
-    options = {f"{p.get('name','')} · {p.get('lot_code','')} · {p.get('decision_status','')} · {p.get('property_id')}": p.get("property_id") for p in prospect_props}
-    selected_labels = st.multiselect("Pilih objek yang akan dibandingkan", list(options.keys()))
-    if selected_labels and st.button("Bandingkan dengan cashflow terkini", type="primary"):
-        rankings = []
-        for label in selected_labels:
-            pid = options[label]; snap = record_payload(latest_by_pid[pid])
-            if not snap: continue
-            data = {"property": snap.get("property", {}), "survey": snap.get("survey", {}), "legal": snap.get("legal", {}), "costs": snap.get("costs", {}), "comparables": snap.get("comparables", []), "risk_register": snap.get("risk_register", []), "risk_reviewed": snap.get("risk_reviewed", False)}
-            # Current profile confirmation is refreshed; historic snapshot inputs remain immutable.
-            liq = dict(liquidity); cash_profile, _, _ = get_cash_data(); liq["cash_confirmed"] = bool(cash_profile.get("cash_confirmed", False))
-            new_result = run_underwriting(data, liq, snap.get("rules", rules))
-            rankings.append({"property_id": pid, "name": data["property"].get("name"), "lot_code": data["property"].get("lot_code"), "decision_status": new_result["decision"]["status"], "eligibility_index_pct": new_result["eligibility_index_pct"], "conservative_arv": new_result["market"].get("conservative_exit"), "roi_at_limit_pct": new_result["at_limit"].get("roi_pct"), "net_profit_at_limit": new_result["at_limit"].get("net_profit"), "max_bid": new_result["bidding"].get("max_bid"), "walk_away_from": new_result["bidding"].get("walk_away_from"), "cash_need": new_result["at_limit"].get("cash_requirement_including_reserve"), "blockers": new_result["decision"].get("blockers"), "analysis": new_result})
-        order = {"GO":0, "CONDITIONAL GO":1, "HOLD":2, "DO NOT BID":3}
-        rankings.sort(key=lambda x: (order.get(x["decision_status"], 9), -x["eligibility_index_pct"]))
-        st.session_state.portfolio_rankings = rankings
-        st.session_state.portfolio_ai_review = None
-    rankings = st.session_state.get("portfolio_rankings", [])
-    if rankings:
-        table = [{k:v for k,v in r.items() if k not in {"analysis", "blockers"}} for r in rankings]
-        st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True, column_config={"conservative_arv": st.column_config.NumberColumn("Conservative ARV", format="Rp %.0f"), "net_profit_at_limit": st.column_config.NumberColumn("Profit @ limit", format="Rp %.0f"), "max_bid": st.column_config.NumberColumn("Maximum bid", format="Rp %.0f"), "walk_away_from": st.column_config.NumberColumn("Walk away", format="Rp %.0f"), "cash_need": st.column_config.NumberColumn("Modal dibutuhkan", format="Rp %.0f"), "eligibility_index_pct": st.column_config.NumberColumn("Indeks (%)", format="%.1f"), "roi_at_limit_pct": st.column_config.NumberColumn("ROI (%)", format="%.1f")})
-        eligible = [x for x in rankings if x["decision_status"] in {"GO", "CONDITIONAL GO"}]
-        if eligible: st.success(f"Kandidat Python teratas: {eligible[0]['name']} ({eligible[0]['decision_status']}). Indeks merupakan skor screening, bukan probabilitas profit.")
-        else: st.warning("HOLD ALL — tidak ada objek dalam shortlist yang lolos gate Python.")
-        if st.button("Review shortlist dengan Gemini (opsional)", disabled=not GEMINI_KEY):
+    st.markdown("<div class='hero'><h1>Bandingkan Peluang Investasi</h1><p>Ranking otomatis seluruh prospek berdasarkan kelayakan underwriting, potensi hasil, kebutuhan kas, kualitas bukti pasar, dan durasi proyek.</p></div>", unsafe_allow_html=True)
+    props = list_properties()
+    analyses = list_analyses()
+    cash_profile, _, liquidity = get_cash_data()
+    liquidity = dict(liquidity)
+    liquidity["cash_confirmed"] = bool(cash_profile.get("cash_confirmed", False))
+    current_rules = get_rules()
+    today_local = jakarta_today()
+
+    latest_by_pid: dict[str, dict[str, Any]] = {}
+    for analysis_row in analyses:
+        pid = str(analysis_row.get("property_id") or "")
+        if not pid:
+            continue
+        if pid not in latest_by_pid or str(analysis_row.get("analyzed_at") or "") > str(latest_by_pid[pid].get("analyzed_at") or ""):
+            latest_by_pid[pid] = analysis_row
+
+    # Only records not already won/active/sold are considered auction prospects.
+    prospect_props = [
+        prop for prop in props
+        if str(prop.get("lifecycle_status") or "PROSPECT").upper() not in {"WON", "ACTIVE", "SOLD"}
+    ]
+    signature_payload = {
+        "release": "PFMS_V1.0.25_RECOMMENDATION_SCORE",
+        "prospects": [
+            {
+                "property_id": str(prop.get("property_id") or ""),
+                "updated_at": prop.get("updated_at"),
+                "lifecycle_status": prop.get("lifecycle_status"),
+                "auction_date": prop.get("auction_date"),
+                "analysis_id": latest_by_pid.get(str(prop.get("property_id") or ""), {}).get("analysis_id"),
+                "analyzed_at": latest_by_pid.get(str(prop.get("property_id") or ""), {}).get("analyzed_at"),
+            }
+            for prop in prospect_props
+        ],
+        "liquidity": liquidity,
+        "rules": current_rules,
+    }
+    ranking_signature = hashlib.sha256(safe_json(signature_payload).encode("utf-8")).hexdigest()
+    force_ranking_refresh = st.button("↻ Perbarui ranking sekarang", key="portfolio_refresh_rankings", type="secondary")
+
+    cached_signature = st.session_state.get("portfolio_rankings_v1025_signature")
+    if force_ranking_refresh or cached_signature != ranking_signature:
+        calculated_rows: list[dict[str, Any]] = []
+        for prop in prospect_props:
+            pid = str(prop.get("property_id") or "")
+            analysis_row = latest_by_pid.get(pid)
+            base_row = {
+                "property_id": pid,
+                "name": prop.get("name") or "(Nama objek belum diisi)",
+                "lot_code": prop.get("lot_code") or "—",
+                "lifecycle_status": prop.get("lifecycle_status") or "PROSPECT",
+                "auction_date": prop.get("auction_date") or "",
+                "eligible": False,
+                "eligibility_reason": "",
+                "decision_status": "BELUM ADA ANALISIS",
+                "recommendation_score": None,
+                "score_components": {},
+                "blockers": [],
+                "warnings": [],
+                "analysis": {},
+            }
+            if not analysis_row:
+                base_row["eligibility_reason"] = "Belum ada analisis underwriting yang tersimpan."
+                calculated_rows.append(base_row)
+                continue
+
+            snap = record_payload(analysis_row)
+            if not snap:
+                base_row["decision_status"] = "DATA ANALISIS TIDAK TERBACA"
+                base_row["eligibility_reason"] = "Payload analisis terakhir kosong atau tidak dapat dibaca."
+                calculated_rows.append(base_row)
+                continue
+
+            data = {
+                "property": snap.get("property", {}),
+                "survey": snap.get("survey", {}),
+                "legal": snap.get("legal", {}),
+                "costs": snap.get("costs", {}),
+                "comparables": snap.get("comparables", []),
+                "risk_register": snap.get("risk_register", []),
+                "risk_reviewed": snap.get("risk_reviewed", False),
+                "market_ai_assessment": snap.get("market_ai_assessment"),
+            }
+            snapshot_rules = snap.get("rules") if isinstance(snap.get("rules"), dict) and snap.get("rules") else current_rules
             try:
-                candidates = [{k:r.get(k) for k in ["property_id","name","decision_status","eligibility_index_pct","roi_at_limit_pct","net_profit_at_limit","cash_need","max_bid","walk_away_from","blockers"]} for r in rankings]
+                # Re-underwrite against the latest confirmed cash position;
+                # saved property/comparable/cost inputs remain the historical source.
+                new_result = run_underwriting(data, liquidity, snapshot_rules)
+                decision = new_result.get("decision") or {}
+                decision_status = str(decision.get("status") or "HOLD").upper()
+                auction_date_value = data.get("property", {}).get("auction_date") or prop.get("auction_date")
+                auction_date = _optional_auction_date(auction_date_value)
+                blockers = list(decision.get("blockers") or [])
+                warnings = list(decision.get("warnings") or [])
+
+                eligibility_reason = ""
+                if auction_date is None:
+                    eligibility_reason = "Tanggal lelang belum tercatat/terbaca; status peluang aktif belum dapat dipastikan."
+                elif auction_date < today_local:
+                    eligibility_reason = f"Tanggal lelang sudah lewat ({auction_date.strftime('%d/%m/%Y')}); perbarui data setelah ada jadwal lelang baru."
+                elif decision_status not in {"GO", "CONDITIONAL GO"}:
+                    eligibility_reason = "; ".join(str(item) for item in blockers[:3]) or f"Status underwriting saat ini: {decision_status}."
+
+                is_eligible = bool(auction_date is not None and auction_date >= today_local and decision_status in {"GO", "CONDITIONAL GO"})
+                score_data = calculate_recommendation_score(new_result, decision_status, snapshot_rules, liquidity)
+                market = new_result.get("market") or {}
+                at_limit = new_result.get("at_limit") or {}
+                bidding = new_result.get("bidding") or {}
+                base_row.update({
+                    "auction_date": auction_date.isoformat() if auction_date else str(auction_date_value or ""),
+                    "eligible": is_eligible,
+                    "eligibility_reason": eligibility_reason or ("GO: seluruh hard gate underwriting terpenuhi." if decision_status == "GO" else "CONDITIONAL GO: selesaikan seluruh syarat/blocker sebelum bidding."),
+                    "decision_status": decision_status,
+                    "recommendation_score": score_data["score"],
+                    "score_components": score_data["components"],
+                    "cash_coverage_pct": score_data["cash_coverage_pct"],
+                    "market_confidence_pct": score_data["market_confidence_pct"],
+                    "eligibility_index_pct": new_result.get("eligibility_index_pct"),
+                    "conservative_arv": market.get("conservative_exit"),
+                    "roi_at_limit_pct": at_limit.get("roi_pct"),
+                    "net_profit_at_limit": at_limit.get("net_profit"),
+                    "max_bid": bidding.get("max_bid"),
+                    "walk_away_from": bidding.get("walk_away_from"),
+                    "cash_need": at_limit.get("cash_requirement_including_reserve"),
+                    "cash_available": liquidity.get("cash_available_for_new_project"),
+                    "projected_holding_days": at_limit.get("projected_holding_days"),
+                    "blockers": blockers,
+                    "warnings": warnings,
+                    "analysis": new_result,
+                })
+                if decision_status == "CONDITIONAL GO" and blockers:
+                    base_row["eligibility_reason"] = "Conditional: " + "; ".join(str(item) for item in blockers[:3])
+            except Exception as exc:
+                base_row["decision_status"] = "GAGAL DIEVALUASI"
+                base_row["eligibility_reason"] = f"Perhitungan ulang gagal: {exc}"
+            calculated_rows.append(base_row)
+
+        eligible_rows = [row for row in calculated_rows if row.get("eligible")]
+        eligible_rows.sort(key=lambda row: (
+            -to_float(row.get("recommendation_score")),
+            0 if row.get("decision_status") == "GO" else 1,
+            -to_float(row.get("net_profit_at_limit")),
+        ))
+        for rank, row in enumerate(eligible_rows, start=1):
+            row["rank"] = rank
+        not_eligible_rows = [row for row in calculated_rows if not row.get("eligible")]
+        not_eligible_rows.sort(key=lambda row: (
+            str(row.get("decision_status") or ""),
+            str(row.get("name") or ""),
+        ))
+        st.session_state.portfolio_rankings_v1025 = eligible_rows
+        st.session_state.portfolio_not_eligible_v1025 = not_eligible_rows
+        st.session_state.portfolio_rankings_v1025_signature = ranking_signature
+        st.session_state.portfolio_ai_review = None
+
+    eligible_rows = st.session_state.get("portfolio_rankings_v1025", [])
+    not_eligible_rows = st.session_state.get("portfolio_not_eligible_v1025", [])
+    fully_eligible_count = sum(1 for row in eligible_rows if row.get("decision_status") == "GO")
+    conditional_count = sum(1 for row in eligible_rows if row.get("decision_status") == "CONDITIONAL GO")
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Total prospek", len(prospect_props))
+    metric_cols[1].metric("Eligible — GO", fully_eligible_count)
+    metric_cols[2].metric("Eligible bersyarat", conditional_count)
+    metric_cols[3].metric("Belum eligible", len(not_eligible_rows))
+    st.caption(f"Kas siap investasi saat ini: {idr(liquidity.get('cash_available_for_new_project'))} · Status konfirmasi kas: {'Terkonfirmasi' if liquidity.get('cash_confirmed') else 'Belum dikonfirmasi'}. Ranking dihitung ulang saat data prospek, analisis terakhir, aturan, atau posisi kas berubah.")
+
+    with st.expander("Metodologi Recommendation Score (0–100)", expanded=False):
+        st.markdown("""
+        Skor ini adalah **alat prioritas untuk memilih objek yang perlu ditelaah lebih dahulu**, bukan probabilitas memperoleh keuntungan dan bukan pengganti hard gate underwriting.
+
+        | Komponen | Bobot | Prinsip penilaian |
+        |---|---:|---|
+        | ROI pada nilai limit | 25 | Dibandingkan dengan ROI minimum dan target pada Settings & Rules. |
+        | Profit bersih pada limit | 15 | Dibandingkan dengan profit minimum, dengan nilai penuh pada 2× ambang minimum. |
+        | Kecukupan kas | 20 | Menggunakan kebutuhan kas + cadangan dibanding kas siap investasi yang sudah dikonfirmasi; nilai penuh membutuhkan buffer 25%. |
+        | Status underwriting | 20 | GO mendapat nilai penuh; CONDITIONAL GO mendapat nilai lebih rendah. HOLD/DO NOT BID tidak masuk shortlist. |
+        | Kualitas bukti pasar | 10 | Menggunakan confidence dari market engine; bukan probabilitas harga tercapai. |
+        | Durasi proyek | 10 | Nilai penuh pada/di bawah target holding; menurun hingga nol pada batas maksimum. |
+
+        Hanya status **GO** dan **CONDITIONAL GO** dengan tanggal lelang hari ini atau setelahnya yang masuk daftar eligible. CONDITIONAL GO tetap memerlukan penyelesaian syarat sebelum bidding. Objek tanpa tanggal lelang atau dengan tanggal yang telah lewat ditampilkan terpisah.
+        """)
+
+    if eligible_rows:
+        st.subheader("Ranking peluang yang masih eligible")
+        ranking_table = []
+        for row in eligible_rows:
+            ranking_table.append({
+                "Rank": row.get("rank"),
+                "Nama objek": row.get("name"),
+                "Lot Code": row.get("lot_code"),
+                "Tanggal lelang": row.get("auction_date"),
+                "Status": row.get("decision_status"),
+                "Recommendation Score": row.get("recommendation_score"),
+                "ROI @ limit (%)": row.get("roi_at_limit_pct"),
+                "Profit @ limit": row.get("net_profit_at_limit"),
+                "Kebutuhan kas + cadangan": row.get("cash_need"),
+                "Kas siap investasi": row.get("cash_available"),
+                "Cash coverage (%)": row.get("cash_coverage_pct"),
+                "Durasi (hari)": row.get("projected_holding_days"),
+                "Maximum bid": row.get("max_bid"),
+            })
+        st.dataframe(
+            pd.DataFrame(ranking_table),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Recommendation Score": st.column_config.NumberColumn(format="%.1f"),
+                "ROI @ limit (%)": st.column_config.NumberColumn(format="%.1f"),
+                "Profit @ limit": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Kebutuhan kas + cadangan": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Kas siap investasi": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Cash coverage (%)": st.column_config.NumberColumn(format="%.1f"),
+                "Maximum bid": st.column_config.NumberColumn(format="Rp %.0f"),
+                "Durasi (hari)": st.column_config.NumberColumn(format="%.0f"),
+            },
+        )
+        top = eligible_rows[0]
+        st.success(f"Prioritas telaah saat ini: {top.get('name')} · Score {to_float(top.get('recommendation_score')):.1f}/100 · {top.get('decision_status')}. Ini urutan prioritas analisis, bukan instruksi otomatis untuk ikut bidding.")
+
+        if st.button("Review shortlist eligible dengan Gemini (opsional)", disabled=not GEMINI_KEY, key="portfolio_ai_review_v1025"):
+            try:
+                candidates = [
+                    {
+                        key: row.get(key)
+                        for key in [
+                            "rank", "property_id", "name", "lot_code", "decision_status",
+                            "recommendation_score", "roi_at_limit_pct", "net_profit_at_limit",
+                            "cash_need", "cash_available", "cash_coverage_pct", "max_bid",
+                            "walk_away_from", "projected_holding_days", "blockers",
+                        ]
+                    }
+                    for row in eligible_rows
+                ]
                 st.session_state.portfolio_ai_review = review_portfolio(GEMINI_KEY, GEMINI_MODEL, candidates)
-            except Exception as exc: st.error(str(exc))
-        if st.session_state.get("portfolio_ai_review"): st.json(st.session_state.portfolio_ai_review)
-        for r in rankings:
-            with st.expander(f"{r['name']} · {r['decision_status']} — alasan/blocker"):
-                for b in r.get("blockers", []): st.write("•", b)
+            except Exception as exc:
+                st.error(str(exc))
+        if st.session_state.get("portfolio_ai_review"):
+            st.json(st.session_state.portfolio_ai_review)
+
+        for row in eligible_rows:
+            rank_label = f"#{row.get('rank')}" if row.get("rank") else "Eligible"
+            with st.expander(f"{rank_label} · {row.get('name')} · Score {to_float(row.get('recommendation_score')):.1f} · {row.get('decision_status')}"):
+                st.write(row.get("eligibility_reason"))
+                score_rows = [{"Komponen": key, "Nilai": value} for key, value in (row.get("score_components") or {}).items()]
+                if score_rows:
+                    st.dataframe(pd.DataFrame(score_rows), use_container_width=True, hide_index=True)
+                if row.get("blockers"):
+                    st.markdown("**Syarat/blocker:**")
+                    for blocker in row.get("blockers", []):
+                        st.warning(str(blocker))
+                if row.get("warnings"):
+                    st.markdown("**Catatan kualitas data/risiko:**")
+                    for warning in row.get("warnings", []):
+                        st.caption(str(warning))
+    else:
+        st.warning("Belum ada objek yang memenuhi kriteria eligible saat ini. Periksa tanggal lelang, kelengkapan analisis, status underwriting, dan konfirmasi kas.")
+
+    if not_eligible_rows:
+        st.subheader("Objek yang belum eligible / perlu tindak lanjut")
+        noneligible_table = [
+            {
+                "Nama objek": row.get("name"),
+                "Lot Code": row.get("lot_code"),
+                "Tanggal lelang": row.get("auction_date") or "—",
+                "Status underwriting": row.get("decision_status"),
+                "Alasan belum eligible": row.get("eligibility_reason"),
+            }
+            for row in not_eligible_rows
+        ]
+        st.dataframe(pd.DataFrame(noneligible_table), use_container_width=True, hide_index=True)
+        for row in not_eligible_rows:
+            with st.expander(f"{row.get('name')} · {row.get('decision_status')} — alasan belum eligible"):
+                st.write(row.get("eligibility_reason") or "Belum memenuhi syarat untuk masuk shortlist.")
+                for blocker in row.get("blockers", []):
+                    st.warning(str(blocker))
+                for warning in row.get("warnings", []):
+                    st.caption(str(warning))
+    elif not prospect_props:
+        st.info("Belum ada objek prospek tersimpan untuk dibandingkan.")
 
 # ============================ PAGE 6: ACTIVE ===============================
 elif page == "Market & Auction Data":
