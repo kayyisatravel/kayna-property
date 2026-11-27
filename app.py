@@ -418,8 +418,33 @@ def set_default(key: str, value: Any):
 
 
 def _persist_and_go_analysis_step(step: int) -> None:
-    """Save current step values in session state, then move to the next step."""
+    """Save current step values in session state, then move to the next step.
+
+    Survey photos are uploaded by a Step-2 widget. Streamlit may discard widget
+    state when that widget is not rendered on the next rerun, so copy the files
+    into a non-widget session-state payload before leaving Step 2. This keeps
+    the existing Step-2 uploader intact while allowing Step 4/RAB and the save
+    routine to access the same survey photos safely.
+    """
+    if safe_int(step, 1) >= 3:
+        survey_photos = st.session_state.get("na_survey_photos") or []
+        if survey_photos:
+            st.session_state["na_survey_photo_payloads"] = [
+                {
+                    "bytes": photo.getvalue(),
+                    "mime_type": photo.type or "image/jpeg",
+                    "name": photo.name,
+                }
+                for photo in survey_photos
+            ]
+        elif "na_survey_photo_payloads" not in st.session_state:
+            st.session_state["na_survey_photo_payloads"] = []
     persist_analysis_step_state(st.session_state, step)
+
+
+def _get_survey_photo_payloads() -> list[dict[str, Any]]:
+    """Return persisted survey-photo payloads without depending on Step-2 widget scope."""
+    return list(st.session_state.get("na_survey_photo_payloads") or [])
 
 
 def _restore_analysis_form_state() -> None:
@@ -1239,8 +1264,8 @@ elif page == "New Auction Analysis":
         available_rab_files: list[tuple[bytes, str, str]] = []
         if uploaded is not None:
             available_rab_files.append((uploaded.getvalue(), uploaded.type or "application/octet-stream", uploaded.name))
-        for photo in (survey_photos or [])[:5]:
-            available_rab_files.append((photo.getvalue(), photo.type or "image/jpeg", photo.name))
+        for photo in _get_survey_photo_payloads()[:5]:
+            available_rab_files.append((photo["bytes"], photo.get("mime_type") or "image/jpeg", photo.get("name") or "survey-photo.jpg"))
         st.caption(f"Berkas visual tersedia untuk RAB: {len(available_rab_files)} (dokumen lelang + maksimal 5 foto survei). Bila foto fasad saja, AI tidak boleh menyimpulkan interior/struktur/MEP rusak.")
         rab_inputs_sufficient = bool(st.session_state.get("na_building") or st.session_state.get("na_land") or available_rab_files or st.session_state.na_rab_condition_description.strip())
         if st.button("✨ Susun RAB awal dengan Gemini", type="secondary", disabled=not GEMINI_KEY or not rab_inputs_sufficient, key="na_generate_rab"):
@@ -1895,8 +1920,10 @@ elif page == "New Auction Analysis":
                         new_extraction = snap.get("document_extraction") or {}
                         if new_extraction.get("extraction_schema_version") == "AUCTION_EXTRACT_V2" and existing_extraction.get("extraction_schema_version") != "AUCTION_EXTRACT_V2":
                             upsert_record("DOCUMENTS", "document_id", {**existing_doc, "extraction_json": safe_json(new_extraction), "file_name": uploaded.name, "mime_type": uploaded.type, "source_url": source_link})
-                for photo in (survey_photos or []):
-                    photo_bytes = photo.getvalue()
+                for photo in _get_survey_photo_payloads():
+                    photo_bytes = photo["bytes"]
+                    photo_name = photo.get("name") or "survey-photo.jpg"
+                    photo_mime_type = photo.get("mime_type") or "image/jpeg"
                     photo_digest = file_sha256(photo_bytes)
                     existing_photo = next((d for d in read_table("DOCUMENTS") if d.get("property_id") == propid and d.get("document_hash") == photo_digest), None)
                     if existing_photo: continue
@@ -1905,7 +1932,7 @@ elif page == "New Auction Analysis":
                     drive_folder_id = str(secret("DRIVE_FOLDER_ID", "") or "")
                     if drive_folder_id and service_info:
                         try:
-                            drive_file = upload_file_to_drive(dict(service_info), drive_folder_id, photo.name, photo.type, photo_bytes)
+                            drive_file = upload_file_to_drive(dict(service_info), drive_folder_id, photo_name, photo_mime_type, photo_bytes)
                             photo_link = drive_file.get("web_view_link", "")
                             photo_notes += f" Diarsipkan di Google Drive; file_id={drive_file.get('file_id')}."
                         except Exception as photo_exc:
@@ -1913,7 +1940,7 @@ elif page == "New Auction Analysis":
                             st.warning(photo_notes)
                     else:
                         photo_notes += " DRIVE_FOLDER_ID belum diatur; file binary tidak tersimpan permanen, hanya metadata dan hash."
-                    append_record("DOCUMENTS", {"document_id": new_id("DOC"), "property_id": propid, "file_name": photo.name, "mime_type": photo.type, "source_url": photo_link, "document_hash": photo_digest, "uploaded_at": iso_now(), "notes": photo_notes, "extraction_json": ""})
+                    append_record("DOCUMENTS", {"document_id": new_id("DOC"), "property_id": propid, "file_name": photo_name, "mime_type": photo_mime_type, "source_url": photo_link, "document_hash": photo_digest, "uploaded_at": iso_now(), "notes": photo_notes, "extraction_json": ""})
                 log_event("ANALYSIS", snap["analysis_id"], "SAVED", {"decision": decision["status"]})
                 st.success("Analisis tersimpan. Seluruh status keputusan disimpan sebagai opportunity record.")
                 st.session_state.loaded_property_id = propid
