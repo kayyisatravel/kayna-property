@@ -766,8 +766,7 @@ elif page == "New Auction Analysis":
     st.progress(active_step / 4, text=f"Langkah {active_step} dari 4 · Selesaikan tahapan secara berurutan")
     # Keep the optional survey uploader mounted across all steps so files are
     # not discarded when Streamlit cleans widgets from hidden sections.
-    survey_photos = st.file_uploader("Foto hasil survei (opsional; pilih beberapa foto)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, key="na_survey_photos")
-    st.caption("Foto survei tidak otomatis dikirim ke Gemini. Bila Google Drive archive diaktifkan, foto disimpan ke folder Drive dan metadata/hash dicatat di database.")
+    
     if active_step == 1:
         st.subheader("Identitas lelang")
         c1,c2,c3 = st.columns(3)
@@ -881,6 +880,8 @@ elif page == "New Auction Analysis":
         set_default("na_survey_status", "Belum Survei")
         prior_status = st.session_state.get("na_last_occupancy", st.session_state.na_survey_status)
         st.selectbox("Status survei dan penghuni", statuses, key="na_survey_status")
+        survey_photos = st.file_uploader("Foto hasil survei (opsional; pilih beberapa foto)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, key="na_survey_photos")
+        st.caption("Foto survei tidak otomatis dikirim ke Gemini. Bila Google Drive archive diaktifkan, foto disimpan ke folder Drive dan metadata/hash dicatat di database.")
         if st.session_state.na_survey_status == "Belum Survei": st.error("PERINGATAN: Objek belum disurvei! Simulasi memakai asumsi biaya penguasaan tinggi. Keputusan final tetap HOLD.")
         if st.session_state.na_survey_status != prior_status:
             defaults = OCCUPANCY_DEFAULTS[st.session_state.na_survey_status]
