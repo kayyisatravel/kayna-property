@@ -381,3 +381,13 @@
 - Added pre-Gemini BoQ preview to catch parsing issues before API usage.
 - Bumped the RAB cache namespace so old parse results are not reused after this parser upgrade.
 - Preserved the user's customised Dashboard layout in the supplied `app.py`.
+
+
+## [1.0.23] - 2026-11-27
+### Fixed
+- Fixed NameError in Bidding Ladder by importing `bid_reference_status` from `core.decision_engine`.
+- Removed redundant “date already known” checkboxes for auction and deposit dates; KPKNL document extraction pre-fills editable date pickers.
+### Added
+- Automatic payment deadline using five working days after ordinary auctions under PMK 122/2023 Article 88, with regulatory exceptions and a 2026–2027 Indonesian non-working-day calendar.
+- Explicit KPKNL payment deadline takes precedence over the calculated deadline.
+- Payment deadline basis and KPKNL source filename are carried into the saved property record and Investment Proposal.

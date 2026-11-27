@@ -45,7 +45,8 @@ def test_kpknl_invalid_or_ambiguous_date_is_not_guessed():
     assert state["na_auction_date_has_value"] is False
     assert "na_auction_date_picker" not in state
     valid = apply_extracted_auction_dates({}, {"auction_date": "10 Desember 2026"})
-    assert valid == {"auction_date": "2026-12-10"}
+    assert valid["auction_date"] == "2026-12-10"
+    assert valid["payment_deadline"] == "2026-12-17"
 
 
 def test_other_winner_result_is_saved_as_market_reference_without_personal_data():

@@ -256,7 +256,10 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
         "## 1. Ringkasan Eksekutif", str(decision.get("summary") or "Analisis investasi berdasarkan data dan asumsi yang tersedia."), "",
         "## 2. Identitas dan Jadwal Lelang",
         f"- Alamat: {p.get('address', '—')}", f"- KPKNL: {p.get('auction_office', '—')}",
-        f"- Tanggal lelang: {p.get('auction_date', '—')}", f"- Batas setor jaminan: {p.get('deposit_deadline', '—')}",
+        f"- Tanggal lelang: {_fmt_short_date(p.get('auction_date'))}", f"- Batas setor jaminan: {_fmt_short_date(p.get('deposit_deadline'))}",
+        f"- Batas pelunasan: {_fmt_short_date(p.get('payment_deadline'))}",
+        f"- Dasar batas pelunasan: {p.get('payment_deadline_basis') or 'Belum tercatat'}",
+        f"- Dokumen sumber jadwal: {p.get('auction_date_source_file') or 'Dokumen KPKNL belum tercatat'}",
         f"- Limit: {idr(p.get('auction_limit'))}", f"- LT/LB: {p.get('land_area', '—')} / {p.get('building_area', '—')} m²", "",
         "## 3. Penilaian Pasar",
         f"- Pembanding valid: {market.get('valid_count', 0)}", f"- Indeks kualitas data: {market.get('confidence', '—')}/100",
@@ -526,8 +529,11 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     doc.add_heading("1. Identitas dan Jadwal Lelang", level=1)
     add_table(["Parameter", "Data"], [
         ["Nama objek", p.get("name")], ["Kode lot", p.get("lot_code")], ["Alamat lengkap", p.get("address")],
-        ["KPKNL", p.get("auction_office")], ["Tanggal lelang", p.get("auction_date")],
-        ["Batas setor jaminan", p.get("deposit_deadline")], ["Batas pelunasan", p.get("payment_deadline")],
+        ["KPKNL", p.get("auction_office")], ["Tanggal lelang", _fmt_short_date(p.get("auction_date"))],
+        ["Batas setor jaminan", _fmt_short_date(p.get("deposit_deadline"))],
+        ["Batas pelunasan", _fmt_short_date(p.get("payment_deadline"))],
+        ["Dasar batas pelunasan", p.get("payment_deadline_basis") or "Belum tercatat"],
+        ["Dokumen sumber jadwal", p.get("auction_date_source_file") or "Dokumen KPKNL belum tercatat"],
         ["Nilai limit", idr(p.get("auction_limit"))], ["LT / LB", f"{p.get('land_area', '—')} / {p.get('building_area', '—')} m²"],
         ["Sertifikat", p.get("certificate_type")],
     ], widths=[2.0, 4.8])

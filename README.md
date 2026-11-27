@@ -338,3 +338,11 @@ Jika Google API tetap menolak penulisan, UI menampilkan HTTP status dan pesan Go
 ## BoQ input formats (V1.0.14)
 
 The RAB description box accepts either Markdown pipe tables (`|`) or a table copied directly from Excel/Google Sheets (tab-separated columns). The header must contain **Item Pekerjaan**, **Estimasi Volume**, and **Satuan**. A preview shows how many rows PFMS detected before Gemini is called. User-provided quantities are preserved and are not resized from property LT/LB or inferred from photographs.
+
+
+## V1.0.23 — KPKNL date workflow and payment deadline
+
+- Auction and deposit dates are prefilled into editable date pickers from uploaded KPKNL notices, without an additional confirmation checkbox.
+- Payment deadline is derived from the auction date using the applicable PMK 122/2023 working-day rule; explicit KPKNL deadlines take precedence.
+- The auction-date and payment-deadline evidence/basis is carried into the saved analysis and Investment Proposal.
+- Fixed the missing `bid_reference_status` import that caused a NameError on the Bidding Ladder.

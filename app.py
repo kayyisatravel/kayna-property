@@ -17,7 +17,8 @@ from core.project_alerts import assess_project_alerts
 from core.dashboard import build_dashboard_view
 from core.renovation_schedule import estimate_renovation_duration
 from core.project_progress import budget_payload, calculate_project_work_progress
-from core.auction_dates import apply_extracted_auction_dates
+from core.auction_dates import apply_extracted_auction_dates, derive_payment_deadline
+from core.decision_engine import bid_reference_status
 from core.auction_outcomes import OUTCOME_STATUSES, PRICE_TYPES, SOURCE_GRADES, build_auction_outcome_record, implied_discount_vs_limit
 from core.project_budget_seed import build_opening_budget_from_analysis
 from core.ledger_transactions import reconcile_budget_payment_change
@@ -357,12 +358,40 @@ def as_date(value: Any, fallback: date | None = None) -> date:
         return fallback or date.today()
 
 
-def optional_date_picker(label: str, value: Any, key: str) -> str:
-    """Date picker with an explicit empty state; never invent a missing date."""
+def _mark_date_picker_edited(state_key: str) -> None:
+    st.session_state[f"{state_key}_user_edited"] = True
+
+
+def prefilled_editable_date_picker(label: str, value: Any, key: str, *, help_text: str = "") -> str:
+    """Date picker prefilled from source documents, without a redundant checkbox.
+
+    When the source date is unavailable, today's date is only a visual starting
+    point and is NOT persisted until the user changes the date.
+    """
     existing = str(value or "").strip()
-    has_value = st.checkbox(f"{label} sudah diketahui", value=bool(existing), key=f"{key}_has_value")
-    selected = st.date_input(label, value=as_date(existing), disabled=not has_value, key=f"{key}_picker")
-    return selected.isoformat() if has_value else ""
+    widget_key = f"{key}_picker"
+    edited_key = f"{key}_user_edited"
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = as_date(existing) if existing else jakarta_today()
+        st.session_state[edited_key] = False
+    selected = st.date_input(
+        label, key=widget_key, on_change=_mark_date_picker_edited, args=(key,), help=help_text or None
+    )
+    if existing or bool(st.session_state.get(edited_key)):
+        return selected.isoformat()
+    return ""
+
+
+def _indonesian_date_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "Belum dapat dihitung"
+    try:
+        d = date.fromisoformat(raw[:10])
+        months = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+        return f"{d.day} {months[d.month - 1]} {d.year}"
+    except ValueError:
+        return raw
 
 
 def comparable_date_for_editor(value: Any) -> date | None:
@@ -574,6 +603,9 @@ elif page == "New Auction Analysis":
             st.session_state.loaded_property_id = ""
             st.session_state.current_analysis = None
             st.session_state.current_inputs = None
+            for date_key in ("na_auction_date", "na_deposit_deadline"):
+                st.session_state.pop(f"{date_key}_picker", None)
+                st.session_state[f"{date_key}_user_edited"] = False
             st.session_state.parse_info = None
             st.session_state.ai_review = None
             st.success("Form dibersihkan. Siap membuat analisis objek baru.")
@@ -595,6 +627,9 @@ elif page == "New Auction Analysis":
             mapping = form_state_from_input_data(data, latest_saved)
             for k, v in mapping.items():
                 st.session_state[k] = v
+            for date_key in ("na_auction_date", "na_deposit_deadline"):
+                st.session_state.pop(f"{date_key}_picker", None)
+                st.session_state[f"{date_key}_user_edited"] = False
             st.session_state.na_last_occupancy = mapping.get("na_survey_status", "Belum Survei")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", latest_saved.get("risk_reviewed", False)))
             comparable_columns = ["name", "address", "latitude", "longitude", "distance_m", "market_segment", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
@@ -691,7 +726,10 @@ elif page == "New Auction Analysis":
             set_default("na_name", ""); st.text_input("Nama objek", key="na_name")
             set_default("na_complex", ""); st.text_input("Nama kompleks/perumahan", key="na_complex")
             set_default("na_auction_date", "")
-            st.session_state.na_auction_date = optional_date_picker("Tanggal lelang", st.session_state.na_auction_date, "na_auction_date")
+            st.session_state.na_auction_date = prefilled_editable_date_picker(
+                "Tanggal lelang", st.session_state.na_auction_date, "na_auction_date",
+                help_text="Terisi otomatis dari dokumen KPKNL. Tetap dapat dikoreksi melalui date picker."
+            )
             set_default("na_auction_time", ""); st.text_input("Jam lelang", key="na_auction_time")
         with c2:
             set_default("na_office", ""); st.text_input("KPKNL", key="na_office")
@@ -699,11 +737,29 @@ elif page == "New Auction Analysis":
             set_default("na_auction_type", ""); st.selectbox("Jenis lelang", ["", "Eksekusi Hak Tanggungan", "Eksekusi Pengadilan", "AYDA", "Lelang sukarela", "Lainnya"], key="na_auction_type")
             set_default("na_auction_url", ""); st.text_input("URL pengumuman lelang", key="na_auction_url")
             set_default("na_deposit_deadline", "")
-            st.session_state.na_deposit_deadline = optional_date_picker("Batas setor jaminan", st.session_state.na_deposit_deadline, "na_deposit_deadline")
-            set_default("na_payment_deadline", "")
-            st.session_state.na_payment_deadline = optional_date_picker("Batas pelunasan", st.session_state.na_payment_deadline, "na_payment_deadline")
+            st.session_state.na_deposit_deadline = prefilled_editable_date_picker(
+                "Batas setor uang jaminan", st.session_state.na_deposit_deadline, "na_deposit_deadline",
+                help_text="Terisi otomatis dari dokumen KPKNL. Tetap dapat dikoreksi melalui date picker."
+            )
+            # Payment deadline is derived from the auction date (or an explicit
+            # KPKNL deadline, if present); it is not a user-entered reminder.
+            current_auction_date = st.session_state.get("na_auction_date", "")
+            document_payment_date = st.session_state.get("na_payment_deadline_document_value", "")
+            document_payment_auction_date = st.session_state.get("na_payment_deadline_document_auction_date", "")
+            explicit_payment_date = document_payment_date if current_auction_date and current_auction_date == document_payment_auction_date else ""
+            payment_due = derive_payment_deadline(
+                current_auction_date,
+                auction_type=st.session_state.get("na_auction_type", ""),
+                auction_limit=st.session_state.get("na_limit", 0),
+                explicit_deadline=explicit_payment_date,
+            )
+            st.session_state.na_payment_deadline = payment_due.get("payment_deadline", "")
+            st.session_state.na_payment_deadline_basis = payment_due.get("payment_deadline_basis", "")
+            st.session_state.na_payment_deadline_source = payment_due.get("payment_deadline_source", "")
+            st.text_input("Batas pelunasan (otomatis)", value=_indonesian_date_label(st.session_state.na_payment_deadline), disabled=True, help="Default lima hari kerja setelah tanggal lelang sesuai PMK 122/2023 Pasal 88. Tanggal eksplisit pada dokumen KPKNL diutamakan. Pengecualian jenis lelang tertentu mengikuti peraturan.")
+            st.caption(st.session_state.na_payment_deadline_basis or "Unggah dan parse dokumen KPKNL agar tanggal lelang terisi.")
             if st.session_state.get("na_auction_date_document_hash"):
-                st.caption("Tanggal awal diisi dari dokumen KPKNL yang diparse. Semua date picker tetap dapat Anda ubah bila ada koreksi.")
+                st.caption("Tanggal lelang dan setor jaminan diisi otomatis dari dokumen KPKNL. Keduanya tetap dapat dikoreksi melalui date picker.")
         with c3:
             set_default("na_address", ""); st.text_input("Alamat objek", key="na_address")
             set_default("na_district", ""); st.text_input("Desa/Kecamatan/Kabupaten", key="na_district")
@@ -1376,6 +1432,10 @@ elif page == "New Auction Analysis":
             "auction_office": st.session_state.na_office, "seller": st.session_state.na_seller, "auction_type": st.session_state.na_auction_type,
             "auction_date": st.session_state.na_auction_date, "auction_time": st.session_state.get("na_auction_time", ""), "deposit_deadline": st.session_state.get("na_deposit_deadline", ""), "payment_deadline": st.session_state.get("na_payment_deadline", ""), "auction_url": st.session_state.get("na_auction_url", ""),
             "auction_date_evidence": st.session_state.get("na_auction_date_evidence", {}), "auction_date_document_hash": st.session_state.get("na_auction_date_document_hash", ""),
+            "auction_date_source_file": st.session_state.get("na_auction_date_source_file", ""),
+            "payment_deadline_basis": st.session_state.get("na_payment_deadline_basis", ""), "payment_deadline_source": st.session_state.get("na_payment_deadline_source", ""),
+            "payment_deadline_document_value": st.session_state.get("na_payment_deadline_document_value", ""),
+            "payment_deadline_document_auction_date": st.session_state.get("na_payment_deadline_document_auction_date", ""),
             "auction_limit": st.session_state.na_limit, "deposit_amount": st.session_state.na_deposit, "bid_increment": st.session_state.na_increment,
             "certificate_type": st.session_state.na_certificate, "certificate_no": st.session_state.na_certificate_no, "rights_expiry": st.session_state.get("na_rights_expiry", ""),
             "land_area": st.session_state.na_land, "building_area": st.session_state.na_building, "building_footprint_m2": st.session_state.get("na_building_footprint"), "njop": st.session_state.na_njop,

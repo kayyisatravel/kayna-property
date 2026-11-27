@@ -1,6 +1,6 @@
 """Central application defaults. Tax/legal rates are editable assumptions, not legal advice."""
 APP_NAME = "KAYNA PROPERTY MANAGEMENT SYSTEM"
-APP_VERSION = "1.0.22"
+APP_VERSION = "1.0.23"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 MIN_ROI_PCT = 20.0
 MID_ROI_PCT = 30.0
