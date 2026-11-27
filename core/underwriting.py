@@ -30,7 +30,17 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
     # even if ARV is not yet available. Missing ARV yields null profit/ROI, not a
     # fabricated zero selling price or a false financial rejection.
     at_limit = calculate_project(limit, conservative_exit, calculation_inputs) if limit > 0 else {}
-    tiers = build_bid_tiers(limit, increment, to_float(conservative_exit), to_float(base_exit), calculation_inputs, None, to_float(rules.get("minimum_roi_pct", 25)), to_float(rules.get("mid_roi_pct", 35)), to_float(prop.get("risk_adjusted_ceiling")) or None, to_float(rules.get("bid_simulation_step", 1_000)))
+    tiers = build_bid_tiers(
+        limit, increment, to_float(conservative_exit), to_float(base_exit),
+        calculation_inputs, None,
+        to_float(rules.get("minimum_roi_pct", 20)),
+        to_float(rules.get("mid_roi_pct", 30)),
+        to_float(prop.get("risk_adjusted_ceiling")) or None,
+        to_float(rules.get("bid_simulation_step", 1_000)),
+        optimistic_exit=market.get("optimistic_exit"),
+        minimum_net_profit=to_float(rules.get("minimum_net_profit", 50_000_000)),
+        maximum_holding_days=to_float(rules.get("maximum_holding_days", 180)),
+    )
     funding = evaluate_funding(to_float(at_limit.get("cash_requirement_including_reserve")), to_float(prop.get("deposit_amount")), liquidity)
     decision_inputs = {**data, "risk_summary": risk_summary, "finance": {**liquidity, "cash_confirmed": bool(liquidity.get("cash_confirmed"))}}
     decision = evaluate_decision(decision_inputs, market, tiers, at_limit)

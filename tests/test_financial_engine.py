@@ -38,9 +38,12 @@ def test_selling_costs():
 
 def test_roi_is_project_period_not_annualized():
     result = calculate_project(200_000_000, 400_000_000, base_inputs())
-    expected = result["net_profit"] / result["capital_before_sale"] * 100
+    expected = result["net_profit"] / result["total_cost_including_selling"] * 100
     assert result["roi_pct"] == expected
+    assert result["roi_pre_sale_capital_pct"] == result["net_profit"] / result["capital_before_sale"] * 100
     assert result["annualized_roi_pct"] is not None
+    assert result["roi_pct"] < result["roi_pre_sale_capital_pct"]
+    assert result["total_cost_including_selling"] == result["capital_before_sale"] + result["selling_cost"]
 
 
 def test_maximum_bid_meets_roi_hurdle():
@@ -71,6 +74,8 @@ def test_selling_cost_actual_not_double_counted():
     assert summary["total_actual_cost"] == 230_000_000
     assert summary["selling_cost_actual"] == 20_000_000
     assert summary["net_profit_actual"] == 150_000_000
+    assert summary["total_actual_cost_including_selling"] == 250_000_000
+    assert summary["roi_actual_pct"] == 60.0
 
 
 def test_bpn_cost_defaults_are_included_from_global_rules():
@@ -113,18 +118,18 @@ def test_mid_roi_target_below_limit_is_not_shown_as_a_bid_price():
         "rules": dict(DEFAULT_RULES),
     }
     roi_at_limit = calculate_project(160_000_000, 300_000_000, data)["roi_pct"]
-    result = build_bid_tiers(160_000_000, 1_000_000, 300_000_000, 320_000_000, data, None, 25, 35)
-    assert 25 <= roi_at_limit < 35
+    result = build_bid_tiers(160_000_000, 1_000_000, 300_000_000, 320_000_000, data, None, 20, 30)
+    assert 20 <= roi_at_limit < 30
     assert result["mid_bid"] is None
     assert result["mid_economic_ceiling"] < 160_000_000
     assert result["max_bid"] >= 160_000_000
-    assert result["max_result"]["roi_pct"] >= 25
+    assert result["max_result"]["roi_pct"] >= 20
 
 
 def test_bid_increment_grid_is_anchored_to_auction_limit_not_zero():
     data = {
         "property": {"njop": 0, "npoptkp_eligible": False},
-        "survey": {}, "costs": {}, "rules": dict(DEFAULT_RULES),
+        "survey": {"possession_months": 1}, "costs": {"renovation_months": 1, "selling_months": 3, "legal_delay_months": 0}, "rules": dict(DEFAULT_RULES),
     }
     result = build_bid_tiers(160_500_000, 1_000_000, 500_000_000, 520_000_000, data, None, 25, 35)
     assert result["max_bid"] >= 160_500_000

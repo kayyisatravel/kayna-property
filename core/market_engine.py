@@ -9,6 +9,7 @@ VALID_PRICE_TYPES = {"Asking aktif", "Marked sold / perlu verifikasi", "Transaks
 VALID_CONDITIONS = {"Siap Huni", "Butuh Renovasi", "Hitung Tanah"}
 VALID_ACCESS = {"2 Mobil", "1 Mobil", "Gang"}
 VALID_MARKET_SEGMENTS = {"Secondary / resale", "Primary / developer", "Tidak diketahui"}
+VALID_SELLER_TYPES = {"Pemilik", "Agen", "Developer", "Tidak diketahui"}
 
 
 def validate_comparable(row: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -162,6 +163,7 @@ def assess_comparables(
     subject_road_width = to_float(subject.get("road_width_m"))
     subject_orientation = normalize_text(subject.get("orientation"))
     rows, invalid, secondary_only, seen = [], [], [], set()
+    seen_underlying_properties: set[str] = set()
     for original in comparables:
         row = dict(original)
         ok, errors = validate_comparable(row)
@@ -182,8 +184,12 @@ def assess_comparables(
             })
             continue
         url_scope = str(row.get("source_url_scope") or "")
-        # A shared portal root is source provenance, not a unique listing URL;
-        # use the property fingerprint for de-duplication in that case.
+        # Prefer an explicit underlying-property key to deduplicate the same
+        # physical house advertised across Facebook, Pinhome, portals, and agents.
+        underlying_id = normalize_text(row.get("underlying_property_id"))
+        if underlying_id and underlying_id in seen_underlying_properties:
+            invalid.append({"name": row.get("name"), "errors": ["duplikat objek fisik (underlying_property_id)"]}); continue
+        # A shared portal root is provenance, not a unique listing URL.
         url_key = normalize_text(row.get("source_url")) if not is_blank(row.get("source_url")) and url_scope == "Listing individual" else ""
         fallback_key = "|".join([
             normalize_text(row.get("address") or row.get("name")),
@@ -191,10 +197,12 @@ def assess_comparables(
             str(round(to_float(row.get("land_area")))),
             str(round(to_float(row.get("building_area")))),
         ])
-        key = url_key or fallback_key
+        key = underlying_id or url_key or fallback_key
         if key in seen:
-            invalid.append({"name": row.get("name"), "errors": ["duplikat URL/listing"]}); continue
+            invalid.append({"name": row.get("name"), "errors": ["duplikat URL/objek listing"]}); continue
         seen.add(key)
+        if underlying_id:
+            seen_underlying_properties.add(underlying_id)
         lt, lb, price = to_float(row.get("land_area")), to_float(row.get("building_area")), to_float(row.get("price"))
         score = 100.0
         distance_km = haversine_distance_km(subject, row)
@@ -247,9 +255,13 @@ def assess_comparables(
         if target_access and not is_blank(row.get("access")) and target_access != normalize_text(row.get("access")): score -= 5
         target_condition = normalize_text(subject.get("physical_condition"))
         if target_condition and not is_blank(row.get("condition")) and target_condition not in normalize_text(row.get("condition")): score -= 5
-        # Only verified transaction prices avoid negotiation discount; asking/marked-sold
-        # listings remain unverified price indications and receive the discount.
-        negotiated = price if price_type == "Transaksi terverifikasi" else price * (1 - negotiation_discount_pct / 100)
+        # A promotion is deducted only when its cash-equivalent value is verified
+        # and explicitly entered. KPR-no-DP/free-fee claims are not blanket 20-25%
+        # price discounts. Asking-price negotiation remains a separate assumption.
+        promo_value = max(0.0, to_float(row.get("verified_promotion_value"))) if bool(row.get("promotion_value_verified", False)) else 0.0
+        effective_price = max(0.0, price - min(price, promo_value))
+        # Only verified closing/transaction prices avoid the negotiation haircut.
+        negotiated = effective_price if price_type == "Transaksi terverifikasi" else effective_price * (1 - negotiation_discount_pct / 100)
         manual_adj = to_float(row.get("adjustment_pct"))
         adjusted = negotiated * (1 + manual_adj / 100)
         # Each unit-price method is an independent estimate of the subject's TOTAL value.
@@ -295,8 +307,8 @@ def assess_comparables(
             market_segment = "Tidak diketahui"
         market_segment_factor = {
             "Secondary / resale": 1.00,
-            "Primary / developer": 0.75,
-            "Tidak diketahui": 0.90,
+            "Primary / developer": 0.15,
+            "Tidak diketahui": 0.35,
         }[market_segment]
         if market_segment == "Tidak diketahui":
             missing_penalty += 2
@@ -311,7 +323,12 @@ def assess_comparables(
         row.update({
             "similarity_score": round(row_score, 1), "recency_score": recency, "age_days": age_days,
             "source_weight": source_weight, "market_segment": market_segment,
+            "seller_type": row.get("seller_type") or "Tidak diketahui",
+            "underlying_property_id": row.get("underlying_property_id") or "",
             "market_segment_factor": market_segment_factor, "missing_quality_fields": missing_fields,
+            "original_asking_price": round(price),
+            "verified_promotion_value_used": round(promo_value),
+            "effective_asking_price": round(effective_price),
             "negotiated_price": round(negotiated), "adjusted_price": round(adjusted),
             "land_unit_price": round(adjusted / lt) if lt > 0 else None,
             "building_unit_price": round(adjusted / lb) if lb > 0 else None,
@@ -325,10 +342,12 @@ def assess_comparables(
             "location_method": location_method,
         })
         rows.append(row)
-    count = len(rows)
-    if count == 0:
+    total_valid_count = len(rows)
+    if total_valid_count == 0:
         return {
-            "valid_count": 0, "go_grade_count": 0, "valid": [], "invalid": invalid, "secondary_only": secondary_only,
+            "valid_count": 0, "valuation_comparable_count": 0, "secondary_comparable_count": 0,
+            "primary_competition_count": 0, "primary_competition_median": None,
+            "go_grade_count": 0, "valid": [], "valuation_rows": [], "invalid": invalid, "secondary_only": secondary_only,
             "estimate_status": "INSUFFICIENT", "estimate_label": "Belum ada cukup data harga dan luas yang dapat dihitung",
             "base_exit": None, "comparable_base_exit": None, "njop_indicated_exit": None,
             "njop_comparable_count": 0, "njop_market_ratio": None, "subject_njop": subject_njop or None,
@@ -340,16 +359,49 @@ def assess_comparables(
             "listing_date_missing_count": 0, "date_found_missing_count": 0,
             "unconfirmed_url_count": 0, "quality_notes": [],
         }
-    normalized_values = [float(r["subject_normalized_value"]) for r in rows]
+
+    secondary_rows = [r for r in rows if r.get("market_segment") == "Secondary / resale"]
+    unknown_rows = [r for r in rows if r.get("market_segment") == "Tidak diketahui"]
+    primary_rows = [r for r in rows if r.get("market_segment") == "Primary / developer"]
+    # For a resale/auction subject, primary developer inventory is competition,
+    # not a direct substitute for the resale ARV. Use secondary comparables first;
+    # unknown-segment listings may supplement them at a reduced weight. If there
+    # is no secondary evidence, unknown rows are used. Primary-only evidence is a
+    # last-resort weak indication and is explicitly flagged.
+    if secondary_rows:
+        valuation_rows = list(secondary_rows)
+        for row in unknown_rows:
+            row["valuation_role"] = "Supplementary unknown segment (reduced weight)"
+            row["weight"] = round(to_float(row.get("weight")) * 0.35, 3)
+            valuation_rows.append(row)
+        valuation_mode = "SECONDARY_LED"
+    elif unknown_rows:
+        valuation_rows = list(unknown_rows)
+        valuation_mode = "UNKNOWN_SEGMENT_ONLY"
+    else:
+        valuation_rows = list(primary_rows)
+        valuation_mode = "PRIMARY_ONLY_WEAK_PROXY"
+    valuation_ids = {id(r) for r in valuation_rows}
+    for row in rows:
+        row["valuation_in_primary_arv"] = id(row) in valuation_ids
+        if row.get("market_segment") == "Primary / developer":
+            row["valuation_role"] = "Competition / developer ceiling; excluded from resale ARV while secondary evidence exists" if secondary_rows or unknown_rows else "Last-resort primary-only proxy; weak evidence"
+        elif row.get("market_segment") == "Secondary / resale":
+            row["valuation_role"] = "Primary resale comparable"
+        elif row.get("valuation_role") is None:
+            row["valuation_role"] = "Unknown segment"
+
+    count = len(valuation_rows)
+    normalized_values = [float(r["subject_normalized_value"]) for r in valuation_rows]
     q25 = _percentile(normalized_values, 25)
     q50 = _percentile(normalized_values, 50)
     q75 = _percentile(normalized_values, 75)
     iqr = max(0.0, q75 - q25)
-    # Flag extreme observations for transparency and down-weight them. They are
-    # retained in the audit table; they are not silently deleted.
+    # Flag extreme observations for transparency and down-weight them in the
+    # selected valuation pool. Primary listings remain visible as competition.
     if count >= 5 and iqr > 0:
         lower_fence, upper_fence = q25 - 1.5 * iqr, q75 + 1.5 * iqr
-        for row in rows:
+        for row in valuation_rows:
             value = to_float(row.get("subject_normalized_value"))
             row["outlier_flag"] = value < lower_fence or value > upper_fence
             if row["outlier_flag"]:
@@ -357,13 +409,16 @@ def assess_comparables(
                 row["valuation_note"] = "Observasi jauh dari rentang mayoritas; bobot diturunkan, perlu pemeriksaan manual."
             else:
                 row["outlier_flag"] = False
+                row["valuation_note"] = ""
     else:
-        for row in rows:
+        for row in valuation_rows:
             row["outlier_flag"] = False
             row["valuation_note"] = ""
-    weighted = [(r["subject_normalized_value"], r["weight"]) for r in rows]
+    weighted = [(r["subject_normalized_value"], r["weight"]) for r in valuation_rows]
     comparable_base = _weighted_median(weighted)
     simple_median = median(normalized_values)
+    primary_competition_values = [float(r["subject_normalized_value"]) for r in primary_rows]
+    primary_competition_median = median(primary_competition_values) if primary_competition_values else None
 
     # NJOP is not market value and is never converted using an arbitrary national
     # multiplier. It is used as a secondary calibrated reference only when at least
@@ -371,32 +426,28 @@ def assess_comparables(
     # market-to-NJOP ratio is learned from those paired observations.
     njop_pairs = [
         (r["market_to_njop_ratio"], r["weight"])
-        for r in rows
+        for r in valuation_rows
         if r.get("market_to_njop_ratio") is not None and r["market_to_njop_ratio"] > 0
     ]
     njop_market_ratio = _weighted_median(njop_pairs) if len(njop_pairs) >= 3 else None
     njop_indicated = subject_njop * njop_market_ratio if subject_njop > 0 and njop_market_ratio else None
     njop_weight_used = max(0.0, min(25.0, to_float(njop_market_weight_pct))) if njop_indicated is not None else 0.0
     base = comparable_base * (1 - njop_weight_used / 100) + (njop_indicated or 0) * (njop_weight_used / 100)
-    # Use the full range for very small samples and IQR for larger samples. This
-    # makes random/outlying listings visible instead of trusting their mean.
+    # Sample dispersion informs the uncertainty band, not an arbitrary haircut
+    # to the central market value. Quick-sale pricing is a separate, user-tunable
+    # commercial decision. This prevents one comparable from automatically
+    # forcing the central ARV down by 24% while still showing a wide risk range.
     spread = ((max(normalized_values) - min(normalized_values)) if count < 4 else iqr)
     dispersion = spread / max(comparable_base, 1)
     dispersion_iqr_pct = (iqr / max(comparable_base, 1)) * 100
-    avg_score = sum(r["similarity_score"] for r in rows) / count
+    avg_score = sum(r["similarity_score"] for r in valuation_rows) / count
     sample_score = min(30.0, count * 3.3)
     dispersion_penalty = min(28.0, max(0.0, dispersion - 0.15) * 35.0)
-    # Separate estimate confidence from final GO traceability. For a practical
-    # screening estimate, a good sample of several active portal listings should
-    # reach a meaningful confidence band even when some individual ad URLs or
-    # publication dates are unavailable. The GO gate still independently checks
-    # at least five traceable individual URLs.
     confidence = max(0.0, min(100.0, avg_score * 0.56 + sample_score - dispersion_penalty))
-    land_unit_median = median([r["land_unit_price"] for r in rows if r.get("land_unit_price")]) if any(r.get("land_unit_price") for r in rows) else None
-    building_unit_median = median([r["building_unit_price"] for r in rows if r.get("building_unit_price")]) if any(r.get("building_unit_price") for r in rows) else None
-    # Data uncertainty is separate from the user's quick-sale preference. Sparse
-    # or dispersed evidence gets a wider conservative haircut; the output remains
-    # indicative, not a probabilistic appraisal.
+    if valuation_mode == "PRIMARY_ONLY_WEAK_PROXY":
+        confidence = min(confidence, 40.0)
+    land_unit_median = median([r["land_unit_price"] for r in valuation_rows if r.get("land_unit_price")]) if any(r.get("land_unit_price") for r in valuation_rows) else None
+    building_unit_median = median([r["building_unit_price"] for r in valuation_rows if r.get("building_unit_price")]) if any(r.get("building_unit_price") for r in valuation_rows) else None
     if count == 1: sample_uncertainty = 24.0
     elif count == 2: sample_uncertainty = 18.0
     elif count == 3: sample_uncertainty = 14.0
@@ -406,19 +457,20 @@ def assess_comparables(
     quality_uncertainty = max(0.0, (85.0 - avg_score) * 0.06)
     spread_uncertainty = min(12.0, max(0.0, dispersion * 18.0))
     data_uncertainty_discount = min(35.0, sample_uncertainty + quality_uncertainty + spread_uncertainty)
-    conservative_discount_used = max(0.0, min(40.0, max(to_float(quick_sale_discount_pct), data_uncertainty_discount)))
+    conservative_discount_used = max(0.0, min(50.0, to_float(quick_sale_discount_pct)))
     conservative = base * (1 - conservative_discount_used / 100)
     optimistic_uplift = min(25.0, max(5.0, data_uncertainty_discount * 0.65))
     optimistic = base * (1 + optimistic_uplift / 100)
-    market_range_low = min(q25 if q25 > 0 else base, conservative)
-    market_range_high = max(q75 if q75 > 0 else base, optimistic)
+    uncertainty_low = base * (1 - data_uncertainty_discount / 100)
+    uncertainty_high = base * (1 + data_uncertainty_discount / 100)
+    market_range_low = min(q25 if q25 > 0 else base, uncertainty_low)
+    market_range_high = max(q75 if q75 > 0 else base, uncertainty_high, optimistic)
     direct_url_count = sum(1 for r in rows if str(r.get("source_url") or "").startswith(("http://", "https://")))
     individual_listing_url_count = sum(1 for r in rows if str(r.get("source_url_scope") or "") == "Listing individual")
-    # GO-grade evidence must be traceable to an individual source listing and carry
-    # a system/user capture date. Portal names alone are enough for preliminary math,
-    # but not enough for a final investment approval audit trail.
+    # GO-grade resale evidence is checked on the valuation pool, not on developer
+    # competition listings that were deliberately excluded from secondary ARV.
     go_grade_count = sum(
-        1 for r in rows
+        1 for r in valuation_rows
         if str(r.get("source_url") or "").startswith(("http://", "https://"))
         and str(r.get("source_url_scope") or "") == "Listing individual"
         and not is_blank(r.get("date_found"))
@@ -438,9 +490,26 @@ def assess_comparables(
         quality_notes.append(f"{date_found_missing_count} listing belum memiliki tanggal ditemukan/dikumpulkan.")
     if unconfirmed_url_count:
         quality_notes.append(f"{unconfirmed_url_count} URL belum dikonfirmasi sebagai halaman listing individual.")
+    if secondary_rows and primary_rows:
+        quality_notes.append(f"{len(primary_rows)} listing primary/developer dipisahkan sebagai informasi persaingan; tidak dicampur ke median ARV resale karena target underwriting diasumsikan rumah secondary/lelang.")
+    if not secondary_rows and primary_rows and not unknown_rows:
+        quality_notes.append("Tidak ada pembanding secondary yang teridentifikasi. Indikasi memakai listing primary sebagai proxy lemah dan confidence dibatasi; jangan jadikan satu-satunya dasar GO.")
+    if unknown_rows:
+        quality_notes.append(f"{len(unknown_rows)} listing belum memiliki klasifikasi primary/secondary; digunakan sebagai data tambahan dengan ketidakpastian lebih tinggi atau fallback.")
+    verified_promotions = sum(1 for r in rows if to_float(r.get("verified_promotion_value_used")) > 0)
+    unverified_promotion_claims = sum(1 for r in rows if str(r.get("promotion_claims") or "").strip() and to_float(r.get("verified_promotion_value_used")) <= 0)
+    if unverified_promotion_claims:
+        quality_notes.append(f"{unverified_promotion_claims} listing menyebut promosi tanpa nilai rupiah terverifikasi; tidak ada potongan harga promosi otomatis yang diterapkan.")
 
     return {
-        "valid_count": count, "go_grade_count": go_grade_count, "valid": rows, "invalid": invalid, "secondary_only": secondary_only,
+        "valid_count": total_valid_count, "valuation_comparable_count": count,
+        "secondary_comparable_count": len(secondary_rows), "unknown_segment_count": len(unknown_rows),
+        "primary_competition_count": len(primary_rows),
+        "primary_competition_median": round(primary_competition_median) if primary_competition_median else None,
+        "verified_promotion_count": verified_promotions,
+        "unverified_promotion_claim_count": unverified_promotion_claims,
+        "valuation_mode": valuation_mode,
+        "go_grade_count": go_grade_count, "valid": rows, "valuation_rows": valuation_rows, "invalid": invalid, "secondary_only": secondary_only,
         "estimate_status": "INDICATIVE_AVAILABLE" if count >= 3 else "LOW_SAMPLE" if count > 0 else "INSUFFICIENT",
         "estimate_label": "Estimasi indikatif tersedia" if count >= 3 else "Estimasi awal dengan sampel terbatas" if count > 0 else "Belum ada cukup data harga dan luas yang dapat dihitung",
         "base_exit": round(base), "comparable_base_exit": round(comparable_base),
@@ -452,8 +521,8 @@ def assess_comparables(
         "data_uncertainty_discount_pct": round(data_uncertainty_discount, 1),
         "conservative_discount_used_pct": round(conservative_discount_used, 1),
         "dispersion_iqr_pct": round(dispersion_iqr_pct, 1),
-        "valuation_method": "Weighted median + normalized land/building indicators + NJOP calibration (if paired local data exists)",
-        "valuation_note": "ARV indikatif. Haircut konservatif meningkat saat sampel sedikit, data tersebar, atau kualitas sumber lemah. Bukan appraisal dan bukan kepastian harga transaksi.",
+        "valuation_method": "Secondary-led weighted median + normalized land/building indicators + separate primary competition + NJOP calibration (if paired local data exists)",
+        "valuation_note": "ARV indikatif. Quick-sale discount terpisah dari rentang ketidakpastian bukti; listing primary/developer dipisahkan dari resale ARV bila data secondary tersedia. Bukan appraisal dan bukan kepastian harga transaksi.",
         "confidence": round(confidence, 1),
         "confidence_band": "Baik" if confidence >= 70 else "Cukup" if confidence >= 55 else "Rendah",
         "simple_median": round(simple_median),

@@ -225,7 +225,9 @@ def _sales_matrix(scenarios: list[dict[str, Any]]) -> list[list[str]]:
     ]
     for label, key in components:
         rows.append([label] + [_scenario_money(sc.get("result") or {}, key) for sc in scenarios])
-    rows.append(["ROI PROYEK"] + [pct((sc.get("result") or {}).get("roi_pct")) for sc in scenarios])
+    rows.append(["ROI PROYEK ALL-IN"] + [pct((sc.get("result") or {}).get("roi_pct")) for sc in scenarios])
+    rows.append(["ROI TAHUNAN EKUIVALEN ALL-IN (ESTIMASI)"] + [pct((sc.get("result") or {}).get("annualized_roi_pct")) for sc in scenarios])
+    rows.append(["ESTIMASI DURASI PROYEK (HARI)"] + [str((sc.get("result") or {}).get("projected_holding_days") or "—") for sc in scenarios])
     return rows
 
 
@@ -336,7 +338,7 @@ def _append_portfolio_markdown(lines: list[str], portfolio: Any) -> None:
                 progress += f" (data {item.get('tracked_work_items', 0)}/{item.get('total_work_items')} item)"
             lines.append(f"| {item.get('name')} / {item.get('address')} | {item.get('stage')} | {progress} | {idr(item.get('actual_paid'))} | {idr(to_float(item.get('committed')) + to_float(item.get('forecast')))} | {idr(item.get('budget_total')) if item.get('budget_total') else 'Belum disusun'} | {item.get('target_sale_date') or '—'} |")
     if completed:
-        lines += ["", "### Proyek Selesai dan Hasil Aktual", "| Proyek / Lokasi | Closing | ARV dasar → closing | Budget vs modal aktual | Biaya penjualan | Profit / ROI aktual |", "|---|---|---:|---:|---:|---:|"]
+        lines += ["", "### Proyek Selesai dan Hasil Aktual", "| Proyek / Lokasi | Closing | ARV dasar → closing | Budget vs modal aktual | Biaya penjualan | Profit / ROI / XIRR aktual |", "|---|---|---:|---:|---:|---:|"]
         for item in completed[:25]:
             arv_compare = idr(item.get("base_arv"))
             if item.get("closing_vs_base_arv_pct") is not None:
@@ -349,7 +351,7 @@ def _append_portfolio_markdown(lines: list[str], portfolio: Any) -> None:
                     budget_compare += f" ({label} {idr(abs(variance))})"
             else:
                 budget_compare = f"Budget belum disusun / modal aktual {idr(item.get('total_actual_cost'))}"
-            lines.append(f"| {item.get('name')} / {item.get('address')} | {item.get('sold_date') or '—'} · {idr(item.get('closing_price'))} | {arv_compare} | {budget_compare} | {idr(item.get('selling_cost_actual'))} | {idr(item.get('net_profit_actual'))} / {pct(item.get('roi_actual_pct'))} |")
+            lines.append(f"| {item.get('name')} / {item.get('address')} | {item.get('sold_date') or '—'} · {idr(item.get('closing_price'))} | {arv_compare} | {budget_compare} | {idr(item.get('selling_cost_actual'))} | {idr(item.get('net_profit_actual'))} / {pct(item.get('roi_actual_pct'))} / {pct(item.get('xirr_actual_pct'))} |")
 
 
 def _portfolio_sections(doc: Any, portfolio: Any, add_table: Any) -> None:
@@ -398,9 +400,9 @@ def _portfolio_sections(doc: Any, portfolio: Any, add_table: Any) -> None:
                 f"{item.get('name') or 'Properti'}\n{item.get('address') or '—'}",
                 f"{_fmt_short_date(item.get('sold_date'))}\n{_rp_juta(item.get('closing_price'))}",
                 arv_text, budget_text, _rp_juta(item.get('selling_cost_actual')),
-                f"{_rp_juta(item.get('net_profit_actual'))}\nROI {pct(item.get('roi_actual_pct'))}",
+                f"{_rp_juta(item.get('net_profit_actual'))}\nROI {pct(item.get('roi_actual_pct'))}\nXIRR {pct(item.get('xirr_actual_pct')) if item.get('xirr_actual_pct') is not None else 'Belum tersedia'}",
             ])
-        add_table(["Proyek / Lokasi", "Tanggal / harga jual (Rp juta)", "ARV / vs closing (Rp juta)", "Budget / modal aktual (Rp juta)", "Biaya jual (Rp juta)", "Profit / ROI aktual (Rp juta)"], rows, widths=[1.45, 1.05, 1.0, 1.3, .8, 1.1])
+        add_table(["Proyek / Lokasi", "Tanggal / harga jual (Rp juta)", "ARV / vs closing (Rp juta)", "Budget / modal aktual (Rp juta)", "Biaya jual (Rp juta)", "Profit / ROI / XIRR aktual (Rp juta / %)"], rows, widths=[1.45, 1.05, 1.0, 1.3, .8, 1.1])
 
 
 def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
@@ -566,7 +568,7 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     doc.add_heading("5. Biaya Penjualan dan Hasil Bersih", level=1)
     sale_rows = _sales_matrix(scenarios)
     add_table(scenario_headers, sale_rows, widths=matrix_widths, total_last=True)
-    doc.add_paragraph("Penjualan bersih adalah estimasi harga penjualan setelah dikurangi biaya penjualan. Profit bersih masih mengurangi total modal pra-penjualan.")
+    doc.add_paragraph("Penjualan bersih adalah estimasi harga penjualan setelah dikurangi biaya penjualan. ROI proyek all-in dihitung sebagai profit bersih dibagi seluruh biaya proyek termasuk biaya penjualan. ROI tahunan ekuivalen adalah annualisasi matematis dari ROI proyek dan estimasi durasi, bukan XIRR aktual.")
 
     doc.add_heading("6. Strategi Penawaran", level=1)
     strategy_rows = []

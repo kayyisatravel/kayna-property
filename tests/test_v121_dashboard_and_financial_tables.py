@@ -50,7 +50,7 @@ def test_proposal_includes_three_requested_financial_tables_for_all_bid_levels()
         "Rincian Total Modal per Level Bidding", "Kebutuhan Kas dan Cadangan Risiko",
         "Biaya Penjualan dan Hasil Bersih", "PNBP BPN", "Contingency renovasi",
         "TOTAL MODAL PRA-PENJUALAN", "TOTAL KEBUTUHAN KAS",
-        "PENJUALAN BERSIH setelah biaya penjualan".lower(), "ROI PROYEK", "Kas tersedia",
+        "PENJUALAN BERSIH setelah biaya penjualan".lower(), "ROI PROYEK ALL-IN", "ROI TAHUNAN EKUIVALEN ALL-IN", "ESTIMASI DURASI PROYEK", "Kas tersedia",
     ]:
         assert token.lower() in md.lower()
     doc = Document(BytesIO(build_analysis_docx(snapshot)))

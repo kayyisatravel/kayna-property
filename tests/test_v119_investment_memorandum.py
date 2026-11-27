@@ -52,7 +52,7 @@ def sample_snapshot():
         "risk_register": [{"risk_description": "Keterlambatan penguasaan fisik", "probability_1_5": 3, "impact_1_5": 4, "cost_reserve": 10_000_000, "mitigation": "Konfirmasi tertulis dan jadwal pengosongan."}],
         "portfolio_context": {
             "active_projects": [{"name": "TAS 3 Blok M6/12", "address": "Tulangan, Sidoarjo", "stage": "Renovation", "progress_pct": 60, "actual_paid": 50_000_000, "committed": 5_000_000, "forecast": 15_000_000, "budget_total": 80_000_000, "target_sale_date": "2027-01-15"}],
-            "completed_projects": [{"name": "TAS 2 Blok A", "address": "Sidoarjo", "sold_date": "2026-08-20", "closing_price": 400_000_000, "total_actual_cost": 300_000_000, "selling_cost_actual": 10_000_000, "net_profit_actual": 90_000_000, "roi_actual_pct": 30}],
+            "completed_projects": [{"name": "TAS 2 Blok A", "address": "Sidoarjo", "sold_date": "2026-08-20", "closing_price": 400_000_000, "total_actual_cost": 300_000_000, "selling_cost_actual": 10_000_000, "net_profit_actual": 90_000_000, "roi_actual_pct": 29.0322580645}],
         },
     }
 
@@ -128,7 +128,7 @@ def test_portfolio_appendix_includes_active_progress_and_completed_realized_resu
         assert token in markdown
     doc = Document(BytesIO(build_analysis_docx(snapshot)))
     text = doc_text(doc)
-    for token in ["TAS 3 Blok M6/12", "Progres: 60%", "TAS 2 Blok A", "Profit / ROI aktual"]:
+    for token in ["TAS 3 Blok M6/12", "Progres: 60%", "TAS 2 Blok A", "Profit / ROI / XIRR aktual"]:
         assert token in text
 
 

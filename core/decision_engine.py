@@ -4,11 +4,60 @@ from .utils import to_float
 from .renovation_engine import rab_item_is_in_scope
 
 
+def bid_reference_status(
+    result: dict[str, Any] | None,
+    minimum_roi_pct: float,
+    target_roi_pct: float,
+    minimum_net_profit: float,
+    target_holding_days: float,
+    maximum_holding_days: float,
+    cash_need: float | None = None,
+    cash_available: float | None = None,
+    provisional: bool = False,
+    cash_confirmed: bool = True,
+) -> str:
+    """Explain the limit-reference underwriting gates consistently in the UI."""
+    result = result or {}
+    roi = result.get("roi_pct")
+    profit = result.get("net_profit")
+    days = to_float(result.get("projected_holding_days"))
+    if roi is None:
+        return "ROI BELUM DAPAT DIHITUNG"
+    if profit is None:
+        return "PROFIT BERSIH BELUM DAPAT DIHITUNG"
+    if to_float(roi) < minimum_roi_pct:
+        return f"ROI ALL-IN {to_float(roi):.1f}% DI BAWAH MINIMUM {minimum_roi_pct:.1f}% — JANGAN BID"
+    if to_float(profit) < minimum_net_profit:
+        return f"PROFIT BERSIH {to_float(profit):,.0f} DI BAWAH MINIMUM Rp{minimum_net_profit:,.0f} — JANGAN BID"
+    if days <= 0:
+        return "DURASI PROYEK BELUM TERSEDIA — HOLD, JANGAN BID"
+    if maximum_holding_days > 0 and days > maximum_holding_days:
+        return f"DURASI {days:.0f} HARI MELEWATI BATAS {maximum_holding_days:.0f} HARI — JANGAN BID"
+    if not cash_confirmed:
+        return "ROI/PROFIT MEMENUHI SYARAT, TETAPI KAS INVESTOR BELUM DIKONFIRMASI — HOLD"
+    if cash_need is not None and cash_available is not None and cash_need > cash_available:
+        return "ROI/PROFIT MEMENUHI SYARAT, TETAPI KAS TIDAK CUKUP"
+    notes = []
+    if target_holding_days > 0 and days > target_holding_days:
+        notes.append(f"durasi {days:.0f} hari di atas target ideal {target_holding_days:.0f} hari")
+    if to_float(roi) < target_roi_pct:
+        notes.append(f"ROI belum mencapai target {target_roi_pct:.1f}%")
+    if provisional:
+        notes.append("analisis masih indikatif")
+    if notes:
+        return "MEMENUHI GATE MINIMUM; PERLU PERHATIAN: " + "; ".join(notes).upper()
+    return f"MEMENUHI GATE — ROI ALL-IN {to_float(roi):.1f}%, PROFIT ≥ Rp{minimum_net_profit:,.0f}, DURASI ≤ {maximum_holding_days:.0f} HARI"
+
+
 def evaluate_decision(inputs: dict[str, Any], market: dict[str, Any], tiers: dict[str, Any], at_limit: dict[str, Any] | None = None, min_comps: int = 5) -> dict[str, Any]:
     prop = inputs.get("property", {}); survey = inputs.get("survey", {}); legal = inputs.get("legal", {})
     blockers, warnings = [], []
     limit = to_float(prop.get("auction_limit")); max_bid = tiers.get("max_bid")
-    min_roi = to_float(inputs.get("rules", {}).get("minimum_roi_pct", 25))
+    rules = inputs.get("rules", {})
+    min_roi = to_float(rules.get("minimum_roi_pct", 20))
+    min_profit = max(0.0, to_float(rules.get("minimum_net_profit", 0)))
+    target_days = to_float(rules.get("target_holding_days", 90))
+    maximum_days = to_float(rules.get("maximum_holding_days", 180))
     if not prop.get("lot_code") or not prop.get("address") or limit <= 0: blockers.append("Identitas lot, alamat atau nilai limit belum lengkap.")
     if to_float(prop.get("land_area")) <= 0: blockers.append("Luas tanah belum terverifikasi.")
     if to_float(prop.get("building_area")) <= 0 and prop.get("property_type") != "Tanah kosong": blockers.append("Luas bangunan belum terverifikasi.")
@@ -51,11 +100,26 @@ def evaluate_decision(inputs: dict[str, Any], market: dict[str, Any], tiers: dic
     cash_need = to_float(at_limit.get("cash_requirement_including_reserve", at_limit.get("capital_before_sale")))
     cash_available = to_float(inputs.get("finance", {}).get("cash_available_for_new_project", inputs.get("finance", {}).get("cash_available")))
     cash_confirmed = bool(inputs.get("finance", {}).get("cash_confirmed"))
-    financial_failure = roi_at_limit is not None and (to_float(roi_at_limit) < min_roi or (at_limit.get("net_profit") is not None and to_float(at_limit.get("net_profit")) <= 0))
+    profit_at_limit = at_limit.get("net_profit")
+    duration_days = to_float(at_limit.get("projected_holding_days"))
+    duration_missing = bool(maximum_days > 0 and duration_days <= 0)
+    duration_failure = bool(maximum_days > 0 and duration_days > maximum_days)
+    roi_failure = roi_at_limit is not None and to_float(roi_at_limit) < min_roi
+    profit_failure = profit_at_limit is not None and to_float(profit_at_limit) < min_profit
+    # A time overrun is a hard NO-GO only when a usable ARV makes the financial
+    # comparison computable. Missing ARV remains HOLD/incomplete, never a fake fail.
+    duration_failure_applies = duration_failure and roi_at_limit is not None and profit_at_limit is not None
+    financial_failure = bool(roi_failure or profit_failure or duration_failure_applies)
     funding_failure = cash_need > cash_available or not cash_confirmed
     if not cash_confirmed: blockers.append("Real cash investor belum diperbarui/dikonfirmasi.")
     elif cash_need > cash_available: blockers.append(f"Kas siap investasi tidak mencukupi; kebutuhan {cash_need:,.0f}, tersedia {cash_available:,.0f}.")
-    if financial_failure: blockers.append(f"Pada nilai limit, ROI konservatif {to_float(roi_at_limit):.1f}% tidak mencapai minimum {min_roi:.1f}%.")
+    if roi_failure: blockers.append(f"Pada nilai limit, Project ROI all-in konservatif {to_float(roi_at_limit):.1f}% di bawah minimum {min_roi:.1f}%.")
+    if profit_failure: blockers.append(f"Profit bersih konservatif pada nilai limit {to_float(profit_at_limit):,.0f} belum mencapai minimum Rp{min_profit:,.0f}.")
+    if duration_missing:
+        blockers.append("Estimasi durasi proyek belum tersedia; lengkapi asumsi penguasaan, legalitas, renovasi, dan pemasaran sebelum keputusan bidding.")
+    elif duration_failure: blockers.append(f"Estimasi durasi proyek {duration_days:.0f} hari melewati batas maksimum {maximum_days:.0f} hari.")
+    elif duration_days > target_days > 0:
+        warnings.append(f"Estimasi durasi {duration_days:.0f} hari berada di atas target ideal {target_days:.0f} hari; evaluasi okupansi, legalitas, renovasi, dan pemasaran.")
     if max_bid is None and not financial_failure and not funding_failure:
         blockers.append("Maximum bid belum dapat ditentukan; periksa increment dan batas risiko.")
     if max_bid is not None and max_bid < limit: financial_failure = True
@@ -68,6 +132,8 @@ def evaluate_decision(inputs: dict[str, Any], market: dict[str, Any], tiers: dic
         status = "HOLD"
     else:
         status = "GO"
+    if roi_at_limit is not None and to_float(roi_at_limit) >= min_roi and to_float(roi_at_limit) < to_float(rules.get("mid_roi_pct", 30)):
+        warnings.append(f"Project ROI all-in memenuhi minimum {min_roi:.1f}%, tetapi belum mencapai target {to_float(rules.get('mid_roi_pct', 30)):.1f}%. Pertimbangkan penurunan bid atau perbaikan biaya sebelum bidding.")
     if market.get("valid_count", 0) >= min_comps and market.get("confidence", 0) < 70:
         reasons = []
         if market.get("listing_date_missing_count", 0):
@@ -82,4 +148,8 @@ def evaluate_decision(inputs: dict[str, Any], market: dict[str, Any], tiers: dic
         warnings.append("Interior belum diperiksa; risiko renovasi dapat berubah.")
         if status == "GO":
             status = "CONDITIONAL GO"
-    return {"status": status, "blockers": blockers, "warnings": warnings, "summary": "Memenuhi seluruh gate utama." if status == "GO" else ("Tidak layak mengikuti bidding berdasarkan batas finansial/hard stop." if status == "DO NOT BID" else "Data atau syarat kritis belum terpenuhi; jangan bidding dulu.")}
+    summary = "Memenuhi seluruh gate utama." if status == "GO" else ("Tidak layak mengikuti bidding berdasarkan batas finansial, profit minimum, durasi maksimum, atau hard stop." if status == "DO NOT BID" else "Data atau syarat kritis belum terpenuhi; jangan bidding dulu.")
+    return {"status": status, "blockers": blockers, "warnings": warnings, "summary": summary,
+            "minimum_roi_pct": min_roi, "target_roi_pct": to_float(rules.get("mid_roi_pct", 30)),
+            "minimum_net_profit": min_profit, "target_holding_days": target_days,
+            "maximum_holding_days": maximum_days, "projected_holding_days": duration_days, "duration_missing": duration_missing}

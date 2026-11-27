@@ -1,9 +1,12 @@
 """Central application defaults. Tax/legal rates are editable assumptions, not legal advice."""
 APP_NAME = "KAYNA PROPERTY MANAGEMENT SYSTEM"
-APP_VERSION = "1.0.21"
+APP_VERSION = "1.0.22"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
-MIN_ROI_PCT = 25.0
-MID_ROI_PCT = 35.0
+MIN_ROI_PCT = 20.0
+MID_ROI_PCT = 30.0
+MINIMUM_NET_PROFIT = 50_000_000
+TARGET_HOLDING_DAYS = 90
+MAX_HOLDING_DAYS = 180
 MIN_VALID_COMPARABLES_FOR_GO = 5
 DEFAULT_NEGOTIATION_DISCOUNT_PCT = 10.0
 DEFAULT_QUICK_SALE_DISCOUNT_PCT = 5.0
@@ -30,6 +33,10 @@ DEFAULT_RULES = {
     "hidden_condition_reserve_pct": 7.5,
     "minimum_roi_pct": MIN_ROI_PCT,
     "mid_roi_pct": MID_ROI_PCT,
+    "minimum_net_profit": MINIMUM_NET_PROFIT,
+    "target_holding_days": TARGET_HOLDING_DAYS,
+    "maximum_holding_days": MAX_HOLDING_DAYS,
+    "investment_policy_version": "KAYNA_FLIP_POLICY_V1",
     "negotiation_discount_pct": DEFAULT_NEGOTIATION_DISCOUNT_PCT,
     "quick_sale_discount_pct": DEFAULT_QUICK_SALE_DISCOUNT_PCT,
     # Used only when >=3 comparable properties also have paired NJOP values.

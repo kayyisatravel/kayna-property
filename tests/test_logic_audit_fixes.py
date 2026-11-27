@@ -235,7 +235,7 @@ def test_unpriced_recommended_rab_item_blocks_final_go_until_priced_or_excluded(
     result = evaluate_decision(
         inputs, {"valid_count":5,"go_grade_count":5,"confidence":85},
         {"increment_confirmed":True,"max_bid":150},
-        {"roi_pct":35,"net_profit":35,"capital_before_sale":100,"cash_requirement_including_reserve":100},
+        {"roi_pct":35,"net_profit":60_000_000,"capital_before_sale":100,"cash_requirement_including_reserve":100,"projected_holding_days":90},
     )
     assert result["status"] == "HOLD"
     assert any("anggaran dasar tanpa volume/harga" in x for x in result["blockers"])
@@ -258,7 +258,7 @@ def test_conditional_or_not_required_rab_rows_do_not_block_final_go():
     result = evaluate_decision(
         inputs, {"valid_count":5,"go_grade_count":5,"confidence":85},
         {"increment_confirmed":True,"max_bid":150},
-        {"roi_pct":35,"net_profit":35,"capital_before_sale":100,"cash_requirement_including_reserve":100},
+        {"roi_pct":35,"net_profit":60_000_000,"capital_before_sale":100,"cash_requirement_including_reserve":100,"projected_holding_days":90},
     )
     assert result["status"] == "GO"
 

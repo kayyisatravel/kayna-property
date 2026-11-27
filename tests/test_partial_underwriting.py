@@ -58,8 +58,8 @@ def test_partial_kpknl_data_can_still_return_preliminary_do_not_bid():
     result = run_underwriting(data, liquidity, dict(DEFAULT_RULES))
     assert result["at_limit"]["capital_before_sale"] > 500_000_000
     assert result["bidding"]["max_bid"] is None
-    assert result["bidding"]["max_economic_ceiling"] is not None
-    assert result["bidding"]["max_economic_ceiling"] < 500_000_000
+    assert result["bidding"]["max_economic_ceiling"] is None
+    assert "durasi melewati 180 hari" in result["bidding"]["max_reason"].lower() or "durasi melewati 180 hari" in result["bidding"]["walk_away_reason"].lower()
     assert result["decision"]["status"] == "DO NOT BID"
 
 

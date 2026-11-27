@@ -1,3 +1,7 @@
+# PFMS V1.0.22 — Kebijakan Underwriting Kayna Property
+
+V1.0.22 menetapkan kebijakan flipping Kayna Property: minimum Project ROI all-in 20%, target 30%, profit bersih minimum Rp50.000.000, target holding period 90 hari, dan batas maksimum 180 hari. Tidak ada batas maksimum ROI. Quick Sale ARV menjadi dasar actionable Maximum Bid; Base ARV dan Upper ARV hanya analisis sensitivitas. Lihat `docs/KAYNA_FLIP_UNDERWRITING_POLICY_V1.0.22.md`.
+
 # Kayna Property Management System (PFMS) — V1.0.21
 
 Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelolaan properti yang dimenangkan, dan pencatatan track record sampai aset terjual.
@@ -111,7 +115,7 @@ Aplikasi Streamlit untuk underwriting rumah lelang, keputusan bidding, pengelola
 - Data comparable yang tidak disebutkan (misalnya LB, kondisi, akses, URL langsung, tanggal publikasi) tetap kosong dan menurunkan confidence; tidak diisi tebakan. Nama portal/sumber yang disebut pengguna disimpan sebagai provenance. Untuk GO final, lima comparable harus memiliki URL listing langsung dan tanggal ditemukan; portal name saja hanya cukup untuk valuasi indikatif.
 - Analisis parsial tetap dapat dijalankan dengan data KPKNL seadanya. Sistem menghitung biaya yang sudah bisa dihitung; bila ARV belum tersedia, profit/ROI dibiarkan null dan status HOLD. Bila data pasar yang tersedia sudah menunjukkan ceiling bid di bawah limit, sistem dapat menampilkan DO NOT BID/Walk Away meski belum memenuhi gate GO.
 - Financial engine Python: bea lelang, BPHTB, PNBP/BPN/roya/admin, penguasaan, renovasi, contingency, holding, biaya penjualan, profit, ROI proyek dan annualized ROI.
-- Tangga bidding: limit, target ROI 35%, maximum bid ROI 25%, dan walk-away. Setiap harga bid yang ditampilkan harus berada pada atau di atas limit dan mengikuti increment mulai dari limit. Ceiling teoritis di bawah limit hanya diagnostik, bukan harga bidding.
+- Tangga bidding mengikuti Kebijakan Flipping Kayna terbaru: Project ROI all-in minimum 20%, target 30%, profit bersih minimum Rp50 juta, target durasi 90 hari dan maksimum 180 hari. Tidak ada batas maksimum ROI. Maximum Bid dihitung dari Quick Sale ARV dan wajib memenuhi seluruh gate; Base/Upper ARV hanya sensitivitas.
 - Investor cashflow: real cash diinput user, outflow mendatang hanya mengurangi kapasitas bila dikonfirmasi user, cadangan likuiditas 10–20%.
 - Simpan semua keputusan (GO, CONDITIONAL GO, HOLD, DO NOT BID) sebagai opportunity dan snapshot analisis.
 - Lifecycle aset WON/ACTIVE/SOLD, milestones, biaya aktual, closing, dan track record.
@@ -263,8 +267,8 @@ Jangan pernah menaruh API key/private key pada `app.py`, GitHub, screenshot atau
 
 ## G. Kebijakan perhitungan yang ditanam pada V1
 
-- Minimum ROI proyek: 25% untuk keseluruhan holding period; bukan annualized.
-- Target ROI bidding tengah: 35%.
+- Kebijakan underwriting terbaru (V1.0.22): minimum Project ROI all-in 20%, target 30%, profit bersih minimum Rp50 juta, durasi ideal 90 hari, batas maksimum 180 hari. ROI di atas target tidak dibatasi.
+- Project ROI all-in = profit bersih setelah biaya penjualan dibagi total biaya proyek termasuk biaya penjualan. ROI modal pra-penjualan tersedia hanya sebagai indikator diagnostik.
 - Conservative ARV menjadi dasar utama maximum bid.
 - Asking aktif dan marked-sold yang belum terverifikasi mendapat negotiation discount; transaksi terverifikasi tidak.
 - Quick-sale discount default 5% dari base ARV.

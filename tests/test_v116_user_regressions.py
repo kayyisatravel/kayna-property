@@ -139,9 +139,11 @@ def test_v116_nine_regular_listings_produce_estimate_and_overcredit_is_secondary
     assert result["estimate_status"] == "INDICATIVE_AVAILABLE"
     assert result["base_exit"] > 0
     assert result["conservative_exit"] < result["base_exit"] < result["optimistic_exit"]
-    assert result["confidence"] >= 65
+    assert result["confidence"] < 65  # Four unknown-segment rows are only supplementary; primary rows are excluded from resale ARV.
+    assert result["primary_competition_count"] == 5
+    assert result["valuation_comparable_count"] == 4
     assert result["status"] == "PRELIMINARY"  # Only two URLs are individual listing details.
-    assert result["go_grade_count"] == 2
+    assert result["go_grade_count"] == 0  # Individual URLs belong to excluded primary listings, not the resale ARV pool.
 
 
 def test_v116_one_sided_user_wall_paint_keeps_only_missing_surface_allowance():
@@ -311,5 +313,5 @@ def test_v116_primary_developer_comps_are_weighted_below_secondary_resale():
     sw = secondary["valid"][0]["weight"]
     pw = primary["valid"][0]["weight"]
     uw = unknown["valid"][0]["weight"]
-    assert abs(pw / sw - 0.75) < 0.02
+    assert abs(pw / sw - 0.15) < 0.02
     assert pw < uw < sw

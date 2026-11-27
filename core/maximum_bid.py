@@ -1,7 +1,9 @@
-"""Increment-aware reverse bid search with a strict auction-limit floor.
+"""Increment-aware maximum-bid solver for Kayna Property flip underwriting.
 
-A theoretical economic ceiling below the auction limit is useful diagnostic
-information, but it is never returned as an actionable/legal bid.
+A bid is admissible only when the conservative exit case clears both the
+minimum project ROI and minimum net-profit hurdle, stays within the maximum
+holding period, and respects any risk-adjusted ceiling. Theoretical ceilings
+below the auction limit are diagnostics, never legal/actionable bids.
 """
 from __future__ import annotations
 from typing import Any
@@ -16,10 +18,23 @@ def _meets(
     roi_target: float,
     cash_available: float | None,
     risk_ceiling: float | None,
+    minimum_net_profit: float = 0.0,
+    maximum_holding_days: float | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     result = calculate_project(bid, exit_price, inputs)
     roi = result.get("roi_pct")
-    ok = roi is not None and roi >= roi_target and to_float(result.get("net_profit")) > 0
+    profit = to_float(result.get("net_profit"), float("-inf"))
+    duration_days = to_float(result.get("projected_holding_days"))
+    profit_ok = result.get("net_profit") is not None and profit >= max(0.0, minimum_net_profit)
+    duration_ok = maximum_holding_days is None or (duration_days > 0 and duration_days <= maximum_holding_days)
+    roi_ok = roi is not None and to_float(roi) >= roi_target
+    ok = roi_ok and profit_ok and duration_ok
+    result["minimum_net_profit_required"] = max(0.0, minimum_net_profit)
+    result["meets_minimum_net_profit"] = bool(profit_ok)
+    result["maximum_holding_days_allowed"] = maximum_holding_days
+    result["within_maximum_holding_days"] = bool(duration_ok)
+    result["duration_assumption_available"] = bool(duration_days > 0)
+    result["meets_roi_target"] = bool(roi_ok)
     if cash_available is not None:
         ok = ok and result.get("cash_requirement_including_reserve", result["capital_before_sale"]) <= cash_available
     if risk_ceiling is not None:
@@ -36,17 +51,19 @@ def _grid_ceiling(
     cash_available: float | None,
     risk_ceiling: float | None,
     upper_bound: float | None,
+    minimum_net_profit: float = 0.0,
+    maximum_holding_days: float | None = None,
 ) -> tuple[float | None, dict[str, Any] | None]:
     """Find max feasible price on anchor + n*step, n >= 0."""
     if step <= 0:
         return None, None
-    ok_anchor, result_anchor = _meets(anchor, exit_price, inputs, roi_target, cash_available, risk_ceiling)
+    ok_anchor, result_anchor = _meets(anchor, exit_price, inputs, roi_target, cash_available, risk_ceiling, minimum_net_profit, maximum_holding_days)
     if not ok_anchor:
         return None, result_anchor
 
     upper = upper_bound if upper_bound and upper_bound > anchor else max(anchor * 10, exit_price * 2, anchor + step * 100)
     for _ in range(8):
-        ok_upper, _ = _meets(upper, exit_price, inputs, roi_target, cash_available, risk_ceiling)
+        ok_upper, _ = _meets(upper, exit_price, inputs, roi_target, cash_available, risk_ceiling, minimum_net_profit, maximum_holding_days)
         if not ok_upper:
             break
         upper *= 2
@@ -56,14 +73,14 @@ def _grid_ceiling(
     while lo_steps < hi_steps:
         mid_steps = (lo_steps + hi_steps + 1) // 2
         candidate = anchor + mid_steps * step
-        ok, _ = _meets(candidate, exit_price, inputs, roi_target, cash_available, risk_ceiling)
+        ok, _ = _meets(candidate, exit_price, inputs, roi_target, cash_available, risk_ceiling, minimum_net_profit, maximum_holding_days)
         if ok:
             lo_steps = mid_steps
         else:
             hi_steps = mid_steps - 1
 
     maximum = round(anchor + lo_steps * step, 2)
-    _, at_maximum = _meets(maximum, exit_price, inputs, roi_target, cash_available, risk_ceiling)
+    _, at_maximum = _meets(maximum, exit_price, inputs, roi_target, cash_available, risk_ceiling, minimum_net_profit, maximum_holding_days)
     return maximum, at_maximum
 
 
@@ -76,15 +93,25 @@ def find_maximum_bid(
     cash_available: float | None = None,
     risk_ceiling: float | None = None,
     upper_bound: float | None = None,
+    minimum_net_profit: float | None = None,
+    maximum_holding_days: float | None = None,
 ) -> dict[str, Any]:
-    """Find the highest *admissible* bid, never below the auction limit.
+    """Find the highest admissible bid, never below the auction limit.
 
-    When the auction limit itself fails the hurdle, ``maximum_bid`` is None.
-    ``economic_ceiling`` is returned separately as a diagnostic only; it must
-    never be presented to the user as a bid price.
+    When a value is omitted, policy thresholds are read from ``inputs.rules``.
+    This preserves compatibility with direct callers and saved underwriting
+    snapshots while applying current Kayna defaults in the main workflow.
     """
     minimum_bid = to_float(minimum_bid)
     increment = to_float(increment)
+    rules = inputs.get("rules", {}) if isinstance(inputs, dict) else {}
+    if minimum_net_profit is None:
+        minimum_net_profit = to_float(rules.get("minimum_net_profit", 0.0))
+    if maximum_holding_days is None:
+        configured_max_days = rules.get("maximum_holding_days")
+        maximum_holding_days = to_float(configured_max_days) if configured_max_days not in (None, "") else None
+    minimum_net_profit = max(0.0, to_float(minimum_net_profit))
+
     if exit_price <= 0 or minimum_bid <= 0 or increment <= 0:
         return {
             "maximum_bid": None,
@@ -93,25 +120,36 @@ def find_maximum_bid(
             "reason": "Harga exit, limit atau increment simulasi belum tersedia.",
         }
 
-    ok_limit, at_limit = _meets(minimum_bid, exit_price, inputs, roi_target, cash_available, risk_ceiling)
+    ok_limit, at_limit = _meets(minimum_bid, exit_price, inputs, roi_target, cash_available, risk_ceiling, minimum_net_profit, maximum_holding_days)
     if not ok_limit:
         # Diagnostic only: search a theoretical ceiling from zero. This is not
         # anchored to the auction ladder and is intentionally not a bid price.
         diagnostic_step = min(increment, 1_000.0)
         economic_ceiling, at_ceiling = _grid_ceiling(
             exit_price, inputs, 0.0, diagnostic_step, roi_target,
-            cash_available, risk_ceiling, upper_bound,
+            cash_available, risk_ceiling, upper_bound, minimum_net_profit, maximum_holding_days,
         )
+        reasons = []
+        if at_limit.get("roi_pct") is None or to_float(at_limit.get("roi_pct")) < roi_target:
+            reasons.append(f"ROI di bawah {roi_target:.1f}%")
+        if to_float(at_limit.get("net_profit"), float("-inf")) < minimum_net_profit:
+            reasons.append(f"profit bersih di bawah Rp{minimum_net_profit:,.0f}")
+        if maximum_holding_days is not None and to_float(at_limit.get("projected_holding_days")) <= 0:
+            reasons.append("estimasi durasi proyek belum tersedia")
+        elif maximum_holding_days is not None and to_float(at_limit.get("projected_holding_days")) > maximum_holding_days:
+            reasons.append(f"durasi melewati {maximum_holding_days:.0f} hari")
+        if risk_ceiling is not None and minimum_bid > risk_ceiling:
+            reasons.append("melewati hard ceiling risiko")
+        reason_detail = "; ".join(reasons) or "batas pendanaan/risiko tidak terpenuhi"
         if economic_ceiling is not None and economic_ceiling < minimum_bid:
             reason = (
                 f"Ceiling ekonomis indikatif {economic_ceiling:,.0f} berada di bawah limit "
-                f"{minimum_bid:,.0f}; tidak ada harga bid yang memenuhi target ROI "
-                f"{roi_target:.1f}% pada atau di atas limit."
+                f"{minimum_bid:,.0f}; {reason_detail}. Ceiling teoritis bukan harga bid yang sah."
             )
         else:
             reason = (
-                f"Nilai limit {minimum_bid:,.0f} tidak memenuhi target ROI {roi_target:.1f}% "
-                "atau melampaui batas risiko/pendanaan. Ceiling teoritis bukan harga bid yang sah."
+                f"Nilai limit {minimum_bid:,.0f} tidak memenuhi syarat: {reason_detail}. "
+                "Ceiling teoritis bukan harga bid yang sah."
             )
         return {
             "maximum_bid": None,
@@ -120,15 +158,14 @@ def find_maximum_bid(
             "at_economic_ceiling": at_ceiling,
             "at_maximum": None,
             "limit_feasible": False,
+            "minimum_net_profit_required": minimum_net_profit,
+            "maximum_holding_days_allowed": maximum_holding_days,
             "reason": reason,
         }
 
-    # For an admissible bid ladder, the auction limit is the anchor. This keeps
-    # bids aligned to limit + n * increment, even when the limit is not a multiple
-    # of the increment.
     maximum, at_maximum = _grid_ceiling(
         exit_price, inputs, minimum_bid, increment, roi_target,
-        cash_available, risk_ceiling, upper_bound,
+        cash_available, risk_ceiling, upper_bound, minimum_net_profit, maximum_holding_days,
     )
     if maximum is None:
         return {
@@ -136,7 +173,7 @@ def find_maximum_bid(
             "economic_ceiling": None,
             "at_limit": at_limit,
             "limit_feasible": False,
-            "reason": "Tidak ditemukan bid legal yang memenuhi target ROI pada increment yang diberikan.",
+            "reason": "Tidak ditemukan bid legal yang memenuhi target ROI, profit minimum, durasi, dan batas risiko.",
         }
     return {
         "maximum_bid": maximum,
@@ -144,7 +181,9 @@ def find_maximum_bid(
         "at_limit": at_limit,
         "at_maximum": at_maximum,
         "limit_feasible": True,
-        "reason": "Batas tertinggi pada tangga bid mulai dari limit yang memenuhi target ROI dan batas risiko/pendanaan.",
+        "minimum_net_profit_required": minimum_net_profit,
+        "maximum_holding_days_allowed": maximum_holding_days,
+        "reason": "Batas tertinggi pada tangga bid yang memenuhi target ROI, profit bersih minimum, durasi maksimum, dan batas risiko.",
     }
 
 
@@ -155,11 +194,20 @@ def build_bid_tiers(
     base_exit: float,
     inputs: dict[str, Any],
     cash_available: float | None,
-    minimum_roi_pct: float = 25.0,
-    mid_roi_pct: float = 35.0,
+    minimum_roi_pct: float = 20.0,
+    mid_roi_pct: float = 30.0,
     risk_ceiling: float | None = None,
     simulation_step: float = 1_000.0,
+    optimistic_exit: float | None = None,
+    minimum_net_profit: float | None = None,
+    maximum_holding_days: float | None = None,
 ) -> dict[str, Any]:
+    rules = inputs.get("rules", {}) if isinstance(inputs, dict) else {}
+    if minimum_net_profit is None:
+        minimum_net_profit = to_float(rules.get("minimum_net_profit", 0.0))
+    if maximum_holding_days is None:
+        configured_max_days = rules.get("maximum_holding_days")
+        maximum_holding_days = to_float(configured_max_days) if configured_max_days not in (None, "") else None
     if to_float(conservative_exit) <= 0 or to_float(auction_limit) <= 0:
         return {
             "increment_confirmed": bool(increment and increment > 0),
@@ -167,23 +215,26 @@ def build_bid_tiers(
             "mid_bid": None,
             "max_bid": None,
             "walk_away_from": None,
-            "walk_away_reason": "Limit atau Conservative ARV belum tersedia.",
-            "reason": "Limit atau Conservative ARV belum tersedia; analisis biaya awal tetap dapat dilakukan.",
+            "walk_away_reason": "Limit atau Quick Sale ARV belum tersedia.",
+            "reason": "Limit atau Quick Sale ARV belum tersedia; analisis biaya awal tetap dapat dilakukan.",
         }
 
     increment_confirmed = bool(increment and increment > 0)
     step = to_float(increment) if increment_confirmed else max(1.0, to_float(simulation_step, 1_000.0))
-    # Cash adequacy is a separate funding gate; bid ceilings are economic and
-    # risk ceilings, so lack of current cash does not hide a viable price ladder.
-    mid = find_maximum_bid(conservative_exit, inputs, auction_limit, step, mid_roi_pct, None, risk_ceiling)
-    maximum = find_maximum_bid(conservative_exit, inputs, auction_limit, step, minimum_roi_pct, None, risk_ceiling)
-    base = find_maximum_bid(base_exit, inputs, auction_limit, step, minimum_roi_pct, None, risk_ceiling) if to_float(base_exit) > 0 else {}
+    # Cash adequacy is a separate funding gate. The ceiling is economic; the
+    # available-cash gate is presented independently in the underwriting view.
+    mid = find_maximum_bid(conservative_exit, inputs, auction_limit, step, mid_roi_pct, None, risk_ceiling,
+                           minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days)
+    maximum = find_maximum_bid(conservative_exit, inputs, auction_limit, step, minimum_roi_pct, None, risk_ceiling,
+                               minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days)
+    base = find_maximum_bid(base_exit, inputs, auction_limit, step, minimum_roi_pct, None, risk_ceiling,
+                            minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days) if to_float(base_exit) > 0 else {}
+    upper_exit = to_float(optimistic_exit) if optimistic_exit not in (None, "") else 0.0
+    upper = find_maximum_bid(upper_exit, inputs, auction_limit, step, minimum_roi_pct, None, risk_ceiling,
+                             minimum_net_profit=minimum_net_profit, maximum_holding_days=maximum_holding_days) if upper_exit > 0 else {}
 
     max_value = maximum.get("maximum_bid")
     mid_value = mid.get("maximum_bid")
-    # Without the auction's official increment, even a mathematically feasible
-    # price is not an actionable bid ladder. Retain it only as a computation
-    # estimate and explicitly withhold all legal bid values.
     mid_simulated_ceiling = mid_value if not increment_confirmed and mid.get("limit_feasible") else None
     max_simulated_ceiling = max_value if not increment_confirmed and maximum.get("limit_feasible") else None
     actionable_mid = mid_value if increment_confirmed else None
@@ -194,53 +245,58 @@ def build_bid_tiers(
         if below_limit is not None and below_limit < auction_limit:
             walk_away_reason = (
                 f"JANGAN BID: ceiling ekonomis indikatif {below_limit:,.0f} berada di bawah limit "
-                f"{auction_limit:,.0f} untuk target ROI minimum {minimum_roi_pct:.1f}%. "
-                "Selain itu, increment resmi belum dikonfirmasi; tidak ada bid legal atau walk-away final."
+                f"{auction_limit:,.0f} untuk minimum ROI {minimum_roi_pct:.1f}% dan profit bersih "
+                f"Rp{minimum_net_profit:,.0f}. Increment resmi belum dikonfirmasi."
             )
         else:
             walk_away_reason = (
-                f"JANGAN BID berdasarkan target ROI minimum {minimum_roi_pct:.1f}% atau hard ceiling. "
-                "Increment resmi juga belum dikonfirmasi; tidak ada bid legal atau walk-away final."
+                f"JANGAN BID: limit tidak memenuhi ROI minimum {minimum_roi_pct:.1f}%, "
+                f"profit minimum Rp{minimum_net_profit:,.0f}, atau durasi maksimum {maximum_holding_days or 0:.0f} hari. "
+                "Increment resmi juga belum dikonfirmasi."
             )
     elif not increment_confirmed:
-        walk_away_reason = "Belum ada bid legal yang dapat ditampilkan: kelipatan bid resmi belum dikonfirmasi. Ceiling simulasi hanya referensi komputasi, bukan harga bid atau walk-away."
+        walk_away_reason = "Belum ada bid legal yang dapat ditampilkan: kelipatan bid resmi belum dikonfirmasi. Ceiling simulasi hanya referensi komputasi; bukan harga bid resmi."
     elif actionable_max is None:
         walk_away_reason = (
-            f"JANGAN BID: limit {auction_limit:,.0f} tidak memenuhi target ROI minimum "
-            f"{minimum_roi_pct:.1f}% atau melewati hard ceiling. Tidak ada bid legal yang memenuhi syarat."
+            f"JANGAN BID: limit {auction_limit:,.0f} tidak memenuhi ROI minimum {minimum_roi_pct:.1f}%, "
+            f"profit bersih minimum Rp{minimum_net_profit:,.0f}, batas durasi, atau hard ceiling."
         )
     else:
-        walk_away_reason = f"Berhenti sebelum memasukkan bid {walk_away:,.0f}; bid tertinggi yang memenuhi syarat adalah {actionable_max:,.0f}."
+        walk_away_reason = f"Berhenti sebelum memasukkan bid {walk_away:,.0f}; bid tertinggi yang memenuhi seluruh syarat adalah {actionable_max:,.0f}."
 
     return {
         "increment_confirmed": increment_confirmed,
         "increment_used_for_simulation": step,
         "increment_note": "Increment resmi/terverifikasi" if increment_confirmed else f"Simulasi menggunakan langkah komputasi Rp{step:,.0f}; bukan increment resmi. Konfirmasi pengumuman lelang sebelum bidding.",
         "min_bid": auction_limit,
-        # Actionable bids only. A theoretical ceiling below the limit lives in a
-        # separate field and is never labelled as a bid.
         "mid_bid": actionable_mid,
         "mid_economic_ceiling": mid.get("economic_ceiling") if not mid.get("limit_feasible") else None,
         "mid_simulated_ceiling": mid_simulated_ceiling,
-        "mid_result": (
-            mid.get("at_maximum") if mid.get("maximum_bid") is not None
-            else mid.get("at_economic_ceiling") or mid.get("at_limit")
-        ),
+        "mid_result": mid.get("at_maximum") if mid.get("maximum_bid") is not None else mid.get("at_economic_ceiling") or mid.get("at_limit"),
         "mid_limit_feasible": bool(mid.get("limit_feasible")),
         "mid_roi_target": mid_roi_pct,
         "mid_reason": mid.get("reason"),
         "max_bid": actionable_max,
         "max_economic_ceiling": maximum.get("economic_ceiling") if not maximum.get("limit_feasible") else None,
         "max_simulated_ceiling": max_simulated_ceiling,
-        "max_result": (
-            maximum.get("at_maximum") if max_value is not None
-            else maximum.get("at_economic_ceiling") or maximum.get("at_limit")
-        ),
+        "max_result": maximum.get("at_maximum") if max_value is not None else maximum.get("at_economic_ceiling") or maximum.get("at_limit"),
         "max_limit_feasible": bool(maximum.get("limit_feasible")),
         "max_roi_target": minimum_roi_pct,
-        "base_case_reference_bid": base.get("maximum_bid") if increment_confirmed else None,
+        "minimum_net_profit_required": minimum_net_profit,
+        "maximum_holding_days_allowed": maximum_holding_days,
+        "base_case_max_bid": base.get("maximum_bid") if increment_confirmed else None,
         "base_case_simulated_ceiling": base.get("maximum_bid") if not increment_confirmed and base.get("limit_feasible") else None,
         "base_case_economic_ceiling": base.get("economic_ceiling") if not base.get("limit_feasible") else None,
+        "base_case_result": base.get("at_maximum") if base.get("maximum_bid") is not None else base.get("at_economic_ceiling") or base.get("at_limit"),
+        "base_case_limit_feasible": bool(base.get("limit_feasible")),
+        "upper_case_max_bid": upper.get("maximum_bid") if increment_confirmed else None,
+        "upper_case_simulated_ceiling": upper.get("maximum_bid") if not increment_confirmed and upper.get("limit_feasible") else None,
+        "upper_case_economic_ceiling": upper.get("economic_ceiling") if not upper.get("limit_feasible") else None,
+        "upper_case_result": upper.get("at_maximum") if upper.get("maximum_bid") is not None else upper.get("at_economic_ceiling") or upper.get("at_limit"),
+        "upper_case_limit_feasible": bool(upper.get("limit_feasible")),
+        "base_case_reference_bid": base.get("maximum_bid") if increment_confirmed else None,
+        "base_case_simulated_reference_bid": base.get("maximum_bid") if not increment_confirmed and base.get("limit_feasible") else None,
+        "base_case_reference_result": base.get("at_maximum") if base.get("maximum_bid") is not None else base.get("at_economic_ceiling") or base.get("at_limit"),
         "walk_away_from": walk_away,
         "walk_away_reason": walk_away_reason,
         "max_reason": maximum.get("reason"),

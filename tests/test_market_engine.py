@@ -120,7 +120,8 @@ def test_sparse_sample_produces_indicative_arv_with_wider_uncertainty_range():
     assert market["base_exit"] > 0
     assert market["conservative_exit"] < market["base_exit"]
     assert market["market_range_low"] <= market["base_exit"] <= market["market_range_high"]
-    assert market["conservative_discount_used_pct"] >= 24
+    assert market["data_uncertainty_discount_pct"] >= 24
+    assert market["conservative_discount_used_pct"] == 5
     assert market["confidence"] < 65
 
 

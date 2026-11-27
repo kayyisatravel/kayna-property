@@ -37,7 +37,7 @@ def test_all_gates_pass_returns_go():
     }
     market = {"valid_count":5, "go_grade_count":5, "confidence":85}
     tiers = {"increment_confirmed":True, "max_bid":150}
-    result = evaluate_decision(inputs, market, tiers, {"roi_pct":35, "net_profit":35, "capital_before_sale":100, "cash_requirement_including_reserve":100})
+    result = evaluate_decision(inputs, market, tiers, {"roi_pct":35, "net_profit":60_000_000, "capital_before_sale":100, "cash_requirement_including_reserve":100, "projected_holding_days":90})
     assert result["status"] == "GO"
 
 
@@ -111,7 +111,7 @@ def test_market_confidence_between_55_and_69_is_a_warning_not_a_hard_blocker():
     }
     market = {"valid_count": 5, "go_grade_count": 5, "confidence": 62, "listing_date_missing_count": 5, "unconfirmed_url_count": 0, "date_found_missing_count": 0}
     tiers = {"increment_confirmed": True, "max_bid": 150}
-    result = evaluate_decision(inputs, market, tiers, {"roi_pct": 35, "net_profit": 35, "capital_before_sale": 100, "cash_requirement_including_reserve": 100})
+    result = evaluate_decision(inputs, market, tiers, {"roi_pct": 35, "net_profit": 60_000_000, "capital_before_sale": 100, "cash_requirement_including_reserve": 100, "projected_holding_days": 90})
     assert result["status"] == "GO"
     assert result["warnings"]
 

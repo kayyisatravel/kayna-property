@@ -265,12 +265,27 @@ if "ai_review" not in st.session_state: st.session_state.ai_review = None
 def get_rules() -> dict[str, Any]:
     rules = {**DEFAULT_RULES, **dict(st.session_state.rules_local)}
     rows = read_table("RULES_CONFIG")
+    stored_global_rules: dict[str, Any] = {}
     for row in rows:
         try:
             value = row.get("value") if "value" in row else json.loads(row.get("value_json", "null"))
-            if row.get("rule_key") == "GLOBAL" and isinstance(value, dict): rules.update(value)
+            if row.get("rule_key") == "GLOBAL" and isinstance(value, dict):
+                stored_global_rules = dict(value)
+                rules.update(value)
             elif row.get("rule_key"): rules[row["rule_key"]] = value
         except Exception: pass
+    # One-time migration: only untouched V1.0.21 defaults (25% / 35%) are
+    # moved to the newly agreed Kayna flip policy (20% / 30%). Custom values
+    # are preserved. New profit/time gates are additive and user-editable.
+    if stored_global_rules.get("investment_policy_version") != "KAYNA_FLIP_POLICY_V1":
+        if to_float(rules.get("minimum_roi_pct"), 20) == 25 and to_float(rules.get("mid_roi_pct"), 30) == 35:
+            rules["minimum_roi_pct"] = 20.0
+            rules["mid_roi_pct"] = 30.0
+        rules.setdefault("minimum_net_profit", 50_000_000)
+        rules.setdefault("target_holding_days", 90)
+        rules.setdefault("maximum_holding_days", 180)
+        rules["investment_policy_version"] = "KAYNA_FLIP_POLICY_V1"
+        st.session_state.rules_local.update({k: rules[k] for k in ["minimum_roi_pct", "mid_roi_pct", "minimum_net_profit", "target_holding_days", "maximum_holding_days", "investment_policy_version"]})
     return rules
 
 
@@ -880,11 +895,11 @@ elif page == "New Auction Analysis":
             st.caption(f"Parsing terakhir: {summary.get('count')} listing · tanggal tangkap sistem {summary.get('captured_at')}. Tanggal ini bukan tanggal publikasi iklan.")
             for note in st.session_state.get("na_comparable_parse_notes", []):
                 st.warning(note)
-        default_cols = ["name", "address", "complex_name", "latitude", "longitude", "distance_m", "market_segment", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
-        if st.session_state.get("na_comparable_schema_version") != 6:
+        default_cols = ["name", "address", "complex_name", "underlying_property_id", "latitude", "longitude", "distance_m", "market_segment", "seller_type", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "promotion_claims", "promotion_value_verified", "verified_promotion_value", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
+        if st.session_state.get("na_comparable_schema_version") != 7:
             if "na_comparables_editor_widget" in st.session_state:
                 del st.session_state["na_comparables_editor_widget"]
-            st.session_state.na_comparable_schema_version = 6
+            st.session_state.na_comparable_schema_version = 7
         if "na_comparables_editor" not in st.session_state:
             st.session_state.na_comparables_editor = pd.DataFrame([{c: None for c in default_cols} for _ in range(5)])
         else:
@@ -893,7 +908,7 @@ elif page == "New Auction Analysis":
                 if column not in comp_frame.columns:
                     comp_frame[column] = None
             st.session_state.na_comparables_editor = comp_frame[default_cols]
-        st.caption("Untuk estimasi indikatif: nama, harga, minimal salah satu LT/LB dan sumber listing/platform sudah dapat digunakan. Domain utama portal dapat menjadi bukti sumber awal. Untuk audit GO final: perlukan URL iklan individual dan tanggal ditemukan. Koordinat Haversine atau jarak lurus manual (meter) dapat dipakai; perbedaan desa/kecamatan tidak otomatis menggugurkan pembanding.")
+        st.caption("Untuk estimasi indikatif: nama, harga, minimal salah satu LT/LB dan sumber listing/platform sudah dapat digunakan. Untuk rumah lelang/resale, tandai segmen Secondary atau Primary. Listing developer dipisahkan sebagai kompetisi bila tersedia pembanding secondary. Promo hanya mengurangi harga efektif bila nilai rupiahnya benar-benar terverifikasi. Gunakan ID objek fisik yang sama untuk mencegah rumah yang sama dihitung dua kali lintas portal.")
         comparable_editor_input = st.session_state.na_comparables_editor.copy()
         # Streamlit DateColumn expects date-like values; normalize back to ISO strings after editing.
         for date_col in ("listing_date", "date_found"):
@@ -905,7 +920,9 @@ elif page == "New Auction Analysis":
             "latitude": st.column_config.NumberColumn("Latitude", min_value=-90.0, max_value=90.0, format="%.6f", help="Koordinat pin properti dari Google Maps. Opsional, tetapi diperlukan untuk mengukur jarak lintas desa/kecamatan."),
             "longitude": st.column_config.NumberColumn("Longitude", min_value=-180.0, max_value=180.0, format="%.6f", help="Koordinat pin properti dari Google Maps. Opsional, tetapi diperlukan untuk mengukur jarak lintas desa/kecamatan."),
             "distance_m": st.column_config.NumberColumn("Jarak lurus (meter)", min_value=0, step=50, help="Isi jarak garis lurus dari objek target ke pembanding bila koordinat tidak diisi. Batas desa/kecamatan tidak membatasi pembanding."),
-            "market_segment": st.column_config.SelectboxColumn("Segmen pasar", options=["Tidak diketahui", "Secondary / resale", "Primary / developer"], help="Pisahkan unit developer/rumah baru dari rumah second/resale. Unit primary diberi bobot lebih rendah ketika target yang dinilai adalah rumah resale."),
+            "underlying_property_id": st.column_config.TextColumn("ID objek fisik (anti-duplikat)", help="Gunakan ID yang sama bila satu rumah dipasang di beberapa portal/agen. Opsional; jangan gunakan ID listing portal."),
+            "market_segment": st.column_config.SelectboxColumn("Segmen pasar", options=["Tidak diketahui", "Secondary / resale", "Primary / developer"], help="Secondary menjadi pembanding utama untuk objek rumah lelang/resale. Primary dipisahkan sebagai kompetisi pasar."),
+            "seller_type": st.column_config.SelectboxColumn("Jenis penjual", options=["", "Pemilik", "Agen", "Developer", "Tidak diketahui"]),
             "price": st.column_config.NumberColumn("Harga listing (Rp)", min_value=0, format="Rp %.0f"),
             "njop": st.column_config.NumberColumn("NJOP pembanding (Rp, opsional)", min_value=0, format="Rp %.0f", help="Isi hanya bila Anda benar-benar memiliki NJOP/SPPT pembanding tersebut."),
             "land_area": st.column_config.NumberColumn("LT (m²)", min_value=0),
@@ -913,6 +930,9 @@ elif page == "New Auction Analysis":
             "condition": st.column_config.SelectboxColumn("Kondisi", options=["", "Siap Huni", "Butuh Renovasi", "Hitung Tanah"]),
             "access": st.column_config.SelectboxColumn("Akses", options=["", "2 Mobil", "1 Mobil", "Gang"]),
             "price_type": st.column_config.SelectboxColumn("Jenis harga", options=["Asking aktif", "Marked sold / perlu verifikasi", "Transaksi terverifikasi", "Over kredit / skema kewajiban"]),
+            "promotion_claims": st.column_config.TextColumn("Klaim promosi (teks)"),
+            "promotion_value_verified": st.column_config.CheckboxColumn("Nilai promo terverifikasi?", help="Centang hanya jika ada bukti nominal manfaat yang benar-benar mengurangi pengeluaran pembeli."),
+            "verified_promotion_value": st.column_config.NumberColumn("Nilai promo terverifikasi (Rp)", min_value=0, format="Rp %.0f"),
             "source_platforms": st.column_config.TextColumn("Portal/platform sumber"),
             "source_url": st.column_config.TextColumn("URL sumber (dari input)"),
             "source_url_scope": st.column_config.SelectboxColumn("Jenis halaman sumber", options=["", "Listing individual", "Portal/domain only", "Portal pencarian/kategori", "Halaman venue/kompleks", "Perlu verifikasi"], help="Domain utama portal cukup sebagai sumber untuk valuasi indikatif, tetapi hanya URL listing individual yang dapat dihitung untuk audit gate GO."),
@@ -1295,9 +1315,9 @@ elif page == "New Auction Analysis":
             set_default("na_renovation_months", 1.0); st.number_input("Waktu renovasi (bulan)", min_value=0.0, step=0.5, key="na_renovation_months")
         with c2:
             set_default("na_monthly_holding", rules["monthly_holding_cost"]); st.number_input("Holding cost per bulan (Rp)", min_value=0, step=250_000, key="na_monthly_holding")
-            set_default("na_selling_months", 3.0); st.number_input("Estimasi waktu penjualan (bulan)", min_value=0.0, step=0.5, key="na_selling_months")
+            set_default("na_selling_months", 1.0); st.number_input("Estimasi waktu penjualan (bulan)", min_value=0.0, step=0.5, key="na_selling_months")
         with c3:
-            set_default("na_legal_delay_months", 1.0); st.number_input("Estimasi delay legalitas (bulan)", min_value=0.0, step=0.5, key="na_legal_delay_months")
+            set_default("na_legal_delay_months", 0.5); st.number_input("Estimasi delay legalitas (bulan)", min_value=0.0, step=0.5, key="na_legal_delay_months")
             set_default("na_marketing_cost", 1_000_000); st.number_input("Biaya marketing (Rp)", min_value=0, step=250_000, key="na_marketing_cost")
         renovation_total = renovation_item_total + to_float(st.session_state.na_renovation_extra)
         in_scope_rab_rows = [r for r in renovation_items if rab_item_is_in_scope(r)]
@@ -1316,7 +1336,9 @@ elif page == "New Auction Analysis":
         with c2:
             set_default("na_risk_ceiling", None); st.number_input("Hard ceiling bid tambahan (opsional, Rp)", min_value=0, step=1_000_000, value=st.session_state.na_risk_ceiling, key="na_risk_ceiling")
         st.caption("Contingency renovasi dihitung otomatis oleh Python berdasarkan persentase Settings & Rules.")
-        st.metric("Minimum ROI", "25%", help="Target wajib untuk seluruh periode proyek.")
+        policy_rules = get_rules()
+        st.metric("ROI minimum / target", f"{policy_rules.get('minimum_roi_pct', 20):.0f}% / {policy_rules.get('mid_roi_pct', 30):.0f}%", help="Project ROI minimum sebagai gate GO; target ROI adalah sasaran negosiasi/bid. Tidak ada batas maksimum keuntungan.")
+        st.caption(f"Kebijakan Kayna: profit bersih minimum {idr(policy_rules.get('minimum_net_profit', 50_000_000))} · ROI all-in minimum/target {policy_rules.get('minimum_roi_pct', 20):.0f}%/{policy_rules.get('mid_roi_pct', 30):.0f}% · durasi ideal/maksimum {policy_rules.get('target_holding_days', 90)}/{policy_rules.get('maximum_holding_days', 180)} hari. ROI di atas target tidak dibatasi.")
         rules_for_cost_review = get_rules()
         cost_review_payload = {
             "renovation_items": st.session_state.get("na_renovation_items_current", []),
@@ -1436,37 +1458,37 @@ elif page == "New Auction Analysis":
         k3.metric("Modal sementara / data terisi" if financial_inputs_partial else "Total modal proyek", idr(at.get("capital_before_sale")), help="Jika RAB dalam lingkup belum lengkap atau biaya belum dikonfirmasi, angka ini hanya total komponen yang sudah terdata; belum merupakan total modal akhir.")
         k4.metric("Profit indikatif" if financial_inputs_partial else "Estimasi profit bersih", idr(at.get("net_profit")))
         roi_cols = st.columns(3)
-        roi_cols[1].metric("ROI indikatif" if financial_inputs_partial else "ROI proyek", pct(at.get("roi_pct")))
+        roi_cols[1].metric("ROI all-in indikatif" if financial_inputs_partial else "ROI proyek all-in", pct(at.get("roi_pct")), help="Profit bersih dibagi total biaya proyek all-in, termasuk biaya transaksi penjualan.")
         if tiers.get("provisional_reasons"):
             st.warning("Tangga bidding dan hasil profit/ROI masih INDIKATIF. Dasar yang belum final: " + "; ".join(tiers.get("provisional_reasons", [])) + ". Jangan gunakan sebagai instruksi bidding final.")
         st.markdown("### Tangga bidding")
         tier_rows = []
+        policy_min_roi = to_float(snap.get("rules", {}).get("minimum_roi_pct", 20))
+        policy_target_roi = to_float(snap.get("rules", {}).get("mid_roi_pct", 30))
+        policy_min_profit = to_float(snap.get("rules", {}).get("minimum_net_profit", 50_000_000))
+        policy_target_days = to_float(snap.get("rules", {}).get("target_holding_days", 90))
+        policy_max_days = to_float(snap.get("rules", {}).get("maximum_holding_days", 180))
         tier_specs = [
             ("Nilai limit (patokan awal)", tiers.get("min_bid"), None, None, at, "LIMIT_REFERENCE", True),
-            ("Target ROI 35%", tiers.get("mid_bid"), tiers.get("mid_economic_ceiling"), tiers.get("mid_simulated_ceiling"), tiers.get("mid_result"), 35.0, tiers.get("mid_limit_feasible", False)),
-            ("Maximum bid / ROI 25%", tiers.get("max_bid"), tiers.get("max_economic_ceiling"), tiers.get("max_simulated_ceiling"), tiers.get("max_result"), 25.0, tiers.get("max_limit_feasible", False)),
+            (f"Target ROI {policy_target_roi:.0f}%", tiers.get("mid_bid"), tiers.get("mid_economic_ceiling"), tiers.get("mid_simulated_ceiling"), tiers.get("mid_result"), policy_target_roi, tiers.get("mid_limit_feasible", False)),
+            (f"Maximum bid / ROI minimum {policy_min_roi:.0f}%", tiers.get("max_bid"), tiers.get("max_economic_ceiling"), tiers.get("max_simulated_ceiling"), tiers.get("max_result"), policy_min_roi, tiers.get("max_limit_feasible", False)),
         ]
         cash_available_now = to_float(snap.get("liquidity", {}).get("cash_available_for_new_project"))
         auction_limit_now = to_float(snap["property"].get("auction_limit"))
         for label, bid, economic_ceiling, simulated_ceiling, res, hurdle, feasible in tier_specs:
             cash_need_tier = res.get("cash_requirement_including_reserve") if res else None
             if hurdle == "LIMIT_REFERENCE":
-                limit_roi = to_float(res.get("roi_pct"), -999) if res else -999
-                min_roi_target = to_float(snap.get("rules", {}).get("minimum_roi_pct", 25))
-                if limit_roi < 0:
-                    tier_status = "ROI LIMIT BELUM DAPAT DIHITUNG"
-                elif limit_roi < min_roi_target:
-                    tier_status = f"ROI LIMIT {limit_roi:.1f}% DI BAWAH TARGET {min_roi_target:.1f}% — JANGAN BID"
-                elif cash_need_tier is not None and cash_need_tier > cash_available_now:
-                    tier_status = "ROI LIMIT MEMENUHI TARGET, TETAPI KAS TIDAK CUKUP"
-                elif tiers.get("provisional"):
-                    tier_status = f"ROI LIMIT MEMENUHI {min_roi_target:.1f}%, TETAPI ANALISIS MASIH INDIKATIF"
-                else:
-                    tier_status = f"ROI LIMIT MEMENUHI TARGET MINIMUM {min_roi_target:.1f}%"
+                tier_status = bid_reference_status(
+                    res, policy_min_roi, policy_target_roi, policy_min_profit,
+                    policy_target_days, policy_max_days, cash_need_tier,
+                    cash_available_now, bool(tiers.get("provisional")),
+                    bool(snap.get("liquidity", {}).get("cash_confirmed", False)),
+                )
             elif not tiers.get("increment_confirmed"):
                 tier_status = "INCREMENT RESMI BELUM DIKONFIRMASI — BELUM ADA BID LEGAL"
             elif bid is None or not feasible:
-                tier_status = f"TIDAK ADA BID LEGAL YANG MEMENUHI ROI {hurdle:.0f}%"
+                reason_key = "mid_reason" if hurdle == policy_target_roi else "max_reason"
+                tier_status = str(tiers.get(reason_key) or f"TIDAK ADA BID LEGAL YANG MEMENUHI ROI {hurdle:.0f}%")
             elif bid < auction_limit_now:
                 # Defensive guard: an impossible sub-limit price must never be shown
                 # as an actionable bid, even if an older snapshot has legacy values.
@@ -1474,12 +1496,14 @@ elif page == "New Auction Analysis":
                 bid = None
             elif cash_need_tier is not None and cash_need_tier > cash_available_now:
                 tier_status = "KAS TIDAK CUKUP"
-            elif not res or to_float(res.get("roi_pct"), -999) < hurdle:
-                tier_status = "HURDLE TIDAK TERCAPAI"
+            elif not res or to_float(res.get("roi_pct"), -999) < hurdle or to_float(res.get("net_profit"), -999) < policy_min_profit or not (0 < to_float(res.get("projected_holding_days")) <= policy_max_days):
+                tier_status = "GATE ROI, PROFIT MINIMUM, ATAU DURASI TIDAK TERPENUHI"
             elif tiers.get("provisional"):
                 tier_status = "SIMULASI INDIKATIF — DATA PENDUKUNG BELUM FINAL"
+            elif to_float(res.get("projected_holding_days")) > policy_target_days:
+                tier_status = f"LAYAK PADA BATAS MINIMUM, TETAPI DURASI {to_float(res.get('projected_holding_days')):.0f} HARI DI ATAS TARGET IDEAL"
             else:
-                tier_status = "LAYAK SECARA EKONOMI"
+                tier_status = "LAYAK SECARA EKONOMI — SELURUH GATE TERPENUHI"
             tier_rows.append({
                 "Tier": label,
                 "Harga bid / nilai acuan": bid,
@@ -1488,7 +1512,9 @@ elif page == "New Auction Analysis":
                 "Total modal pada referensi": res.get("capital_before_sale") if res else None,
                 "Kebutuhan kas + cadangan": cash_need_tier,
                 "Profit bersih pada referensi": res.get("net_profit") if res else None,
-                "ROI pada referensi": res.get("roi_pct") if res else None,
+                "ROI proyek all-in pada referensi": res.get("roi_pct") if res else None,
+                "ROI tahunan ekuivalen (estimasi)": res.get("annualized_roi_pct") if res else None,
+                "Durasi proyek (hari)": res.get("projected_holding_days") if res else None,
                 "Status": tier_status,
             })
         st.dataframe(pd.DataFrame(tier_rows), use_container_width=True, hide_index=True, column_config={
@@ -1498,9 +1524,23 @@ elif page == "New Auction Analysis":
             "Total modal pada referensi": st.column_config.NumberColumn(format="Rp %.0f"),
             "Kebutuhan kas + cadangan": st.column_config.NumberColumn(format="Rp %.0f"),
             "Profit bersih pada referensi": st.column_config.NumberColumn(format="Rp %.0f"),
-            "ROI pada referensi": st.column_config.NumberColumn(format="%.1f%%"),
+            "ROI proyek all-in pada referensi": st.column_config.NumberColumn(format="%.1f%%"),
+            "ROI tahunan ekuivalen (estimasi)": st.column_config.NumberColumn(format="%.1f%%"),
         })
-        st.caption("Bid legal selalu dimulai dari nilai limit dan mengikuti kelipatan resmi. Jika increment belum dikonfirmasi, sistem hanya menampilkan ceiling simulasi komputasi; angka tersebut bukan bid resmi dan tidak boleh dipakai sebagai walk-away.")
+        st.caption("Bid legal selalu dimulai dari nilai limit dan mengikuti kelipatan resmi. Quick Sale ARV digunakan sebagai dasar hard-cap konservatif. Semua maximum bid harus memenuhi ROI minimum, profit bersih minimum, dan batas durasi.")
+        scenario_caps = [
+            {"Skenario ARV": "Quick Sale / konservatif", "ARV": mkt.get("conservative_exit"), "Maximum Bid": tiers.get("max_bid"), "Project ROI target (%)": tiers.get("max_roi_target"), "Profit minimum (Rp)": tiers.get("minimum_net_profit_required")},
+            {"Skenario ARV": "Base ARV", "ARV": mkt.get("base_exit"), "Maximum Bid": tiers.get("base_case_max_bid"), "Project ROI target (%)": tiers.get("max_roi_target"), "Profit minimum (Rp)": tiers.get("minimum_net_profit_required")},
+            {"Skenario ARV": "Upper ARV", "ARV": mkt.get("optimistic_exit"), "Maximum Bid": tiers.get("upper_case_max_bid"), "Project ROI target (%)": tiers.get("max_roi_target"), "Profit minimum (Rp)": tiers.get("minimum_net_profit_required")},
+        ]
+        st.markdown("#### Sensitivitas Maximum Bid berdasarkan ARV")
+        st.dataframe(pd.DataFrame(scenario_caps), use_container_width=True, hide_index=True, column_config={"ARV": st.column_config.NumberColumn(format="Rp %.0f"), "Maximum Bid": st.column_config.NumberColumn(format="Rp %.0f"), "Profit minimum (Rp)": st.column_config.NumberColumn(format="Rp %.0f"), "Project ROI target (%)": st.column_config.NumberColumn(format="%.1f%%")})
+        duration_days = to_float(at.get("projected_holding_days"))
+        target_days = to_float(snap.get("rules", {}).get("target_holding_days", 90))
+        max_days = to_float(snap.get("rules", {}).get("maximum_holding_days", 180))
+        if duration_days > 0:
+            status_duration = "On target" if duration_days <= target_days else ("Perlu evaluasi" if duration_days <= max_days else "Melewati batas maksimum")
+            st.caption(f"Estimasi durasi pasca-menang/pelunasan sampai closing: {duration_days} hari · target {target_days:.0f} hari · maksimum {max_days:.0f} hari · status: {status_duration}.")
         if tiers.get("walk_away_from") is not None:
             st.metric("WALK-AWAY — bid berikutnya yang harus dihindari", idr(tiers.get("walk_away_from")))
         else:
@@ -2710,11 +2750,11 @@ elif page == "Closed Projects & Track Record":
             close = next((x for x in read_table("SALES_CLOSING") if x.get("property_id") == p.get("property_id")), {})
             costs = [x for x in read_table("COST_ACTUALS") if x.get("property_id") == p.get("property_id")]
             summary = actual_project_summary(costs, close)
-            summaries.append({"Property ID": p.get("property_id"), "Objek": p.get("name"), "Lokasi": p.get("address"), "Tanggal Sold": close.get("sold_date"), "Harga Closing": summary["closing_price"], "Modal Aktual": summary["total_actual_cost"], "Profit Aktual": summary["net_profit_actual"], "ROI Aktual (%)": summary["roi_actual_pct"], "Holding (bulan)": summary["total_holding_months"]})
+            summaries.append({"Property ID": p.get("property_id"), "Objek": p.get("name"), "Lokasi": p.get("address"), "Tanggal Sold": close.get("sold_date"), "Harga Closing": summary["closing_price"], "Modal Pra-Penjualan Aktual": summary["total_actual_cost"], "Total Biaya All-in Aktual": summary["total_actual_cost_including_selling"], "Profit Aktual": summary["net_profit_actual"], "ROI Aktual All-in (%)": summary["roi_actual_pct"], "ROI Tahunan Ekuivalen Aktual (%)": summary["annualized_roi_actual_pct"], "XIRR Aktual (%)": summary["xirr_actual_pct"], "Status XIRR": summary["xirr_status"], "Holding (bulan)": summary["total_holding_months"]})
         df = pd.DataFrame(summaries)
-        st.dataframe(df, use_container_width=True, hide_index=True, column_config={"Harga Closing": st.column_config.NumberColumn(format="Rp %.0f"), "Modal Aktual": st.column_config.NumberColumn(format="Rp %.0f"), "Profit Aktual": st.column_config.NumberColumn(format="Rp %.0f"), "ROI Aktual (%)": st.column_config.NumberColumn(format="%.1f%%")})
+        st.dataframe(df, use_container_width=True, hide_index=True, column_config={"Harga Closing": st.column_config.NumberColumn(format="Rp %.0f"), "Modal Pra-Penjualan Aktual": st.column_config.NumberColumn(format="Rp %.0f"), "Total Biaya All-in Aktual": st.column_config.NumberColumn(format="Rp %.0f"), "Profit Aktual": st.column_config.NumberColumn(format="Rp %.0f"), "ROI Aktual All-in (%)": st.column_config.NumberColumn(format="%.1f%%"), "ROI Tahunan Ekuivalen Aktual (%)": st.column_config.NumberColumn(format="%.1f%%"), "XIRR Aktual (%)": st.column_config.NumberColumn(format="%.1f%%")})
         total_profit = sum(to_float(x.get("Profit Aktual")) for x in summaries)
-        k1,k2,k3 = st.columns(3); k1.metric("Total aset terjual", len(sold)); k2.metric("Total profit aktual", idr(total_profit)); k3.metric("Rata-rata ROI aktual", pct(df["ROI Aktual (%)"].dropna().mean() if df["ROI Aktual (%)"].notna().any() else None))
+        k1,k2,k3 = st.columns(3); k1.metric("Total aset terjual", len(sold)); k2.metric("Total profit aktual", idr(total_profit)); k3.metric("Rata-rata ROI aktual", pct(df["ROI Aktual All-in (%)"].dropna().mean() if df["ROI Aktual All-in (%)"].notna().any() else None))
         selected = st.selectbox("Pilih proyek untuk melihat rincian biaya", [x.get("property_id") for x in sold])
         row = next(p for p in sold if p.get("property_id") == selected); costs = [x for x in read_table("COST_ACTUALS") if x.get("property_id") == selected]
         close = next((x for x in read_table("SALES_CLOSING") if x.get("property_id") == selected), {})
@@ -2836,13 +2876,23 @@ elif page == "Settings & Rules":
         with c3: negotiation = st.number_input("Negotiation discount (%)", min_value=0.0, max_value=50.0, value=to_float(rules["negotiation_discount_pct"]))
         c1,c2,c3,c4 = st.columns(4)
         with c1: quick_sale = st.number_input("Quick-sale discount (%)", min_value=0.0, max_value=50.0, value=to_float(rules["quick_sale_discount_pct"]))
-        with c2: min_roi = st.number_input("Minimum ROI seluruh proyek (%)", min_value=0.0, max_value=200.0, value=to_float(rules["minimum_roi_pct"]))
-        with c3: mid_roi = st.number_input("Target ROI batas tengah (%)", min_value=0.0, max_value=300.0, value=to_float(rules["mid_roi_pct"]))
-        with c4: hidden_reserve = st.number_input("Cadangan interior belum diinspeksi (%)", min_value=0.0, max_value=50.0, value=to_float(rules.get("hidden_condition_reserve_pct", 7.5)), help="Tambahan cadangan modal di luar contingency renovasi ketika interior belum dapat diperiksa. Tidak menyatakan kerusakan tersembunyi pasti ada.")
+        with c2: min_roi = st.number_input("Minimum Project ROI (%)", min_value=0.0, max_value=200.0, value=to_float(rules["minimum_roi_pct"]), help="Batas minimum dihitung dari profit bersih dibagi total biaya all-in, termasuk biaya penjualan. Ini bukan batas maksimum keuntungan.")
+        with c3: mid_roi = st.number_input("Target Project ROI (%)", min_value=0.0, max_value=300.0, value=to_float(rules["mid_roi_pct"]))
+        with c4: min_profit = st.number_input("Profit bersih minimum (Rp)", min_value=0, step=5_000_000, value=safe_int(rules.get("minimum_net_profit", 50_000_000)))
+        c1,c2,c3 = st.columns(3)
+        with c1: target_days = st.number_input("Target durasi ideal (hari)", min_value=30, max_value=180, step=15, value=int(to_float(rules.get("target_holding_days", 90))))
+        with c2: max_days = st.number_input("Batas maksimum durasi (hari)", min_value=90, max_value=365, step=15, value=int(to_float(rules.get("maximum_holding_days", 180))))
+        with c3: hidden_reserve = st.number_input("Cadangan interior belum diinspeksi (%)", min_value=0.0, max_value=50.0, value=to_float(rules.get("hidden_condition_reserve_pct", 7.5)), help="Tambahan cadangan modal di luar contingency renovasi ketika interior belum dapat diperiksa.")
         njop_market_weight = st.number_input("Bobot referensi NJOP terkalibrasi (%)", min_value=0.0, max_value=25.0, value=to_float(rules.get("njop_market_weight_pct", 10.0)), help="Hanya aktif bila minimal 3 comparable memiliki data harga dan NJOP pembanding. NJOP tidak pernah diperlakukan sebagai harga pasar langsung.")
         save_rules = st.form_submit_button("Simpan asumsi", use_container_width=True)
     if save_rules:
-        updated = {"buyer_auction_fee_pct":buyer_fee,"bphtb_rate_pct":bphtb_rate,"npoptkp":npoptkp,"bphtb_basis_mode":basis_mode,"bpn_pnbp_cost":bpn,"roya_cost":roya,"other_acquisition_admin":other_admin,"acquisition_notary_ppat_fee":notary_buy,"seller_final_tax_pct":pph,"seller_agent_pct":agent,"seller_ajb_ppat_pct":ajb,"seller_misc_fixed":misc,"monthly_holding_cost":holding,"renovation_contingency_pct":contingency,"hidden_condition_reserve_pct":hidden_reserve,"negotiation_discount_pct":negotiation,"quick_sale_discount_pct":quick_sale,"minimum_roi_pct":min_roi,"mid_roi_pct":mid_roi,"njop_market_weight_pct":njop_market_weight}
+        if mid_roi < min_roi:
+            st.error("Target Project ROI tidak boleh lebih rendah dari minimum Project ROI.")
+            st.stop()
+        if max_days < target_days:
+            st.error("Batas maksimum durasi tidak boleh lebih pendek dari target ideal.")
+            st.stop()
+        updated = {"buyer_auction_fee_pct":buyer_fee,"bphtb_rate_pct":bphtb_rate,"npoptkp":npoptkp,"bphtb_basis_mode":basis_mode,"bpn_pnbp_cost":bpn,"roya_cost":roya,"other_acquisition_admin":other_admin,"acquisition_notary_ppat_fee":notary_buy,"seller_final_tax_pct":pph,"seller_agent_pct":agent,"seller_ajb_ppat_pct":ajb,"seller_misc_fixed":misc,"monthly_holding_cost":holding,"renovation_contingency_pct":contingency,"hidden_condition_reserve_pct":hidden_reserve,"negotiation_discount_pct":negotiation,"quick_sale_discount_pct":quick_sale,"minimum_roi_pct":min_roi,"mid_roi_pct":mid_roi,"minimum_net_profit":min_profit,"target_holding_days":target_days,"maximum_holding_days":max_days,"investment_policy_version":"KAYNA_FLIP_POLICY_V1","njop_market_weight_pct":njop_market_weight}
         st.session_state.rules_local.update(updated)
         upsert_record("RULES_CONFIG", "rule_key", {"rule_key":"GLOBAL","value":updated,"updated_at":iso_now(),"source_note":"User-configured assumptions; verify by property jurisdiction/transaction."})
         log_event("RULES", "GLOBAL", "UPDATED", updated); st.success("Rules tersimpan."); st.rerun()

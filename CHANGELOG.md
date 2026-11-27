@@ -1,3 +1,15 @@
+## V1.0.22 — Kayna Flip Underwriting Policy & Time-Adjusted Returns
+
+- Set Kayna underwriting defaults to minimum all-in Project ROI 20%, target ROI 30%, minimum net profit Rp50 million, ideal holding period 90 days, and maximum holding period 180 days; profit above the target ROI is not capped.
+- Maximum-bid solver now requires all three economic gates at the same time: all-in Project ROI, minimum net profit, and maximum projected holding period. Missing duration cannot pass as a zero-day project.
+- Base/Upper ARV maximum-bid outputs are sensitivity references; Quick Sale / conservative ARV remains the actionable hard-cap basis.
+- Project ROI now uses net profit divided by total all-in cost including selling transaction costs. Pre-sale-capital ROI remains a separately labelled diagnostic.
+- Added estimated annualized ROI equivalent for projections, explicitly distinguished from actual XIRR. Actual XIRR is calculated only from complete dated cashflows and reconciled selling costs.
+- Separated primary/developer listings from the secondary/resale ARV pool when secondary evidence exists; primary offers remain competitive-market context. Promotion value is deducted only when its cash-equivalent amount is verified. Duplicate physical properties can be excluded by underlying property ID.
+- Improved bidding tier explanations so ROI, minimum profit, funding and duration gates are all visible; 91–180 day projects receive a target-period warning, while >180 days fails underwriting.
+- Preserved custom app UI, Google Sheets tabs/headers, cached reads and existing database records.
+- Regression suite: 218 passed; Python compile check passed.
+
 ## [1.0.21] - 2026-11-25
 
 ### Changed

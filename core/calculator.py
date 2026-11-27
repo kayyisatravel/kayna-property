@@ -47,7 +47,14 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
         renovation * hidden_condition_reserve_pct / 100
         if survey.get("interior_inspected") is False else 0.0
     )
+    # Underwriting uses a conservative sequential phase estimate from the
+    # post-win/settlement project phases through sale closing. The actual
+    # auction-deposit cashflow date is tracked separately for XIRR. One planning
+    # month is standardized as 30 calendar days for the 90/180-day policy.
     hold_months = sum(to_float(v) for v in [survey.get("possession_months"), costs.get("legal_delay_months"), costs.get("renovation_months"), costs.get("selling_months")])
+    projected_holding_days = int(round(hold_months * 30.0))
+    target_holding_days = int(to_float(rules.get("target_holding_days", 90), 90))
+    maximum_holding_days = int(to_float(rules.get("maximum_holding_days", 180), 180))
     holding = hold_months * to_float(costs.get("monthly_holding_cost", rules.get("monthly_holding_cost", 1_000_000)))
     other_before_sale = to_float(costs.get("other_presale_cost")) + to_float(costs.get("marketing_cost"))
     acquisition = p + buyer_fee + bphtb + legal
@@ -65,20 +72,33 @@ def calculate_project(bid_price: float, exit_price: float, inputs: dict[str, Any
         selling = pph + agent + ajb + misc
         net_proceeds = sale - selling
         profit = net_proceeds - capital_before_sale
-        roi = (profit / capital_before_sale * 100) if capital_before_sale > 0 else None
+        total_cost_including_selling = capital_before_sale + selling
+        # Net project ROI uses the complete cost base, including taxes and
+        # transaction expenses paid at sale. Keep the pre-sale-capital ratio as
+        # a separate diagnostic so older comparisons remain explainable.
+        roi_pre_sale_capital = (profit / capital_before_sale * 100) if capital_before_sale > 0 else None
+        roi = (profit / total_cost_including_selling * 100) if total_cost_including_selling > 0 else None
         annualized = ((1 + roi / 100) ** (12 / hold_months) - 1) * 100 if roi is not None and roi > -100 and hold_months > 0 else None
+    if sale is None:
+        total_cost_including_selling = None
+        roi_pre_sale_capital = None
     return {
         "bid_price": p, "exit_price": sale, "buyer_auction_fee": buyer_fee, "bphtb_basis": bphtb_base, "bphtb": bphtb,
         "legal_bpn_cost": legal, **legal_breakdown,
         "acquisition_cost": acquisition, "possession_cost": possession, "renovation_cost": renovation,
         "renovation_contingency": contingency, "hidden_condition_reserve": hidden_condition_reserve,
         "hidden_condition_reserve_pct": hidden_condition_reserve_pct if survey.get("interior_inspected") is False else 0.0,
-        "holding_months": hold_months, "holding_cost": holding,
+        "holding_months": hold_months, "projected_holding_days": projected_holding_days,
+        "target_holding_days": target_holding_days, "maximum_holding_days": maximum_holding_days,
+        "within_target_holding_period": projected_holding_days <= target_holding_days if projected_holding_days > 0 else None,
+        "within_maximum_holding_period": projected_holding_days <= maximum_holding_days if projected_holding_days > 0 else None,
+        "holding_cost": holding,
         "other_presale_cost": other_before_sale, "capital_before_sale": capital_before_sale,
         "possession_risk_reserve": possession_risk_reserve, "general_risk_reserve": general_risk_reserve,
         "cash_requirement_including_reserve": cash_requirement_including_reserve,
         "seller_final_tax": pph, "seller_agent": agent, "seller_ajb_ppat": ajb, "seller_misc": misc,
         "selling_cost": selling, "net_proceeds": net_proceeds, "net_profit": profit, "roi_pct": roi,
+        "roi_pre_sale_capital_pct": roi_pre_sale_capital,
         "annualized_roi_pct": annualized, "total_cost_including_selling": capital_before_sale + selling if selling is not None else None,
         "marketing_cost": max(0.0, to_float(costs.get("marketing_cost"))),
         "other_presale_cost_only": max(0.0, to_float(costs.get("other_presale_cost"))),
