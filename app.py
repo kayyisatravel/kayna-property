@@ -417,6 +417,35 @@ def set_default(key: str, value: Any):
     if key not in st.session_state: st.session_state[key] = value
 
 
+# Action widgets are transient controls, not form values. The step-state helper
+# persists `na_*` values between steps, so explicitly keep button states out of
+# that payload. Restoring a saved st.button key can raise
+# StreamlitValueAssignmentNotAllowedError when the button is rendered again.
+_ANALYSIS_ACTION_WIDGET_KEYS = frozenset({
+    "na_go_step_2",
+    "na_market_ai_review",
+    "na_generate_rab",
+    "na_add_risk_preset",
+    "na_back_step_1",
+    "na_go_step_3",
+    "na_apply_market_ai",
+    "na_fill_capture_dates",
+    "na_confirm_url_scope",
+    "na_back_step_2",
+    "na_go_step_4",
+    "na_back_step_3",
+    "na_run_underwriting",
+})
+
+
+def _strip_analysis_action_widget_state() -> None:
+    """Remove transient button values from the saved multi-step form payload."""
+    saved = st.session_state.get("_na_persisted_form_state")
+    if isinstance(saved, dict):
+        for widget_key in _ANALYSIS_ACTION_WIDGET_KEYS:
+            saved.pop(widget_key, None)
+
+
 def _persist_and_go_analysis_step(step: int) -> None:
     """Save current step values in session state, then move to the next step.
 
@@ -424,7 +453,8 @@ def _persist_and_go_analysis_step(step: int) -> None:
     state when that widget is not rendered on the next rerun, so copy the files
     into a non-widget session-state payload before leaving Step 2. This keeps
     the existing Step-2 uploader intact while allowing Step 4/RAB and the save
-    routine to access the same survey photos safely.
+    routine to access the same survey photos safely. Button states are excluded
+    because they are transient actions and cannot be restored as form values.
     """
     if safe_int(step, 1) >= 3:
         survey_photos = st.session_state.get("na_survey_photos") or []
@@ -440,6 +470,7 @@ def _persist_and_go_analysis_step(step: int) -> None:
         elif "na_survey_photo_payloads" not in st.session_state:
             st.session_state["na_survey_photo_payloads"] = []
     persist_analysis_step_state(st.session_state, step)
+    _strip_analysis_action_widget_state()
 
 
 def _get_survey_photo_payloads() -> list[dict[str, Any]]:
@@ -448,7 +479,11 @@ def _get_survey_photo_payloads() -> list[dict[str, Any]]:
 
 
 def _restore_analysis_form_state() -> None:
+    # Clean any action-button values left by older app sessions before the
+    # generic form-state restoration gets a chance to rehydrate them.
+    _strip_analysis_action_widget_state()
     restore_analysis_step_state(st.session_state)
+    _strip_analysis_action_widget_state()
 
 
 def _indonesian_date_label(value: Any) -> str:
