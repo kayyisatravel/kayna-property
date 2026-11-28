@@ -199,9 +199,9 @@ def test_comparable_and_bid_tables_have_compact_v118_layout_and_numeric_first_co
     snapshot = sample_snapshot()
     doc = Document(BytesIO(build_analysis_docx(snapshot)))
     tables = {tuple(cell.text for cell in table.rows[0].cells): table for table in doc.tables if table.rows}
-    comparable_header = ("Alamat lengkap", "Harga penawaran", "LT / LB (m²)", "URL / sumber")
+    comparable_header = ("Alamat lengkap", "Harga penawaran", "LT / LB (m²)", "Rp/m² LB", "Rp/m² LT", "URL / sumber")
     assert comparable_header in tables
-    assert len(tables[comparable_header].rows[0].cells) == 4
+    assert len(tables[comparable_header].rows[0].cells) == 6
     scenario_headers = ("Komponen", "Limit · 150,0", "Tengah · 160,0", "Atas · 170,0")
     assert scenario_headers in tables
     for header in [scenario_headers]:

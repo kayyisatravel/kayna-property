@@ -1,3 +1,12 @@
+# Changelog
+
+## 1.0.26 — 2026-11-28
+- Combined Investment Memo & AI Consistency (V1.0.25.3) and Financial Stress Test & BEP (V1.0.26).
+- Added Python-calculated break-even exit price, ROI hurdle exit prices, maximum holding tolerance, and four stress scenarios.
+- Aligned Gemini prompt with Python scenario IDs and included portfolio context and price-per-m² comparable metrics.
+- Added price-per-m² indicators to Word/Markdown memo, corrected chapter numbering, and added direct PDF export.
+- Clarified incremental Risk Register reserves versus RAB/hidden-condition reserves.
+
 ## [1.0.25.2.1] - 2026-11-28
 
 ### Fixed
@@ -280,7 +289,6 @@
 - `pytest -q`: 136 passed.
 - Live Google Sheets, Streamlit Cloud and Gemini API calls were not run in this environment.
 
-# Changelog
 
 ## [1.0.12] - 2026-11-21
 

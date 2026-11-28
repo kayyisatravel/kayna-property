@@ -1,0 +1,28 @@
+PFMS V1.0.26 COMBINED RELEASE PATCH MANIFEST
+Base version: V1.0.25.2.1
+Target version: V1.0.26
+Scope: V1.0.25.3 Investment Memo & AI Consistency + V1.0.26 Financial Stress Test & BEP
+
+Modified / added files:
+CHANGELOG.md
+PFMS_V1.0.26_PATCH_MANIFEST.txt
+PFMS_V1.0.26_PATCH_NOTES.md
+PFMS_V1.0.26_RELEASE_GUIDE.md
+README.md
+app.py
+config.py
+core/feasibility.py
+core/stress_test.py
+core/underwriting.py
+docs/FINANCIAL_STRESS_TEST_BEP_V1.0.26.md
+docs/INVESTMENT_MEMO_AI_CONSISTENCY_V1.0.25.3.md
+reports/report_builder.py
+requirements.txt
+services/gemini_parser.py
+tests/test_v119_investment_memorandum.py
+tests/test_v124_static_app_safety.py
+tests/test_v126_financial_stress_and_memo.py
+
+No Google Sheets tab/header/schema migration is included.
+No .streamlit/secrets.toml is included or overwritten. Keep the deployed secret file.
+The patch is an overlay: extract into the repository root and preserve paths.

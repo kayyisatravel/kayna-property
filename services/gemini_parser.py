@@ -804,16 +804,28 @@ def build_ai_feasibility_brief(api_key: str, model: str, snapshot: dict[str, Any
     # verified by the language model.
     comparable_rows = []
     for row in list(market.get("valid") or [])[:15]:
-        comparable_rows.append({key: row.get(key) for key in (
+        observation = {key: row.get(key) for key in (
             "name", "address", "price", "negotiated_price", "price_type",
             "land_area", "building_area", "condition", "source_platforms",
             "source_url", "source_url_scope", "date_found", "listing_date",
             "distance_km", "similarity_score", "proximity_score",
             "market_segment", "missing_quality_fields",
-        ) if row.get(key) not in (None, "", [])})
+        ) if row.get(key) not in (None, "", [])}
+        price = to_float(row.get("negotiated_price") or row.get("price"))
+        land_area = to_float(row.get("land_area"))
+        building_area = to_float(row.get("building_area"))
+        observation["ask_or_adjusted_price_per_sqm_land"] = round(price / land_area) if price > 0 and land_area > 0 else None
+        observation["ask_or_adjusted_price_per_sqm_building"] = round(price / building_area) if price > 0 and building_area > 0 else None
+        comparable_rows.append(observation)
     liquidity = snapshot.get("liquidity", {}) or {}
     compact = {
         "property": snapshot.get("property", {}),
+        "subject_unit_metrics": {
+            "land_area_sqm": to_float((snapshot.get("property") or {}).get("land_area")),
+            "building_area_sqm": to_float((snapshot.get("property") or {}).get("building_area")),
+            "limit_price_per_sqm_land": round(to_float((snapshot.get("property") or {}).get("auction_limit")) / to_float((snapshot.get("property") or {}).get("land_area"))) if to_float((snapshot.get("property") or {}).get("land_area")) > 0 else None,
+            "limit_price_per_sqm_building": round(to_float((snapshot.get("property") or {}).get("auction_limit")) / to_float((snapshot.get("property") or {}).get("building_area"))) if to_float((snapshot.get("property") or {}).get("building_area")) > 0 else None,
+        },
         "survey": snapshot.get("survey", {}),
         "legal": snapshot.get("legal", {}),
         "owner_valuation": snapshot.get("owner_valuation", {}),
@@ -836,7 +848,13 @@ def build_ai_feasibility_brief(api_key: str, model: str, snapshot: dict[str, Any
         "costs": snapshot.get("costs", {}),
         "at_limit_python_result": at_limit,
         "scenario_results_python": snapshot.get("feasibility_scenarios", []),
+        "financial_stress_test_python": snapshot.get("financial_stress_test", {}),
         "mao": snapshot.get("mao", {}),
+        "portfolio_context": {
+            "as_of": (snapshot.get("portfolio_context") or {}).get("as_of"),
+            "active_projects": (snapshot.get("portfolio_context") or {}).get("active_projects", [])[:15],
+            "completed_projects": (snapshot.get("portfolio_context") or {}).get("completed_projects", [])[:15],
+        },
         "risk_register": snapshot.get("risk_register", []),
         "risk_summary_python": snapshot.get("risk_summary", {}),
         "funding": snapshot.get("funding", {}),
@@ -860,7 +878,13 @@ def build_ai_feasibility_brief(api_key: str, model: str, snapshot: dict[str, Any
         "Jangan mengarang data pasar, transaksi, kondisi legal/fisik, "
         "atau angka. Jangan menghitung ulang angka keuangan; gunakan nilai Python apa adanya. Bila angka tidak ada, tulis "
         "'belum tersedia'. Analisis kelebihan, friksi yang bisa diberi harga, risiko yang tidak dapat dimitigasi, skenario "
-        "cepat/moderat/tekanan, sensitivitas, strategi MAO/walk-away, dan pilihan Owner: GO, CONDITIONAL GO, HOLD, SKIP. "
+        "cepat/moderat/tekanan, stress-test/BEP, sensitivitas, strategi MAO/walk-away, dan pilihan Owner: GO, CONDITIONAL GO, HOLD, SKIP. "
+        "PENTING: scenario_results_python adalah sumber otoritatif untuk label Cepat/Moderat/Tekanan; jangan menukar angka antarbaris. "
+        "financial_stress_test_python adalah sumber otoritatif untuk BEP, exit price hurdle, holding tolerance, dan skenario downside. "
+        "Tingkat valuasi Konservatif/Dasar/Optimistis bukan nama skenario proyek. Jangan menghitung ulang angka. Jika menyebut angka, salin persis dari field Python dan sebutkan label skenarionya; lebih baik narasi menjelaskan implikasi dan merujuk tabel Python. "
+        "Gunakan portfolio_context untuk menilai kas yang terikat, komitmen, proyek aktif, dan rekam jejak; jangan menyatakan dana proyek aktif tersedia kembali kecuali ada tanggal realisasi yang tercatat. "
+        "Risk Register cost_reserve adalah buffer kas tambahan. Bandingkan deskripsi risiko dengan contingency renovasi dan hidden-condition reserve; bila ruang lingkupnya sama, tandai potensi double counting dan minta Owner mengonfirmasi alokasi, jangan menjumlahkannya seolah-olah biaya aktual. Cadangan yang belum terpakai tidak sama dengan biaya proyek aktual. "
+        "Untuk analisis price per m², bedakan harga penawaran/adjusted per m² tanah dan bangunan; keunggulan luas bangunan adalah value driver, bukan uplift ARV otomatis. "
         "Jelaskan bahwa status referensi sistem bukan keputusan Owner dan Bid Readiness berbeda dari daya tarik investasi. "
         "Jika SKPT/KPKNL ditandai sudah diperiksa, perlakukan sebagai verifikasi yang dinyatakan Owner, namun jangan "
         "menyimpulkan jaminan absolut tidak ada gugatan. Jangan mendorong bidding jika hard stop yang telah dikonfirmasi. "

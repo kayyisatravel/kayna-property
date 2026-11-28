@@ -6,6 +6,7 @@ import re
 from typing import Any
 from zoneinfo import ZoneInfo
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape
 
 from core.utils import idr, pct, to_float
 from core.renovation_engine import rab_item_is_in_scope, rab_row_subtotals, summarize_rab_scope_totals
@@ -86,6 +87,31 @@ def _idr_plain(value: Any) -> str:
     if value in (None, ""):
         return "—"
     return f"{to_float(value):,.0f}".replace(",", ".")
+
+
+def _price_per_sqm(price: Any, area: Any) -> str:
+    amount = to_float(price)
+    size = to_float(area)
+    if amount <= 0 or size <= 0:
+        return "—"
+    return _rp_juta(amount / size) + " jt/m²"
+
+
+def _financial_stress_rows(snapshot: dict[str, Any]) -> list[list[str]]:
+    stress = snapshot.get("financial_stress_test") if isinstance(snapshot.get("financial_stress_test"), dict) else {}
+    rows: list[list[str]] = []
+    for item in stress.get("scenarios", []) or []:
+        rows.append([
+            str(item.get("scenario") or "—"),
+            _rp_juta(item.get("exit_price")),
+            f"{to_float(item.get('sale_discount_pct')):.0f}%",
+            f"+{to_float(item.get('renovation_overrun_pct')):.0f}%",
+            f"{to_float(item.get('holding_months')):.1f}",
+            _rp_juta(item.get("total_cost_including_selling")),
+            _rp_juta(item.get("net_profit")),
+            pct(item.get("roi_pct")),
+        ])
+    return rows
 
 
 def _source_label(comp: dict[str, Any]) -> str:
@@ -278,22 +304,25 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
         "## 3. Penilaian Pasar",
         f"- Pembanding valid: {market.get('valid_count', 0)}", f"- Indeks kualitas data: {market.get('confidence', '—')}/100",
         f"- ARV konservatif: {idr(market.get('conservative_exit'))}", f"- ARV dasar: {idr(market.get('base_exit'))}",
-        f"- ARV optimistis: {idr(market.get('optimistic_exit'))}", "",
+        f"- ARV optimistis: {idr(market.get('optimistic_exit'))}",
+        f"- Limit per m² tanah: {_price_per_sqm(p.get('auction_limit'), p.get('land_area'))}",
+        f"- Limit per m² bangunan: {_price_per_sqm(p.get('auction_limit'), p.get('building_area'))}", "",
     ]
     comparables = _as_rows(market.get("valid") or snapshot.get("comparables"))
     if comparables:
-        lines += ["### Daftar Pembanding", "| Alamat lengkap | Harga penawaran | LT/LB (m²) | URL / sumber |", "|---|---:|---:|---|"]
+        lines += ["### Daftar Pembanding dan Indikator Harga per m²", "| Alamat lengkap | Harga penawaran | LT/LB (m²) | Harga/m² LB | Harga/m² LT | URL / sumber |", "|---|---:|---:|---:|---:|---|"]
         for comp in comparables[:20]:
             address = comp.get("address") or comp.get("full_address") or comp.get("location") or comp.get("name") or "Alamat tidak dicantumkan"
             source = _source_label(comp)
-            lines.append(f"| {address} | {idr(comp.get('price'))} | {comp.get('land_area', '—')}/{comp.get('building_area', '—')} | {source} |")
+            lines.append(f"| {address} | {idr(comp.get('price'))} | {comp.get('land_area', '—')}/{comp.get('building_area', '—')} | {_price_per_sqm(comp.get('negotiated_price') or comp.get('price'), comp.get('building_area'))} | {_price_per_sqm(comp.get('negotiated_price') or comp.get('price'), comp.get('land_area'))} | {source} |")
+        lines.append("Harga/m² memakai asking/adjusted price sesuai field yang tersedia, bukan harga transaksi terverifikasi. Perbedaan luas adalah indikator value driver, bukan uplift ARV otomatis.")
         lines.append("")
 
     lines += [""]
     lines += _matrix_markdown("4. Rincian Total Modal per Level Bidding", scenarios, _capital_matrix(scenarios))
     lines += ["", "Nilai modal merinci biaya dari harga bid hingga tahap pra-penjualan. Biaya penjualan belum dimasukkan ke total modal pra-penjualan.", ""]
     lines += _matrix_markdown("5. Kebutuhan Kas dan Cadangan Risiko", scenarios, _cash_matrix(snapshot, scenarios))
-    lines += ["", "Cadangan risiko merupakan kebutuhan likuiditas dan tidak otomatis menjadi biaya aktual. Uang jaminan adalah kebutuhan kas di muka dan tidak ditambahkan lagi ke total modal karena diperhitungkan dalam pelunasan harga lelang.", ""]
+    lines += ["", "Cadangan Risk Register diperlakukan sebagai buffer tambahan di luar contingency RAB/hidden-condition reserve; Owner perlu memastikan tidak ada lingkup risiko yang sama dibiayai dua kali. Cadangan yang belum terpakai tidak otomatis menjadi biaya aktual. Uang jaminan adalah kebutuhan kas di muka dan tidak ditambahkan lagi ke total modal karena diperhitungkan dalam pelunasan harga lelang.", ""]
     lines += _matrix_markdown("6. Biaya Penjualan dan Hasil Bersih", scenarios, _sales_matrix(scenarios))
     lines += ["", "Nilai Penjualan bersih adalah estimasi harga penjualan setelah dikurangi biaya penjualan; profit bersih masih mengurangi total modal pra-penjualan.", ""]
     lines += ["## 7. Strategi Penawaran", "| Bid / ceiling (Rp juta) | Target ROI | ROI hasil simulasi | Catatan |", "|---:|---:|---:|---|"]
@@ -304,7 +333,32 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     walk = bid.get("walk_away_from")
     lines.append(f"| {_rp_juta(walk) if walk is not None else '—'} | — | — | Batas berhenti: {bid.get('walk_away_reason', '—')} |")
 
-    lines += ["", "## 8. RAB Ringkas dan Durasi per Pekerjaan"]
+    stress = snapshot.get("financial_stress_test") if isinstance(snapshot.get("financial_stress_test"), dict) else {}
+    lines += ["", "## 8. Financial Stress Test dan Break-Even Point"]
+    if stress.get("available"):
+        tolerance = stress.get("max_holding_tolerance") or {}
+        tolerance_status = tolerance.get("status")
+        tolerance_label = (
+            f">= {to_float(tolerance.get('months')):.1f} bulan (batas pencarian)" if tolerance_status == "AT_LEAST_SEARCH_CAP"
+            else f"{to_float(tolerance.get('months')):.1f} bulan" if tolerance.get("months") is not None
+            else "Belum ada nilai exit konservatif" if tolerance_status == "NO_EXIT_VALUE"
+            else "Tidak mencapai ambang pada durasi minimum" if tolerance_status == "BELOW_HURDLE_AT_MINIMUM_DURATION"
+            else "Belum dapat dihitung"
+        )
+        lines += [
+            f"- Break-even exit price (profit = 0): {idr(stress.get('break_even_exit_price'))}",
+            f"- Exit price untuk ROI minimum {to_float(stress.get('minimum_roi_pct')):.1f}%: {idr(stress.get('exit_price_for_minimum_roi'))}",
+            f"- Exit price untuk ROI GO {to_float(stress.get('go_roi_pct')):.1f}%: {idr(stress.get('exit_price_for_go_roi'))}",
+            f"- Maximum holding tolerance pada exit konservatif: {tolerance_label}",
+            "| Skenario | Exit price (Rp jt) | Diskon | Overrun RAB | Holding (bln) | Total biaya incl. jual | Profit | ROI |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+        for row in _financial_stress_rows(snapshot):
+            lines.append("| " + " | ".join(row) + " |")
+        lines.append("Break-even dan stress-test adalah hasil model deterministik pada input saat ini; bukan jaminan bahwa aset dapat dijual pada harga tersebut. Cadangan kas yang belum terpakai tidak otomatis dianggap biaya.")
+    else:
+        lines.append(str(stress.get("reason") or "Break-even belum tersedia karena nilai exit atau harga bid belum tersedia."))
+    lines += ["", "## 9. RAB Ringkas dan Durasi per Pekerjaan"]
     lines += ["| Kelompok | Pekerjaan | Volume | Harga satuan | Subtotal dasar | Durasi C/D/K (hari kerja) |", "|---|---|---:|---:|---:|---:|"]
     for row in rab_rows[:80]:
         sub = rab_row_subtotals(row); duration = estimate_item_duration(row)
@@ -321,7 +375,7 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
     else:
         lines.append("Durasi total belum dapat dihitung karena volume pekerjaan belum tersedia.")
 
-    lines += ["", "## 9. Risk Register: Risiko dan Mitigasi"]
+    lines += ["", "## 10. Risk Register: Risiko dan Mitigasi"]
     risks = _as_rows(snapshot.get("risk_register"))
     if risks:
         lines += ["| Risiko | Probabilitas/Dampak | Cadangan | Mitigasi |", "|---|---:|---:|---|"]
@@ -329,12 +383,12 @@ def build_analysis_markdown(snapshot: dict[str, Any]) -> str:
             lines.append(f"| {risk.get('risk_description') or '—'} | {risk.get('probability_1_5', '—')}/{risk.get('impact_1_5', '—')} | {idr(risk.get('cost_reserve'))} | {risk.get('mitigation') or '—'} |")
     else:
         lines.append("Tidak ada risiko yang dicatat pada snapshot.")
-    lines += ["", "## 10. Blocker dan Peringatan"]
+    lines += ["", "## 11. Blocker dan Peringatan"]
     lines += [f"- **Blocker:** {x}" for x in decision.get("blockers", [])] or ["- Tidak ada blocker utama yang tercatat."]
     lines += [f"- **Peringatan:** {x}" for x in decision.get("warnings", [])] or ["- Tidak ada peringatan tambahan."]
     brief = snapshot.get("ai_feasibility_brief") if isinstance(snapshot.get("ai_feasibility_brief"), dict) else {}
     if brief:
-        lines += ["", "## 10. Pertimbangan Analis Senior — AI Feasibility Co-Pilot", str(brief.get("executive_summary") or "")]
+        lines += ["", "## 12. Pertimbangan Analis Senior — AI Feasibility Co-Pilot", str(brief.get("executive_summary") or "")]
         for label, key in (("Kelayakan finansial", "financial_assessment"), ("Pasar dan valuasi", "market_assessment"), ("Eksekusi", "execution_assessment")):
             if brief.get(key): lines += [f"### {label}", str(brief[key])]
         for label, key in (("Skenario", "scenario_assessment"), ("Risiko", "key_risks"), ("Mitigasi", "mitigations"), ("Asumsi yang perlu dikonfirmasi", "assumptions_to_validate"), ("Opsi Owner", "owner_options")):
@@ -352,7 +406,7 @@ def _append_portfolio_markdown(lines: list[str], portfolio: Any) -> None:
     active = _as_rows(portfolio.get("active_projects")); completed = _as_rows(portfolio.get("completed_projects"))
     if not active and not completed:
         return
-    lines += ["", "## 11. Portofolio dan Rekam Jejak Kayna Property"]
+    lines += ["", "## 13. Portofolio dan Rekam Jejak Kayna Property"]
     if portfolio.get("as_of"):
         lines.append(f"Posisi data per {_fmt_wib(portfolio.get('as_of'))}. Angka mencerminkan data yang telah dicatat di sistem.")
     if active:
@@ -385,7 +439,7 @@ def _portfolio_sections(doc: Any, portfolio: Any, add_table: Any) -> None:
     active = _as_rows(portfolio.get("active_projects")); completed = _as_rows(portfolio.get("completed_projects"))
     if not active and not completed:
         return
-    doc.add_heading("10. Portofolio dan Rekam Jejak Kayna Property", level=1)
+    doc.add_heading("13. Portofolio dan Rekam Jejak Kayna Property", level=1)
     if portfolio.get("as_of"):
         doc.add_paragraph(f"Posisi data per {_fmt_wib(portfolio.get('as_of'))}. Angka mencerminkan data yang telah dicatat di sistem.")
     if active:
@@ -574,26 +628,29 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     add_table(["Indikator", "Nilai"], [
         ["Pembanding valid", market.get("valid_count", 0)], ["Indeks kualitas data", f"{market.get('confidence', '—')}/100"],
         ["ARV konservatif", idr(market.get("conservative_exit"))], ["ARV dasar", idr(market.get("base_exit"))], ["ARV optimistis", idr(market.get("optimistic_exit"))],
+        ["Limit per m² tanah", _price_per_sqm(p.get("auction_limit"), p.get("land_area"))], ["Limit per m² bangunan", _price_per_sqm(p.get("auction_limit"), p.get("building_area"))],
     ], widths=[3.4, 3.4])
     comparables = _as_rows(market.get("valid") or snapshot.get("comparables"))
     if comparables:
-        doc.add_heading("Daftar Pembanding", level=2)
+        doc.add_heading("Daftar Pembanding dan Indikator Harga per m²", level=2)
         comp_rows = []
         for comp in comparables[:20]:
-            address = str(comp.get("address") or comp.get("full_address") or comp.get("location") or "Alamat lengkap belum dicantumkan")
+            address = str(comp.get("address") or comp.get("full_address") or comp.get("location") or comp.get("name") or "Alamat lengkap belum dicantumkan")
             source = _source_label(comp)
             comp_rows.append([
                 address, idr(comp.get("price")),
                 f"{comp.get('land_area') or '—'} / {comp.get('building_area') or '—'}",
+                _price_per_sqm(comp.get("negotiated_price") or comp.get("price"), comp.get("building_area")),
+                _price_per_sqm(comp.get("negotiated_price") or comp.get("price"), comp.get("land_area")),
                 source,
             ])
-        add_table(["Alamat lengkap", "Harga penawaran", "LT / LB (m²)", "URL / sumber"], comp_rows, widths=[3.05, 1.35, .85, 1.35])
+        add_table(["Alamat lengkap", "Harga penawaran", "LT / LB (m²)", "Rp/m² LB", "Rp/m² LT", "URL / sumber"], comp_rows, widths=[2.15, .9, .72, .8, .8, 1.25])
+        doc.add_paragraph("Harga/m² dihitung dari asking/adjusted price dan luas yang diinput. Ini indikator pembanding, bukan harga transaksi terverifikasi atau penyesuaian ARV otomatis.")
 
     scenario_headers = ["Komponen"] + [_scenario_header(sc) for sc in scenarios]
     matrix_widths = [2.65] + [1.35] * len(scenarios)
 
     heading = doc.add_heading("3. Rincian Total Modal per Level Bidding", level=1)
-    heading.paragraph_format.page_break_before = True
     capital_rows = _capital_matrix(scenarios)
     add_table(scenario_headers, capital_rows, widths=matrix_widths, total_last=True)
     doc.add_paragraph("Nilai modal merinci biaya dari harga bid sampai tahap pra-penjualan. Biaya penjualan belum dimasukkan ke total modal pra-penjualan. Seluruh angka dinyatakan dalam Rp juta.")
@@ -601,7 +658,7 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     doc.add_heading("4. Kebutuhan Kas dan Cadangan Risiko", level=1)
     cash_rows = _cash_matrix(snapshot, scenarios)
     add_table(scenario_headers, cash_rows, widths=matrix_widths)
-    doc.add_paragraph("Cadangan risiko adalah kebutuhan likuiditas dan tidak otomatis menjadi biaya aktual. Uang jaminan merupakan kebutuhan kas di muka dan tidak ditambahkan lagi ke total modal karena diperhitungkan dalam pelunasan harga lelang.")
+    doc.add_paragraph("Cadangan risiko dari Risk Register bersifat tambahan di luar contingency RAB dan cadangan kondisi tersembunyi; pastikan tidak membiayai lingkup risiko yang sama dua kali. Cadangan yang belum terpakai adalah kebutuhan likuiditas dan tidak otomatis menjadi biaya aktual. Uang jaminan merupakan kebutuhan kas di muka dan tidak ditambahkan lagi ke total modal karena diperhitungkan dalam pelunasan harga lelang.")
 
     doc.add_heading("5. Biaya Penjualan dan Hasil Bersih", level=1)
     sale_rows = _sales_matrix(scenarios)
@@ -620,9 +677,43 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     strategy_rows.append([_rp_juta(bid.get("walk_away_from")) if bid.get("walk_away_from") is not None else "—", "—", "—", f"Batas berhenti: {bid.get('walk_away_reason') or '—'}"])
     add_table(["Bid / ceiling (Rp juta)", "Target ROI", "ROI simulasi", "Catatan"], strategy_rows, widths=[1.3, .9, .9, 3.6])
 
+    stress = snapshot.get("financial_stress_test") if isinstance(snapshot.get("financial_stress_test"), dict) else {}
+    doc.add_heading("7. Financial Stress Test dan Break-Even Point", level=1)
+    if stress.get("available"):
+        tolerance = stress.get("max_holding_tolerance") or {}
+        tolerance_status = tolerance.get("status")
+        tolerance_label = (
+            f">= {to_float(tolerance.get('months')):.1f} bulan (batas pencarian)" if tolerance_status == "AT_LEAST_SEARCH_CAP"
+            else f"{to_float(tolerance.get('months')):.1f} bulan" if tolerance.get("months") is not None
+            else "Belum ada nilai exit konservatif" if tolerance_status == "NO_EXIT_VALUE"
+            else "Tidak mencapai ambang pada durasi minimum" if tolerance_status == "BELOW_HURDLE_AT_MINIMUM_DURATION"
+            else "Belum dapat dihitung"
+        )
+        add_table(["Indikator", "Hasil"], [
+            ["Break-even exit price (profit = 0)", idr(stress.get("break_even_exit_price"))],
+            [f"Exit price untuk ROI {to_float(stress.get('minimum_roi_pct')):.1f}%", idr(stress.get("exit_price_for_minimum_roi"))],
+            [f"Exit price untuk ROI GO {to_float(stress.get('go_roi_pct')):.1f}%", idr(stress.get("exit_price_for_go_roi"))],
+            ["Maximum holding pada exit konservatif", tolerance_label],
+        ], widths=[3.4, 3.4])
+        stress_rows = []
+        for item in stress.get("scenarios", []) or []:
+            stress_rows.append([
+                str(item.get("scenario") or "—"),
+                _rp_juta(item.get("exit_price")),
+                f"{to_float(item.get('sale_discount_pct')):.0f}% / +{to_float(item.get('renovation_overrun_pct')):.0f}% / {to_float(item.get('holding_months')):.1f} bln",
+                _rp_juta(item.get("total_cost_including_selling")),
+                _rp_juta(item.get("net_profit")),
+                pct(item.get("roi_pct")),
+            ])
+        if stress_rows:
+            add_table(["Skenario", "Exit (Rp jt)", "Diskon / overrun / holding", "Total biaya", "Profit", "ROI"], stress_rows, widths=[.95, .8, 1.65, 1.1, 1.0, .6])
+        doc.add_paragraph("Stress-test dan BEP dihitung deterministik dari input saat ini. Cadangan likuiditas yang belum terpakai tidak otomatis menjadi biaya proyek.")
+    else:
+        doc.add_paragraph(str(stress.get("reason") or "BEP belum tersedia karena nilai exit atau harga bid belum tersedia."))
+
     # Start the detailed RAB on a fresh page so its heading and first work rows
     # are not stranded at the foot of the bidding-strategy page.
-    heading = doc.add_heading("7. RAB Ringkas", level=1)
+    heading = doc.add_heading("8. RAB Ringkas", level=1)
     heading.paragraph_format.page_break_before = True
     rab_table_rows = []
     for row in rab_rows[:80]:
@@ -650,7 +741,7 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
         doc.add_paragraph("Rincian item RAB tidak tersedia pada snapshot memo ini.")
 
     schedule = estimate_renovation_duration(rab_rows) if rab_rows else {"available": False}
-    doc.add_heading("8. Estimasi Waktu Renovasi", level=1)
+    doc.add_heading("9. Estimasi Waktu Renovasi", level=1)
     if schedule.get("available"):
         doc.add_paragraph(f"Estimasi durasi total berdasarkan critical path: cepat {schedule['calendar_days']['fast']} hari kalender; dasar {schedule['calendar_days']['base']} hari; konservatif {schedule['calendar_days']['slow']} hari. Asumsi {schedule['working_days_per_week']} hari kerja per minggu dan buffer {schedule['buffer_pct']:.0f}%.")
         add_table(["Tahap", "Cepat (hari kerja)", "Dasar (hari kerja)", "Konservatif (hari kerja)"], [[x["phase"], round(x["fast_days"], 1), round(x["base_days"], 1), round(x["slow_days"], 1)] for x in schedule.get("phases", [])], widths=[3.0, 1.2, 1.2, 1.4])
@@ -658,20 +749,23 @@ def build_analysis_docx(snapshot: dict[str, Any]) -> bytes:
     else:
         doc.add_paragraph("Durasi belum dapat dihitung karena volume pekerjaan belum tersedia.")
 
-    heading = doc.add_heading("9. Risiko dan Mitigasi", level=1)
-    heading.paragraph_format.page_break_before = True
+    heading = doc.add_heading("10. Risiko dan Mitigasi", level=1)
+    risk_items = _as_rows(snapshot.get("risk_register"))
+    if risk_items:
+        add_table(["Risiko", "Probabilitas / Dampak", "Cadangan kas tambahan", "Mitigasi"], [[str(r.get("risk_description") or "Risiko"), f"{r.get('probability_1_5', '—')} / {r.get('impact_1_5', '—')}", idr(r.get("cost_reserve")), str(r.get("mitigation") or "—")] for r in risk_items[:20]], widths=[2.05, 1.0, 1.15, 2.6])
+    doc.add_paragraph("Cadangan Risk Register bersifat tambahan di luar contingency RAB dan cadangan kondisi tersembunyi. Pastikan setiap reserve hanya membiayai lingkup risiko yang berbeda agar tidak terjadi double counting. Cadangan belum terpakai adalah buffer likuiditas, bukan biaya aktual.")
+
+    doc.add_heading("11. Blocker dan Peringatan", level=1)
     for label, values in (("Blocker", decision.get("blockers", [])), ("Peringatan", decision.get("warnings", []))):
         doc.add_heading(label, level=2)
         if values:
             for value in values: doc.add_paragraph(str(value), style="List Bullet")
-        else: doc.add_paragraph("Tidak ada catatan.")
-    risk_items = _as_rows(snapshot.get("risk_register"))
-    if risk_items:
-        add_table(["Risiko", "Probabilitas / Dampak", "Cadangan", "Mitigasi"], [[str(r.get("risk_description") or "Risiko"), f"{r.get('probability_1_5', '—')} / {r.get('impact_1_5', '—')}", idr(r.get("cost_reserve")), str(r.get("mitigation") or "—")] for r in risk_items[:20]], widths=[2.05, 1.0, 1.15, 2.6])
+        else:
+            doc.add_paragraph("Tidak ada catatan.")
 
     brief = snapshot.get("ai_feasibility_brief") if isinstance(snapshot.get("ai_feasibility_brief"), dict) else {}
     if brief:
-        doc.add_heading("10. Pertimbangan Analis Senior — AI Feasibility Co-Pilot", level=1)
+        doc.add_heading("12. Pertimbangan Analis Senior — AI Feasibility Co-Pilot", level=1)
         if brief.get("executive_summary"): doc.add_paragraph(str(brief["executive_summary"]))
         for label, key in (("Kelayakan finansial", "financial_assessment"), ("Pasar dan valuasi", "market_assessment"), ("Eksekusi", "execution_assessment")):
             if brief.get(key):
@@ -716,3 +810,141 @@ def investment_memo_filename(snapshot: dict[str, Any], extension: str = "docx") 
 
 def build_investment_memo_docx(snapshot: dict[str, Any]) -> bytes:
     return build_analysis_docx(snapshot)
+
+
+
+def build_analysis_pdf(snapshot: dict[str, Any]) -> bytes:
+    """Render the same investment memo content as a downloadable PDF.
+
+    The PDF is generated from the exact Markdown memorandum to keep section
+    content and numbering aligned with DOCX/Markdown exports.
+    """
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, LongTable, TableStyle, KeepTogether
+    except Exception as exc:
+        raise RuntimeError("Library reportlab belum tersedia. Tambahkan reportlab pada requirements.txt.") from exc
+
+    markdown = build_analysis_markdown(snapshot)
+    output = BytesIO()
+
+    # Prefer an installed Unicode font for Indonesian punctuation; fall back to
+    # built-in Helvetica if the Streamlit host does not expose DejaVu fonts.
+    regular_font, bold_font = "Helvetica", "Helvetica-Bold"
+    font_pairs = [
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
+    ]
+    for regular_path, bold_path in font_pairs:
+        try:
+            import os
+            if os.path.exists(regular_path) and os.path.exists(bold_path):
+                pdfmetrics.registerFont(TTFont("KaynaSans", regular_path))
+                pdfmetrics.registerFont(TTFont("KaynaSans-Bold", bold_path))
+                regular_font, bold_font = "KaynaSans", "KaynaSans-Bold"
+                break
+        except Exception:
+            continue
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="KaynaTitle", parent=styles["Title"], fontName=bold_font, fontSize=18, leading=22, textColor=colors.HexColor("#172B4D"), alignment=TA_LEFT, spaceAfter=5*mm))
+    styles.add(ParagraphStyle(name="KaynaH1", parent=styles["Heading1"], fontName=bold_font, fontSize=13, leading=16, textColor=colors.HexColor("#172B4D"), spaceBefore=5*mm, spaceAfter=2.5*mm, keepWithNext=True))
+    styles.add(ParagraphStyle(name="KaynaH2", parent=styles["Heading2"], fontName=bold_font, fontSize=11, leading=14, textColor=colors.HexColor("#0F766E"), spaceBefore=3*mm, spaceAfter=1.5*mm, keepWithNext=True))
+    styles.add(ParagraphStyle(name="KaynaBody", parent=styles["BodyText"], fontName=regular_font, fontSize=9.5, leading=13, textColor=colors.HexColor("#172B4D"), spaceAfter=2*mm))
+    styles.add(ParagraphStyle(name="KaynaBullet", parent=styles["BodyText"], fontName=regular_font, fontSize=9.2, leading=12, leftIndent=5*mm, firstLineIndent=-3*mm, spaceAfter=1.2*mm))
+    styles.add(ParagraphStyle(name="KaynaTable", parent=styles["BodyText"], fontName=regular_font, fontSize=7.8, leading=9.6, textColor=colors.HexColor("#172B4D"), spaceAfter=0))
+    styles.add(ParagraphStyle(name="KaynaTableHeader", parent=styles["BodyText"], fontName=bold_font, fontSize=7.9, leading=9.4, textColor=colors.white, spaceAfter=0))
+
+    def md_inline(value: str) -> str:
+        safe = escape(str(value), {'"': "&quot;"})
+        safe = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", safe)
+        safe = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", safe)
+        safe = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<link href="\2" color="#0F766E">\1</link>', safe)
+        return safe
+
+    def split_md_row(line: str) -> list[str]:
+        raw = line.strip().strip("|")
+        return [cell.strip() for cell in raw.split("|")]
+
+    story: list[Any] = []
+    lines = markdown.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            index += 1
+            continue
+        if line.startswith("|"):
+            table_lines = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                table_lines.append(lines[index].strip())
+                index += 1
+            parsed = [split_md_row(item) for item in table_lines]
+            parsed = [row for row in parsed if not all(re.fullmatch(r":?-{2,}:?", cell.replace(" ", "")) for cell in row)]
+            if parsed:
+                width = max(len(row) for row in parsed)
+                data = []
+                for ridx, row in enumerate(parsed):
+                    row = row + [""] * (width - len(row))
+                    style = styles["KaynaTableHeader"] if ridx == 0 else styles["KaynaTable"]
+                    data.append([Paragraph(md_inline(cell), style) for cell in row])
+                avail = A4[0] - 30*mm
+                col_width = avail / max(1, width)
+                table = LongTable(data, colWidths=[col_width] * width, repeatRows=1, hAlign="LEFT")
+                table.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#172B4D")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("GRID", (0, 0), (-1, -1), .35, colors.HexColor("#C9D3DF")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F7FA")]),
+                ]))
+                story.extend([table, Spacer(1, 2*mm)])
+            continue
+        if line.startswith("### "):
+            story.append(Paragraph(md_inline(line[4:]), styles["KaynaH2"]))
+        elif line.startswith("## "):
+            story.append(Paragraph(md_inline(line[3:]), styles["KaynaH1"]))
+        elif line.startswith("# "):
+            story.append(Paragraph(md_inline(line[2:]), styles["KaynaTitle"]))
+        elif line.startswith("- "):
+            story.append(Paragraph("&#8226; " + md_inline(line[2:]), styles["KaynaBullet"]))
+        elif re.fullmatch(r"-{3,}", line):
+            story.append(Spacer(1, 2*mm))
+        else:
+            story.append(Paragraph(md_inline(line), styles["KaynaBody"]))
+        index += 1
+
+    def decorate(canvas: Any, doc: Any) -> None:
+        canvas.saveState()
+        width, height = A4
+        canvas.setStrokeColor(colors.HexColor("#D7DEE8"))
+        canvas.setLineWidth(.5)
+        canvas.line(15*mm, height - 12*mm, width - 15*mm, height - 12*mm)
+        canvas.setFont(bold_font, 7.5)
+        canvas.setFillColor(colors.HexColor("#172B4D"))
+        canvas.drawRightString(width - 15*mm, height - 9*mm, f"{BRAND} | {BRAND_DESCRIPTOR}")
+        canvas.line(15*mm, 12*mm, width - 15*mm, 12*mm)
+        canvas.setFont(regular_font, 7.5)
+        canvas.drawString(15*mm, 8*mm, f"Proposal Investasi Properti | {_fmt_wib(snapshot.get('analyzed_at'))}")
+        canvas.drawRightString(width - 15*mm, 8*mm, f"Halaman {doc.page}")
+        canvas.restoreState()
+
+    document = SimpleDocTemplate(
+        output, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm,
+        topMargin=18*mm, bottomMargin=18*mm,
+        title=f"{DOCUMENT_TITLE} - {_property(snapshot).get('name') or 'Properti Lelang'}",
+        author=BRAND,
+        subject="Feasibility Study Investasi Properti Lelang",
+    )
+    document.build(story, onFirstPage=decorate, onLaterPages=decorate)
+    return output.getvalue()

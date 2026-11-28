@@ -1,3 +1,9 @@
+# KAYNA PROPERTY MANAGEMENT SYSTEM
+
+**Current release: V1.0.26**
+
+This release combines Investment Memo & AI Consistency (V1.0.25.3) with Financial Stress Test & BEP (V1.0.26). Python is the source of financial calculations; Gemini Flash interprets the evidence and portfolio context; the Owner retains final decision authority.
+
 # PFMS V1.0.25.2.1 — Data Editor Runtime Fix & AI Feasibility Co-Pilot
 
 PFMS menyusun studi kelayakan properti lelang dengan tiga peran: Python menghitung biaya/ROI/MAO/skenario secara deterministik; Gemini Flash bertindak sebagai Analis Senior yang menafsirkan trade-off, risiko, blind spot dan opsi; Owner tetap mengambil keputusan final. Status referensi model, Bid Readiness, dan keputusan Owner ditampilkan terpisah.

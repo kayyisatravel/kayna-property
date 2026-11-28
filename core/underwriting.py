@@ -7,6 +7,7 @@ from .decision_engine import evaluate_decision
 from .liquidity import evaluate_funding
 from .risk_engine import summarize_risks
 from .feasibility import build_feasibility_scenarios
+from .stress_test import build_financial_stress_test
 from .renovation_engine import rab_item_is_in_scope
 from .utils import to_float
 
@@ -307,6 +308,17 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
         stress_sale_discount_pct=to_float(scenario_settings.get("stress_sale_discount_pct", 10), 10),
         stress_extra_cost=to_float(scenario_settings.get("stress_extra_cost", 0)),
     )
+    financial_stress_test = build_financial_stress_test(
+        limit, conservative_exit, base_exit, calculation_inputs,
+        minimum_roi_pct=to_float(rules.get("minimum_roi_pct", 15), 15),
+        go_roi_pct=to_float(rules.get("go_minimum_roi_pct", 25), 25),
+        stress_holding_months=to_float(scenario_settings.get("stress_holding_months", 12), 12),
+        stress_sale_discount_pct=to_float(scenario_settings.get("stress_sale_discount_pct", 10), 10),
+        stress_renovation_overrun_pct=to_float(scenario_settings.get("stress_renovation_overrun_pct", 50), 50),
+        stress_extra_cost=to_float(scenario_settings.get("stress_extra_cost", 0)),
+        extreme_holding_months=to_float(scenario_settings.get("extreme_holding_months", 18), 18),
+        extreme_sale_discount_pct=to_float(scenario_settings.get("extreme_sale_discount_pct", 20), 20),
+    )
     return {
         "market": market,
         "at_limit": at_limit,
@@ -318,6 +330,7 @@ def run_underwriting(data: dict[str, Any], liquidity: dict[str, Any], rules: dic
         "eligibility_index_pct": index,
         "calculation_inputs": calculation_inputs,
         "feasibility_scenarios": feasibility_scenarios,
+        "financial_stress_test": financial_stress_test,
         "mao": {
             "rule_of_thumb": mao_rule_of_thumb,
             "is_provisional": bool(market.get("valuation_is_provisional") or not costs.get("cost_estimates_reviewed", False)),

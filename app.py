@@ -41,7 +41,7 @@ from services.comparable_importer import parse_comparable_paste
 from storage.gsheets_db import GoogleSheetsDB, SCHEMA
 from storage.drive_storage import upload_file_to_drive
 from core.renovation_pricing import PRICE_CATALOG_VERSION, PRICE_CATALOG_BASIS, PRICE_CATALOG_REFERENCES, PRICE_CATALOG_ANCHORS
-from reports.report_builder import build_analysis_markdown, build_analysis_docx, property_filename
+from reports.report_builder import build_analysis_markdown, build_analysis_docx, build_analysis_pdf, property_filename
 from reports.portfolio_context import build_portfolio_report_context
 
 st.set_page_config(page_title=APP_NAME, page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
@@ -1157,7 +1157,7 @@ elif page == "New Auction Analysis":
             "risk_description": st.column_config.TextColumn("Risiko / temuan"),
             "probability_1_5": st.column_config.NumberColumn("Kemungkinan (1–5)", min_value=1, max_value=5, step=1),
             "impact_1_5": st.column_config.NumberColumn("Dampak (1–5)", min_value=1, max_value=5, step=1),
-            "cost_reserve": st.column_config.NumberColumn("Cadangan kas (Rp)", min_value=0, format="Rp %.0f"),
+            "cost_reserve": st.column_config.NumberColumn("Cadangan tambahan kas (Rp)", min_value=0, format="Rp %.0f", help="Hanya cadangan tambahan yang belum tercakup dalam contingency RAB atau cadangan kondisi tersembunyi."),
             "critical": st.column_config.CheckboxColumn("Risiko kritis?"),
             "hard_stop_confirmed": st.column_config.CheckboxColumn("Hard stop terverifikasi?", help="Centang hanya untuk risiko fatal yang tidak dapat diterima/tidak dapat dimitigasi, bukan sekadar risiko yang masih perlu ditangani."),
             "mitigation": st.column_config.TextColumn("Mitigasi / tindakan"),
@@ -1167,7 +1167,7 @@ elif page == "New Auction Analysis":
         st.session_state.na_risk_current = risk_edited.to_dict(orient="records")
         st.session_state.na_risk_editor = risk_edited.copy()
         if len(risk_edited):
-            st.caption("Skor risiko dihitung otomatis: kemungkinan × dampak. Risiko kritis yang masih dapat dimitigasi dapat menghasilkan CONDITIONAL GO; hard stop hanya berlaku jika secara eksplisit diverifikasi dan dicentang.")
+            st.caption("Skor risiko dihitung otomatis: kemungkinan × dampak. Kolom Cadangan tambahan kas adalah buffer inkremental di luar contingency RAB dan cadangan kondisi tersembunyi. Bila risiko yang sama sudah tercakup dalam RAB/cadangan lain, jangan alokasikan ulang tanpa alasan; cadangan belum terpakai menambah kebutuhan likuiditas, bukan otomatis menjadi biaya aktual. Risiko kritis yang masih dapat dimitigasi dapat menghasilkan CONDITIONAL GO; hard stop hanya berlaku jika secara eksplisit diverifikasi dan dicentang.")
         risk_signature = hashlib.sha256(safe_json(st.session_state.na_risk_current).encode("utf-8")).hexdigest()
         sync_review_confirmation(st.session_state, "na_risk_reviewed", "na_risk_reviewed_signature", risk_signature)
         st.checkbox("Saya sudah meninjau risiko yang relevan dan mitigasinya; saya memahami bahwa risiko yang belum terselesaikan dapat menahan keputusan GO.", key="na_risk_reviewed")
@@ -1721,6 +1721,13 @@ elif page == "New Auction Analysis":
         with sc2:
             set_default("na_stress_sale_discount_pct", 10.0); st.number_input("Penurunan harga jual skenario tekanan (%)", min_value=0.0, max_value=50.0, step=1.0, key="na_stress_sale_discount_pct")
         set_default("na_stress_extra_cost", 0); st.number_input("Biaya tambahan skenario tekanan (contoh: legal/pengosongan) (Rp)", min_value=0, step=5_000_000, key="na_stress_extra_cost")
+        stress_more1, stress_more2, stress_more3 = st.columns(3)
+        with stress_more1:
+            set_default("na_stress_renovation_overrun_pct", 50.0); st.number_input("Kenaikan biaya renovasi pada stress-test (%)", min_value=0.0, max_value=200.0, step=5.0, key="na_stress_renovation_overrun_pct")
+        with stress_more2:
+            set_default("na_extreme_sale_discount_pct", 20.0); st.number_input("Diskon harga jual skenario ekstrem (%)", min_value=0.0, max_value=70.0, step=5.0, key="na_extreme_sale_discount_pct")
+        with stress_more3:
+            set_default("na_extreme_holding_months", 18.0); st.number_input("Holding period skenario ekstrem (bulan)", min_value=3.0, max_value=60.0, step=1.0, key="na_extreme_holding_months")
         renovation_total = renovation_item_total + to_float(st.session_state.na_renovation_extra)
         in_scope_rab_rows = [r for r in renovation_items if rab_item_is_in_scope(r)]
         unpriced_rab_rows = [r for r in in_scope_rab_rows if r.get("quantity") in (None, "") or to_float(r.get("quantity")) <= 0 or r.get("unit_cost") in (None, "")]
@@ -1849,7 +1856,14 @@ elif page == "New Auction Analysis":
         has_current_ai_review = market_ai_signature_now in {st.session_state.get("na_market_ai_signature"), st.session_state.get("na_market_ai_applied_signature")}
         market_ai_assessment = st.session_state.get("na_market_ai_assessment") if has_current_ai_review else None
         owner_valuation_data = {"fmv_as_is_estimate": to_float(st.session_state.get("na_owner_fmv_as_is")) or None, "arv_estimate": to_float(st.session_state.get("na_owner_arv")) or None, "basis": st.session_state.get("na_owner_valuation_basis", "")}
-        scenario_settings = {"stress_holding_months": st.session_state.get("na_stress_holding_months", 12), "stress_sale_discount_pct": st.session_state.get("na_stress_sale_discount_pct", 10), "stress_extra_cost": st.session_state.get("na_stress_extra_cost", 0)}
+        scenario_settings = {
+            "stress_holding_months": st.session_state.get("na_stress_holding_months", 12),
+            "stress_sale_discount_pct": st.session_state.get("na_stress_sale_discount_pct", 10),
+            "stress_renovation_overrun_pct": st.session_state.get("na_stress_renovation_overrun_pct", 50),
+            "stress_extra_cost": st.session_state.get("na_stress_extra_cost", 0),
+            "extreme_holding_months": st.session_state.get("na_extreme_holding_months", 18),
+            "extreme_sale_discount_pct": st.session_state.get("na_extreme_sale_discount_pct", 20),
+        }
         inputs = {"property": property_data, "survey": survey_data, "legal": legal_data, "costs": costs_data, "comparables": comp_data, "risk_register": risk_data, "risk_reviewed": risk_reviewed, "market_ai_assessment": market_ai_assessment, "owner_valuation": owner_valuation_data, "scenario_settings": scenario_settings}
         result = run_underwriting(inputs, liquidity, rules)
         property_id = st.session_state.loaded_property_id or new_id("PROP")
@@ -1863,6 +1877,7 @@ elif page == "New Auction Analysis":
         # One-click flow: deterministic Python underwriting first, then Gemini
         # interprets the exact snapshot. If Gemini is unavailable, the numeric
         # feasibility study still renders and remains usable.
+        snapshot["portfolio_context"] = build_memo_portfolio_context(snapshot.get("property_id", ""))
         if GEMINI_KEY:
             try:
                 with st.spinner("Gemini Flash sedang menyusun pertimbangan Analis Senior..."):
@@ -2189,6 +2204,41 @@ elif page == "New Auction Analysis":
                 "Profit bersih": st.column_config.NumberColumn(format="Rp %.0f"),
             })
         st.caption("Skenario cepat/moderat/tekanan adalah simulasi deterministik dari input Owner dan hasil pasar yang tersedia. Angka bukan forecast terjamin; ubah asumsi holding, harga exit, allowance, dan biaya untuk menguji sensitivitas.")
+        stress = snap.get("financial_stress_test") or {}
+        st.markdown("### Financial Stress Test & Break-Even Point")
+        if stress.get("available"):
+            be1, be2, be3, be4 = st.columns(4)
+            be1.metric("Break-even exit price", idr(stress.get("break_even_exit_price")), help="Harga jual indikatif ketika net project profit mencapai nol pada limit lelang dan asumsi biaya saat ini.")
+            be2.metric(f"Exit price untuk ROI {to_float(stress.get('minimum_roi_pct')):.0f}%", idr(stress.get("exit_price_for_minimum_roi")))
+            be3.metric(f"Exit price untuk ROI {to_float(stress.get('go_roi_pct')):.0f}%", idr(stress.get("exit_price_for_go_roi")))
+            tolerance = stress.get("max_holding_tolerance") or {}
+            tol_status = tolerance.get("status")
+            tol_label = (
+                f"≥ {to_float(tolerance.get('months')):.1f} bln" if tol_status == "AT_LEAST_SEARCH_CAP"
+                else f"{to_float(tolerance.get('months')):.1f} bln" if tolerance.get("months") is not None
+                else "Belum ada nilai exit" if tol_status == "NO_EXIT_VALUE"
+                else "Di bawah hurdle" if tol_status == "BELOW_HURDLE_AT_MINIMUM_DURATION"
+                else "Belum dapat dihitung"
+            )
+            be4.metric(f"Max holding @ ROI {to_float(stress.get('minimum_roi_pct')):.0f}%", tol_label, help="Menggunakan exit konservatif dan monthly holding cost sesuai input. Jika menunjukkan ≥120 bulan, angka dibatasi pada batas pencarian.")
+            stress_rows = []
+            for row in stress.get("scenarios", []):
+                stress_rows.append({
+                    "Skenario": row.get("scenario"), "Exit price": row.get("exit_price"),
+                    "Diskon jual": f"{to_float(row.get('sale_discount_pct')):.0f}%",
+                    "Overrun renovasi": f"{to_float(row.get('renovation_overrun_pct')):.0f}%",
+                    "Holding (bln)": row.get("holding_months"), "Total biaya incl. jual": row.get("total_cost_including_selling"),
+                    "Profit bersih": row.get("net_profit"), "ROI": f"{to_float(row.get('roi_pct')):.1f}%" if row.get("roi_pct") is not None else "—",
+                })
+            if stress_rows:
+                st.dataframe(pd.DataFrame(stress_rows), use_container_width=True, hide_index=True, column_config={
+                    "Exit price": st.column_config.NumberColumn(format="Rp %.0f"),
+                    "Total biaya incl. jual": st.column_config.NumberColumn(format="Rp %.0f"),
+                    "Profit bersih": st.column_config.NumberColumn(format="Rp %.0f"),
+                })
+            st.caption("Break-even adalah titik impas matematis berdasarkan asumsi model, bukan jaminan likuidasi pada harga tersebut. Maximum holding adalah perkiraan waktu sampai ROI turun ke ambang minimum; hasilnya sensitif terhadap biaya modal bulanan, keterlambatan dan exit price.")
+        else:
+            st.info(stress.get("reason") or "BEP belum tersedia karena harga bid atau nilai exit belum cukup untuk dihitung.")
         st.markdown("### AI Feasibility Co-Pilot (Gemini Flash)")
         st.caption("Gemini menginterpretasikan hasil Python, menyoroti blind spot, membandingkan skenario, dan menyusun opsi Owner. Gemini tidak menjadi sumber angka dan tidak mengambil keputusan akhir.")
         if st.session_state.get("ai_feasibility_error"):
@@ -2196,7 +2246,8 @@ elif page == "New Auction Analysis":
         if st.button("Perbarui AI Feasibility Brief", disabled=not GEMINI_KEY, key="na_build_ai_feasibility_brief"):
             try:
                 with st.spinner("Gemini menyusun ulang studi kelayakan dari hasil hitung Python..."):
-                    st.session_state.ai_feasibility_brief = build_ai_feasibility_brief(GEMINI_KEY, GEMINI_MODEL, snap)
+                    ai_snapshot = {**snap, "portfolio_context": build_memo_portfolio_context(snap.get("property_id", ""))}
+                    st.session_state.ai_feasibility_brief = build_ai_feasibility_brief(GEMINI_KEY, GEMINI_MODEL, ai_snapshot)
                     st.session_state.ai_feasibility_error = ""
                     snap["ai_feasibility_brief"] = st.session_state.ai_feasibility_brief
                     st.session_state.current_analysis = snap
@@ -2250,12 +2301,15 @@ elif page == "New Auction Analysis":
         }
         report = build_analysis_markdown(memo_snapshot)
         memo_docx = build_analysis_docx(memo_snapshot)
-        memo_col1, memo_col2 = st.columns(2)
+        memo_pdf = build_analysis_pdf(memo_snapshot)
+        memo_col1, memo_col2, memo_col3 = st.columns(3)
         with memo_col1:
-            st.download_button("Unduh Memorandum Investasi (Word)", memo_docx, file_name=property_filename(memo_snapshot, "docx"), mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+            st.download_button("Unduh Memorandum (Word)", memo_docx, file_name=property_filename(memo_snapshot, "docx"), mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
         with memo_col2:
-            st.download_button("Unduh Memorandum Investasi (Markdown)", report, file_name=property_filename(memo_snapshot, "md"), mime="text/markdown", use_container_width=True)
-        st.caption("Memo menggunakan font minimum 11 pt, identitas KAYNA PROPERTY, tiga skenario bidding, RAB dan durasi per item, serta lampiran proyek aktif dan rekam jejak closing yang tersimpan. Data ekonomi makro tidak dimasukkan karena belum tersedia feed dinamis yang dapat diverifikasi saat pembuatan dokumen.")
+            st.download_button("Unduh Memorandum (PDF)", memo_pdf, file_name=property_filename(memo_snapshot, "pdf"), mime="application/pdf", use_container_width=True)
+        with memo_col3:
+            st.download_button("Unduh Memorandum (Markdown)", report, file_name=property_filename(memo_snapshot, "md"), mime="text/markdown", use_container_width=True)
+        st.caption("Memo menyediakan Word/PDF, identitas KAYNA PROPERTY, tiga skenario bidding, Stress Test/BEP, RAB dan durasi per item, serta lampiran proyek aktif dan rekam jejak closing yang tersimpan. Data ekonomi makro tidak dimasukkan karena belum tersedia feed dinamis yang dapat diverifikasi saat pembuatan dokumen.")
         if st.button("💾 SIMPAN / UPDATE ANALISIS KE DATABASE", type="primary", use_container_width=True):
             try:
                 propid = snap["property_id"]

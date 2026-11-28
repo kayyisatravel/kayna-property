@@ -60,15 +60,17 @@ def build_feasibility_scenarios(
     stress_sale = max(0.0, base * (1.0 - max(0.0, to_float(stress_sale_discount_pct)) / 100.0))
 
     cases = [
-        ("Cepat", conservative, fast_inputs, "Penjualan cepat; tetap dibatasi waktu penguasaan dan renovasi yang tidak dapat dipangkas."),
-        ("Moderat", base, base_inputs, "Menggunakan estimasi nilai dasar dan durasi proyek yang diinput."),
-        ("Tekanan", stress_sale, stress_inputs, "Harga jual turun dan masa penjualan memanjang; tambahan biaya tekanan diterapkan bila diisi."),
+        ("FAST_CONSERVATIVE", "Cepat", conservative, fast_inputs, "ARV konservatif; durasi cepat minimal 3 bulan, tetapi fase tetap tidak dipangkas."),
+        ("BASE_MODERATE", "Moderat", base, base_inputs, "ARV dasar; durasi sesuai input Owner."),
+        ("STRESS_DISCOUNTED", "Tekanan", stress_sale, stress_inputs, "ARV dasar dikurangi diskon tekanan; holding diperpanjang dan biaya tambahan diterapkan."),
     ]
     output: list[dict[str, Any]] = []
-    for name, sale, inputs, message in cases:
+    for scenario_id, name, sale, inputs, message in cases:
         result = calculate_project(bid_price, sale, inputs)
         output.append({
+            "scenario_id": scenario_id,
             "scenario": name,
+            "valuation_reference": {"Cepat": "ARV konservatif", "Moderat": "ARV dasar", "Tekanan": "ARV dasar dikurangi diskon tekanan"}[name],
             "exit_price": result.get("exit_price"),
             "holding_months": result.get("holding_months"),
             "holding_days": result.get("projected_holding_days"),
