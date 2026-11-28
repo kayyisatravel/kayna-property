@@ -26,6 +26,26 @@ def to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+
+def to_bool(value: Any, default: bool = False) -> bool:
+    """Parse persisted booleans safely, including legacy Sheets strings/nulls."""
+    if value is None or type(value).__name__ in {"NAType", "NaTType"}:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            number = float(value)
+            return number != 0 if math.isfinite(number) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y", "ya", "benar", "on", "aktif"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "tidak", "salah", "off", "nonaktif", ""}:
+        return False
+    return default
+
 def _json_safe(value: Any) -> Any:
     """Convert pandas/numpy values and non-finite numbers to strict JSON values."""
     # pandas uses singleton sentinels that are not JSON serializable.

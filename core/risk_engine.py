@@ -1,7 +1,7 @@
 """Risk-register scoring and liquidity reserve aggregation."""
 from __future__ import annotations
 from typing import Any
-from .utils import to_float, is_blank
+from .utils import to_float, to_bool, is_blank
 
 RESOLVED_STATES = {"resolved", "closed", "mitigated"}
 
@@ -23,7 +23,7 @@ def summarize_risks(risks: list[dict[str, Any]] | None) -> dict[str, Any]:
         impact = max(1, min(5, int(to_float(row.get("impact_1_5"), 1))))
         severity = probability * impact
         status = str(row.get("status") or "Open").strip()
-        critical = bool(row.get("critical", False))
+        critical = to_bool(row.get("critical", False))
         reserve = max(0.0, to_float(row.get("cost_reserve"), 0.0)) if status.lower() not in RESOLVED_STATES else 0.0
         total_cash_reserve += reserve
         mitigation = str(row.get("mitigation") or "").strip()
@@ -34,6 +34,7 @@ def summarize_risks(risks: list[dict[str, Any]] | None) -> dict[str, Any]:
             "impact_1_5": impact,
             "severity_score": severity,
             "critical": critical,
+            "hard_stop_confirmed": to_bool(row.get("hard_stop_confirmed", False)),
             "status": status,
             "cost_reserve": reserve,
             "mitigation": mitigation,

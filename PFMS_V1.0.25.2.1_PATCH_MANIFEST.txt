@@ -1,0 +1,29 @@
+PFMS V1.0.25.2.1 — DATA EDITOR TYPE SAFETY PATCH MANIFEST
+Base version: V1.0.25.2 (AI Feasibility Co-Pilot)
+Target version: V1.0.25.2.1 (Data Editor Runtime Compatibility Fix)
+
+Apply this overlay directly to a deployed V1.0.25.2 repository.
+Preserve relative paths when extracting to the repository root.
+
+Files included:
+- app.py
+- config.py
+- CHANGELOG.md
+- README.md
+- PFMS_V1.0.25.2.1_PATCH_NOTES.md
+- PFMS_V1.0.25.2.1_RELEASE_GUIDE.md
+- PFMS_V1.0.25.2.1_PATCH_MANIFEST.txt
+- core/editor_normalization.py
+- core/utils.py
+- core/risk_engine.py
+- core/decision_engine.py
+- core/market_engine.py
+- docs/STREAMLIT_DATA_EDITOR_TYPE_SAFETY_V1.0.25.2.1.md
+- tests/test_data_editor_normalization.py
+- tests/test_v124_static_app_safety.py
+
+Compatibility:
+- No Google Sheets worksheet/header/schema migration.
+- Existing data is normalized in memory when loaded; history is not rewritten.
+- No .streamlit/secrets.toml is included or overwritten.
+- V1.0.26 Auction Lifecycle and V1.0.27 same-property/relist detection are not included.

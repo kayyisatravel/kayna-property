@@ -3,7 +3,7 @@ from __future__ import annotations
 from statistics import median
 from typing import Any
 from datetime import date, datetime
-from .utils import to_float, is_blank, normalize_text
+from .utils import to_float, to_bool, is_blank, normalize_text
 
 VALID_PRICE_TYPES = {"Asking aktif", "Marked sold / perlu verifikasi", "Transaksi terverifikasi", "Over kredit / skema kewajiban"}
 VALID_CONDITIONS = {"Siap Huni", "Butuh Renovasi", "Hitung Tanah"}
@@ -169,7 +169,7 @@ def assess_comparables(
         ok, errors = validate_comparable(row)
         if not ok:
             invalid.append({"name": row.get("name", "(tanpa nama)"), "errors": errors}); continue
-        if bool(row.get("ai_exclude_from_primary", False)):
+        if to_bool(row.get("ai_exclude_from_primary", False)):
             invalid.append({"name": row.get("name", "(tanpa nama)"), "errors": ["dikeluarkan dari indikasi utama setelah pengguna meninjau saran AI"]})
             continue
         price_type = row.get("price_type") if not is_blank(row.get("price_type")) else "Asking aktif"
@@ -258,7 +258,7 @@ def assess_comparables(
         # A promotion is deducted only when its cash-equivalent value is verified
         # and explicitly entered. KPR-no-DP/free-fee claims are not blanket 20-25%
         # price discounts. Asking-price negotiation remains a separate assumption.
-        promo_value = max(0.0, to_float(row.get("verified_promotion_value"))) if bool(row.get("promotion_value_verified", False)) else 0.0
+        promo_value = max(0.0, to_float(row.get("verified_promotion_value"))) if to_bool(row.get("promotion_value_verified", False)) else 0.0
         effective_price = max(0.0, price - min(price, promo_value))
         # Only verified closing/transaction prices avoid the negotiation haircut.
         negotiated = effective_price if price_type == "Transaksi terverifikasi" else effective_price * (1 - negotiation_discount_pct / 100)

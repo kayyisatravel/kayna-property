@@ -1,4 +1,4 @@
-# PFMS V1.0.25.2 — AI Feasibility Co-Pilot
+# PFMS V1.0.25.2.1 — Data Editor Runtime Fix & AI Feasibility Co-Pilot
 
 PFMS menyusun studi kelayakan properti lelang dengan tiga peran: Python menghitung biaya/ROI/MAO/skenario secara deterministik; Gemini Flash bertindak sebagai Analis Senior yang menafsirkan trade-off, risiko, blind spot dan opsi; Owner tetap mengambil keputusan final. Status referensi model, Bid Readiness, dan keputusan Owner ditampilkan terpisah.
 
@@ -360,3 +360,6 @@ The RAB description box accepts either Markdown pipe tables (`|`) or a table cop
 - Payment deadline is derived from the auction date using the applicable PMK 122/2023 working-day rule; explicit KPKNL deadlines take precedence.
 - The auction-date and payment-deadline evidence/basis is carried into the saved analysis and Investment Proposal.
 - Fixed the missing `bid_reference_status` import that caused a NameError on the Bidding Ladder.
+
+
+V1.0.25.2.1 memperbaiki kompatibilitas tipe data seluruh editor Risiko, Pembanding dan RAB untuk data legacy/kolom kosong; tidak memigrasikan skema Google Sheets. Lihat `PFMS_V1.0.25.2.1_RELEASE_GUIDE.md`.

@@ -26,6 +26,10 @@ from core.project_form_options import ACTUAL_CATEGORIES, BUDGET_CATEGORIES, subc
 from core.onboarding import build_project_onboarding_records
 from core.market_engine import assess_comparables
 from core.form_state import form_state_from_input_data
+from core.editor_normalization import (
+    COMPARABLE_EDITOR_COLUMNS, RISK_EDITOR_COLUMNS, RENOVATION_EDITOR_COLUMNS,
+    normalize_comparable_editor_frame, normalize_risk_editor_frame, normalize_renovation_editor_frame,
+)
 from core.analysis_workflow import analysis_step1_missing, count_valid_comparables, persist_analysis_step_state, restore_analysis_step_state
 from core.review_state import sync_review_confirmation
 from core.user_boq import parse_user_boq_table
@@ -652,7 +656,7 @@ def comparable_date_to_iso(value: Any) -> str | None:
 
 # ------------------------------- Sidebar -----------------------------------
 st.sidebar.markdown("<div class='kayna-sidebar-brand'><span class='kp-mark'>KP</span><strong>KAYNA PROPERTY MANAGEMENT SYSTEM</strong><small>INVESTMENT · AUCTION · PROJECT CONTROL</small></div>", unsafe_allow_html=True)
-st.sidebar.caption("Version 1.0.25")
+st.sidebar.caption(f"Version {APP_VERSION}")
 if repo: st.sidebar.success("Database terhubung")
 else: st.sidebar.warning("Mode sementara · database belum terhubung" if not db_error else db_error[:180])
 GEMINI_KEY = str(secret("GEMINI_API_KEY", "") or "")
@@ -850,29 +854,24 @@ elif page == "New Auction Analysis":
             st.session_state.pop("na_rights_expiry_optional_picker", None)
             st.session_state.na_last_occupancy = mapping.get("na_survey_status", "Belum Survei")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", latest_saved.get("risk_reviewed", False)))
-            comparable_columns = ["name", "address", "latitude", "longitude", "distance_m", "market_segment", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
-            risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "hard_stop_confirmed", "mitigation", "status"]
+            comparable_columns = COMPARABLE_EDITOR_COLUMNS
+            risk_columns = RISK_EDITOR_COLUMNS
+            renovation_columns = RENOVATION_EDITOR_COLUMNS
             loaded_comps = data.get("comparables", [])
             loaded_risks = data.get("risk_register", [])
             if loaded_comps:
                 comp_frame = pd.DataFrame(loaded_comps)
-                for column in comparable_columns:
-                    if column not in comp_frame.columns:
-                        comp_frame[column] = None
-                st.session_state.na_comparables_editor = comp_frame[comparable_columns]
             else:
-                st.session_state.na_comparables_editor = pd.DataFrame([{c: None for c in comparable_columns} for _ in range(5)])
-            st.session_state.na_risk_editor = pd.DataFrame(loaded_risks) if loaded_risks else pd.DataFrame([{c: None for c in risk_columns}])
-            renovation_columns = ["item_code", "subcategory", "work_item", "quantity_low", "quantity", "quantity_high", "quantity_basis", "unit", "unit_cost_low", "unit_cost", "unit_cost_high", "price_source", "priority", "evidence_basis", "confidence", "notes"]
+                comp_frame = pd.DataFrame([{c: None for c in comparable_columns} for _ in range(5)])
+            st.session_state.na_comparables_editor = normalize_comparable_editor_frame(comp_frame)
+            risk_frame_loaded = pd.DataFrame(loaded_risks) if loaded_risks else pd.DataFrame([{c: None for c in risk_columns}])
+            st.session_state.na_risk_editor = normalize_risk_editor_frame(risk_frame_loaded)
             loaded_reno = data.get("costs", {}).get("renovation_items", [])
             reno_frame = pd.DataFrame(loaded_reno) if loaded_reno else pd.DataFrame([{c: None for c in renovation_columns} for _ in range(4)])
-            for column in renovation_columns:
-                if column not in reno_frame.columns:
-                    reno_frame[column] = None
-            st.session_state.na_renovation_items_editor = reno_frame[renovation_columns]
+            st.session_state.na_renovation_items_editor = normalize_renovation_editor_frame(reno_frame)
             st.session_state.na_rab_estimate = data.get("costs", {}).get("renovation_ai_estimate")
             st.session_state.na_risk_reviewed = bool(data.get("risk_reviewed", False))
-            for widget_key in ["na_comparables_editor_widget", "na_risk_editor_widget", "na_renovation_items_widget", "na_risk_editor_widget_v103", "na_renovation_items_widget_v103", "na_renovation_items_widget_v104"]:
+            for widget_key in ["na_comparables_editor_widget", "na_comparables_editor_widget_v2", "na_risk_editor_widget", "na_risk_editor_widget_v103", "na_risk_editor_widget_v104", "na_renovation_items_widget", "na_renovation_items_widget_v103", "na_renovation_items_widget_v104", "na_renovation_items_widget_v105"]:
                 if widget_key in st.session_state: del st.session_state[widget_key]
             st.session_state.loaded_property_id = pid
             st.success("Data objek dimuat. Silakan koreksi dan analisis ulang.")
@@ -1125,7 +1124,11 @@ elif page == "New Auction Analysis":
         set_default("na_fatal_security_threat", False); st.checkbox("Ada ancaman keamanan/perlawanan fisik yang telah diverifikasi dan tidak dapat diterima (HARD STOP)", key="na_fatal_security_threat")
         st.markdown("### Risk register dan mitigasi")
         st.caption("Pilih risiko yang relevan; sistem mengisi deskripsi, skor awal, mitigasi dan cadangan indikatif. Anda tetap dapat mengubah seluruh nilai. Cadangan risiko menambah kebutuhan kas, bukan biaya profit sampai benar-benar terpakai.")
-        risk_columns = ["category", "risk_description", "probability_1_5", "impact_1_5", "cost_reserve", "critical", "hard_stop_confirmed", "mitigation", "status"]
+        risk_columns = RISK_EDITOR_COLUMNS
+        if st.session_state.get("na_risk_editor_schema_version") != 2:
+            for legacy_key in ("na_risk_editor_widget", "na_risk_editor_widget_v103", "na_risk_editor_widget_v104"):
+                st.session_state.pop(legacy_key, None)
+            st.session_state.na_risk_editor_schema_version = 2
         if "na_risk_editor" not in st.session_state:
             st.session_state.na_risk_editor = pd.DataFrame(columns=risk_columns)
         with st.container(border=True):
@@ -1137,20 +1140,19 @@ elif page == "New Auction Analysis":
                 preset = dict(RISK_PRESETS[selected_risk])
                 if preset["risk_description"].strip().lower() not in existing_desc:
                     rows_now.append(preset)
-                    st.session_state.na_risk_editor = pd.DataFrame(rows_now, columns=risk_columns)
+                    st.session_state.na_risk_editor = normalize_risk_editor_frame(pd.DataFrame(rows_now, columns=risk_columns))
                     st.session_state.na_risk_reviewed = False
                     st.session_state.na_risk_reviewed_signature = ""
-                    for widget_key in ["na_risk_editor_widget", "na_risk_editor_widget_v103"]:
+                    for widget_key in ["na_risk_editor_widget", "na_risk_editor_widget_v103", "na_risk_editor_widget_v104"]:
                         if widget_key in st.session_state:
                             del st.session_state[widget_key]
                     st.rerun()
                 else:
                     st.info("Risiko tersebut sudah ada di register.")
             st.caption("Cadangan yang terisi otomatis adalah placeholder konservatif untuk membantu mulai mengisi, bukan tarif resmi. Ubah sesuai kondisi objek dan estimasi yang dapat dipertanggungjawabkan.")
-        risk_frame = st.session_state.na_risk_editor.copy()
-        for col in risk_columns:
-            if col not in risk_frame.columns: risk_frame[col] = None
-        risk_edited = st.data_editor(risk_frame[risk_columns], num_rows="dynamic", use_container_width=True, key="na_risk_editor_widget_v103", column_config={
+        risk_frame = normalize_risk_editor_frame(st.session_state.na_risk_editor)
+        st.session_state.na_risk_editor = risk_frame.copy()
+        risk_edited = st.data_editor(risk_frame, num_rows="dynamic", use_container_width=True, key="na_risk_editor_widget_v104", column_config={
             "category": st.column_config.TextColumn("Kategori"),
             "risk_description": st.column_config.TextColumn("Risiko / temuan"),
             "probability_1_5": st.column_config.NumberColumn("Kemungkinan (1–5)", min_value=1, max_value=5, step=1),
@@ -1161,6 +1163,7 @@ elif page == "New Auction Analysis":
             "mitigation": st.column_config.TextColumn("Mitigasi / tindakan"),
             "status": st.column_config.SelectboxColumn("Status", options=["Open", "Mitigated", "Resolved"]),
         })
+        risk_edited = normalize_risk_editor_frame(risk_edited)
         st.session_state.na_risk_current = risk_edited.to_dict(orient="records")
         st.session_state.na_risk_editor = risk_edited.copy()
         if len(risk_edited):
@@ -1219,8 +1222,8 @@ elif page == "New Auction Analysis":
                     st.session_state.na_comparables_editor = pd.DataFrame(parsed_rows)
                     st.session_state.na_comparable_parse_notes = parsed_result.get("parsing_notes", [])
                     st.session_state.na_comparable_parse_summary = {"count": len(parsed_rows), "captured_at": parsed_result.get("captured_at")}
-                    if "na_comparables_editor_widget" in st.session_state:
-                        del st.session_state["na_comparables_editor_widget"]
+                    for widget_key in ("na_comparables_editor_widget", "na_comparables_editor_widget_v2"):
+                        st.session_state.pop(widget_key, None)
                     st.success(f"Berhasil diparsing menjadi {len(parsed_rows)} baris listing. Periksa dan koreksi hasil sebelum analisis.")
                     st.rerun()
             except Exception as exc:
@@ -1232,8 +1235,8 @@ elif page == "New Auction Analysis":
                     st.warning("Format CSV/TSV tidak terbaca. Untuk narasi listing, gunakan tombol Parse narasi dengan Gemini AI.")
                 else:
                     st.session_state.na_comparables_editor = pd.DataFrame(parsed)
-                    if "na_comparables_editor_widget" in st.session_state:
-                        del st.session_state["na_comparables_editor_widget"]
+                    for widget_key in ("na_comparables_editor_widget", "na_comparables_editor_widget_v2"):
+                        st.session_state.pop(widget_key, None)
                     st.success(f"{len(parsed)} baris CSV/TSV dimuat. Periksa kembali setiap kolom.")
                     st.rerun()
             except Exception as exc:
@@ -1243,26 +1246,22 @@ elif page == "New Auction Analysis":
             st.caption(f"Parsing terakhir: {summary.get('count')} listing · tanggal tangkap sistem {summary.get('captured_at')}. Tanggal ini bukan tanggal publikasi iklan.")
             for note in st.session_state.get("na_comparable_parse_notes", []):
                 st.warning(note)
-        default_cols = ["name", "address", "complex_name", "underlying_property_id", "latitude", "longitude", "distance_m", "market_segment", "seller_type", "price", "njop", "land_area", "building_area", "bedrooms", "bathrooms", "condition", "condition_detail", "access", "access_detail", "price_type", "promotion_claims", "promotion_value_verified", "verified_promotion_value", "certificate", "orientation", "electricity_watt", "water_source", "source_platforms", "source_evidence", "source_url", "source_url_scope", "listing_date", "date_found", "date_found_basis", "notes", "adjustment_pct", "ai_adjustment_rationale", "ai_exclude_from_primary"]
-        if st.session_state.get("na_comparable_schema_version") != 7:
-            if "na_comparables_editor_widget" in st.session_state:
-                del st.session_state["na_comparables_editor_widget"]
-            st.session_state.na_comparable_schema_version = 7
+        default_cols = COMPARABLE_EDITOR_COLUMNS
+        if st.session_state.get("na_comparable_schema_version") != 8:
+            for legacy_key in ("na_comparables_editor_widget", "na_comparables_editor_widget_v2"):
+                st.session_state.pop(legacy_key, None)
+            st.session_state.na_comparable_schema_version = 8
         if "na_comparables_editor" not in st.session_state:
             st.session_state.na_comparables_editor = pd.DataFrame([{c: None for c in default_cols} for _ in range(5)])
         else:
-            comp_frame = st.session_state.na_comparables_editor.copy()
-            for column in default_cols:
-                if column not in comp_frame.columns:
-                    comp_frame[column] = None
-            st.session_state.na_comparables_editor = comp_frame[default_cols]
+            st.session_state.na_comparables_editor = normalize_comparable_editor_frame(st.session_state.na_comparables_editor)
         st.caption("Untuk estimasi indikatif dibutuhkan minimal 3 pembanding unik yang memiliki nama, harga, minimal salah satu LT/LB, dan sumber yang dapat ditelusuri. Keputusan GO dapat mensyaratkan minimal 5 pembanding individual yang lebih kuat. Untuk rumah lelang/resale, tandai segmen Secondary atau Primary. Listing developer dipisahkan sebagai kompetisi bila tersedia pembanding secondary. Promo hanya mengurangi harga efektif bila nilai rupiahnya benar-benar terverifikasi. Gunakan ID objek fisik yang sama untuk mencegah rumah yang sama dihitung dua kali lintas portal.")
-        comparable_editor_input = st.session_state.na_comparables_editor.copy()
+        comparable_editor_input = normalize_comparable_editor_frame(st.session_state.na_comparables_editor)
         # Streamlit DateColumn expects date-like values; normalize back to ISO strings after editing.
         for date_col in ("listing_date", "date_found"):
             if date_col in comparable_editor_input.columns:
                 comparable_editor_input[date_col] = comparable_editor_input[date_col].apply(comparable_date_for_editor)
-        edited = st.data_editor(comparable_editor_input, num_rows="dynamic", use_container_width=True, key="na_comparables_editor_widget", column_config={
+        edited = st.data_editor(comparable_editor_input, num_rows="dynamic", use_container_width=True, key="na_comparables_editor_widget_v2", column_config={
             "name": st.column_config.TextColumn("Nama listing"),
             "address": st.column_config.TextColumn("Alamat/lokasi"),
             "latitude": st.column_config.NumberColumn("Latitude", min_value=-90.0, max_value=90.0, format="%.6f", help="Koordinat pin properti dari Google Maps. Opsional, tetapi diperlukan untuk mengukur jarak lintas desa/kecamatan."),
@@ -1291,7 +1290,7 @@ elif page == "New Auction Analysis":
             "ai_adjustment_rationale": st.column_config.TextColumn("Alasan saran AI", disabled=True, help="Catatan dari Gemini. Periksa sebelum menggunakan penyesuaian."),
             "ai_exclude_from_primary": st.column_config.CheckboxColumn("Keluarkan dari valuasi utama?", help="Hanya aktif bila Anda menyetujui saran untuk mengeluarkan listing ini dari pembanding utama."),
         })
-        edited_normalized = edited.copy()
+        edited_normalized = normalize_comparable_editor_frame(edited)
         for date_col in ("listing_date", "date_found"):
             if date_col in edited_normalized.columns:
                 edited_normalized[date_col] = edited_normalized[date_col].apply(comparable_date_to_iso)
@@ -1355,7 +1354,8 @@ elif page == "New Auction Analysis":
                             rows_to_update[target_pos]["adjustment_pct"] = float(item.get("suggested_adjustment_pct") or 0)
                             applied += 1
                     st.session_state.na_comparables_editor = pd.DataFrame(rows_to_update)
-                    if "na_comparables_editor_widget" in st.session_state: del st.session_state["na_comparables_editor_widget"]
+                    for widget_key in ("na_comparables_editor_widget", "na_comparables_editor_widget_v2"):
+                        st.session_state.pop(widget_key, None)
                     applied_rows = [row for row in rows_to_update if str(row.get("name") or "").strip() and to_float(row.get("price")) > 0 and (to_float(row.get("land_area")) > 0 or to_float(row.get("building_area")) > 0)]
                     applied_signature = hashlib.sha256(safe_json({"subject": market_review_subject, "comparables": applied_rows}).encode("utf-8")).hexdigest()
                     st.session_state.na_market_ai_applied_signature = applied_signature
@@ -1373,7 +1373,8 @@ elif page == "New Auction Analysis":
                         comp["date_found_basis"] = "Dikonfirmasi pengguna: tanggal dikumpulkan di PFMS"
                         changed += 1
                 st.session_state.na_comparables_editor = pd.DataFrame(rows_to_update)
-                if "na_comparables_editor_widget" in st.session_state: del st.session_state["na_comparables_editor_widget"]
+                for widget_key in ("na_comparables_editor_widget", "na_comparables_editor_widget_v2"):
+                    st.session_state.pop(widget_key, None)
                 st.success(f"Tanggal ditemukan diisi untuk {changed} baris. Tanggal publikasi iklan tetap tidak diubah.")
                 st.rerun()
         with market_action_2:
@@ -1414,7 +1415,8 @@ elif page == "New Auction Analysis":
                     elif url:
                         skipped += 1
                 st.session_state.na_comparables_editor = pd.DataFrame(rows_to_update)
-                if "na_comparables_editor_widget" in st.session_state: del st.session_state["na_comparables_editor_widget"]
+                for widget_key in ("na_comparables_editor_widget", "na_comparables_editor_widget_v2"):
+                    st.session_state.pop(widget_key, None)
                 st.success(f"{changed} URL dengan halaman detail ditandai sebagai listing individual. {skipped} URL homepage/portal tetap bukan listing individual.")
                 st.rerun()
         st.markdown("### Estimasi pasar dari Owner (opsional)")
@@ -1496,7 +1498,7 @@ elif page == "New Auction Analysis":
                 st.session_state.na_rab_estimate = rab_result
                 st.session_state.na_renovation_items_editor = pd.DataFrame(rab_result.get("editor_rows", []))
                 st.session_state.na_costs_reviewed = False
-                for widget_key in ["na_renovation_items_widget", "na_renovation_items_widget_v103", "na_renovation_items_widget_v104"]:
+                for widget_key in ["na_renovation_items_widget", "na_renovation_items_widget_v103", "na_renovation_items_widget_v104", "na_renovation_items_widget_v105"]:
                     if widget_key in st.session_state:
                         del st.session_state[widget_key]
                 st.session_state.na_rab_accepted_pending = True
@@ -1582,12 +1584,15 @@ elif page == "New Auction Analysis":
                 if rab_estimate.get("pricing_basis_disclosure"):
                     st.warning(rab_estimate.get("pricing_basis_disclosure"))
                 st.caption(rab_estimate.get("estimation_basis", "Draft AI; wajib diverifikasi."))
-        renovation_columns = ["item_code", "subcategory", "work_item", "quantity_low", "quantity", "quantity_high", "quantity_basis", "unit", "unit_cost_low", "unit_cost", "unit_cost_high", "price_source", "priority", "evidence_basis", "confidence", "notes"]
+        renovation_columns = RENOVATION_EDITOR_COLUMNS
+        if st.session_state.get("na_renovation_editor_schema_version") != 2:
+            for legacy_key in ("na_renovation_items_widget", "na_renovation_items_widget_v103", "na_renovation_items_widget_v104"):
+                st.session_state.pop(legacy_key, None)
+            st.session_state.na_renovation_editor_schema_version = 2
         if "na_renovation_items_editor" not in st.session_state:
             st.session_state.na_renovation_items_editor = pd.DataFrame([{c: None for c in renovation_columns} for _ in range(4)])
-        renovation_frame = st.session_state.na_renovation_items_editor.copy()
-        for col in renovation_columns:
-            if col not in renovation_frame.columns: renovation_frame[col] = None
+        renovation_frame = normalize_renovation_editor_frame(st.session_state.na_renovation_items_editor)
+        st.session_state.na_renovation_items_editor = renovation_frame.copy()
         rate_source_rows = st.session_state.get("na_renovation_items_current") or st.session_state.na_renovation_items_editor.to_dict(orient="records")
         current_rab_rows = [r for r in rate_source_rows if str(r.get("work_item") or "").strip()]
         missing_user_rate_rows = [r for r in current_rab_rows if str(r.get("item_code") or "").startswith("USER_BOQ_") and (r.get("unit_cost") in (None, "") or to_float(r.get("unit_cost")) <= 0)]
@@ -1596,7 +1601,7 @@ elif page == "New Auction Analysis":
                 f"{len(missing_user_rate_rows)} item belum tercakup pricebook PFMS versi {PRICE_CATALOG_VERSION}. "
                 "Harga kosong tidak diisi dengan tebakan Gemini agar hasil RAB tetap konsisten. Masukkan harga override dari minimal dua penawaran lokal atau lampirkan dasar harga yang dapat diperiksa."
             )
-        renovation_edited = st.data_editor(renovation_frame[renovation_columns], num_rows="dynamic", use_container_width=True, key="na_renovation_items_widget_v104", column_config={
+        renovation_edited = st.data_editor(renovation_frame, num_rows="dynamic", use_container_width=True, key="na_renovation_items_widget_v105", column_config={
             "item_code": st.column_config.TextColumn("Kode scope", disabled=True),
             "subcategory": st.column_config.TextColumn("Kelompok pekerjaan", disabled=True),
             "work_item": st.column_config.TextColumn("Pekerjaan"),
@@ -1614,6 +1619,7 @@ elif page == "New Auction Analysis":
             "confidence": st.column_config.SelectboxColumn("Keyakinan", options=["Tinggi", "Sedang", "Rendah"]),
             "notes": st.column_config.TextColumn("Catatan / asumsi / sumber"),
         })
+        renovation_edited = normalize_renovation_editor_frame(renovation_edited)
         edited_rab_rows = renovation_edited.to_dict(orient="records")
         original_rab_by_code = {str(r.get("item_code") or ""): r for r in rate_source_rows}
         for edited_row in edited_rab_rows:

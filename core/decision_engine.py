@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any
-from .utils import to_float
+from .utils import to_float, to_bool
 from .renovation_engine import rab_item_is_in_scope
 
 
@@ -116,7 +116,7 @@ def evaluate_decision(
     if bool(prop.get("fatal_access_or_environment_confirmed", False)):
         hard_stops.append("Akses legal atau kondisi lingkungan fatal telah dikonfirmasi.")
     for risk in list(risk_summary.get("items") or []):
-        if bool(risk.get("hard_stop_confirmed", False)):
+        if to_bool(risk.get("hard_stop_confirmed", False)):
             desc = str(risk.get("risk_description") or "Risiko fatal terkonfirmasi").strip()
             hard_stops.append(f"Hard stop terkonfirmasi: {desc}.")
 

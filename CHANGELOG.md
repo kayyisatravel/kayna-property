@@ -1,3 +1,22 @@
+## [1.0.25.2.1] - 2026-11-28
+
+### Fixed
+- Fix `StreamlitAPIException` in the Risk Register when legacy saved rows contain an all-null `hard_stop_confirmed` column inferred by Pandas as `float64`; all checkbox-backed columns are normalized to real boolean dtype before `st.data_editor`.
+- Normalize all three analysis editors (Risk Register, Comparables, and Renovation RAB) before rendering and after edits: checkbox columns become boolean, numeric columns become numeric, selectbox values are constrained to configured options, text columns are stable, and comparable dates are passed as date values.
+- Bump editor widget keys/schema markers so Streamlit does not reuse stale widget state from the prior column schema; imported/AI-updated rows clear the matching current widget key before rerun.
+- Preserve the complete comparable editor schema when loading saved properties, including complex/underlying-property IDs, seller type and promotion verification fields that could previously be dropped during load.
+- Parse legacy boolean text (`False`, `0`, `Tidak`, `True`, `Ya`) safely in risk and comparable calculations; string `"False"` is no longer treated as true.
+
+### Compatibility
+- No Google Sheets tab/header/schema migration. Existing snapshots are normalized in memory when loaded; stored history is not rewritten.
+- No secrets or credentials are included.
+
+### Verification
+- Regression suite: **289 passed**.
+- Python compilation passed for app, config, all core, reports, services, storage and tests.
+- Static check confirms every analysis `st.data_editor` receives a normalized dataframe.
+- Live Streamlit Cloud, Google Sheets and Gemini API integration was not performed in this environment.
+
 ## [1.0.25.2] - 2026-11-27
 
 ### Changed
